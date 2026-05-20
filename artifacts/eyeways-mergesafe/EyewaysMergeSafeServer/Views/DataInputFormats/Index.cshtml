@@ -7,7 +7,7 @@
         ("telecom",   "Telecom / V2X",    "text-warning"),
         ("tracker",   "Tag Trackers",     "text-purple"),
     };
-    var allConfigs  = Model.PhysicalConfigs.Concat(Model.SatelliteConfigs).Concat(Model.TelecomConfigs).Concat(Model.TrackerConfigs).ToList();
+    var allConfigs   = Model.PhysicalConfigs.Concat(Model.SatelliteConfigs).Concat(Model.TelecomConfigs).Concat(Model.TrackerConfigs).ToList();
     var commonFields = new[]{"vehicle_id","timestamp","speed_mph","latitude","longitude","direction","lane","vehicle_type","event_type","zone_id","highway_id","signal_strength","altitude_ft","heading"};
     var shown = Model.ActiveTab switch {
         "satellite" => Model.SatelliteConfigs,
@@ -15,213 +15,484 @@
         "tracker"   => Model.TrackerConfigs,
         _           => Model.PhysicalConfigs
     };
+    var isSimTab = Model.ActiveTab == "simulation";
 }
 
 <div class="mss-page-header">
     <div><h2 class="mss-page-title">Data Input Formats</h2><p class="mss-page-sub">Configure sensor telemetry ingestion formats and generate test payloads</p></div>
-    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#fmtModal" onclick="openNew('@Model.ActiveTab')">
-        <i class="bi bi-plus me-1"></i>Add Format
-    </button>
+    @if (!isSimTab)
+    {
+        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#fmtModal" onclick="openNew('@Model.ActiveTab')">
+            <i class="bi bi-plus me-1"></i>Add Format
+        </button>
+    }
 </div>
 
 <ul class="nav nav-tabs mb-3">
-@foreach (var (type,label,clr) in tabDefs)
-{
+    @foreach (var (type, label, clr) in tabDefs)
+    {
+        <li class="nav-item">
+            <a class="nav-link @(Model.ActiveTab == type ? "active" : "") @clr"
+               href="/DataInputFormats?activeTab=@type">@label</a>
+        </li>
+    }
     <li class="nav-item">
-        <a class="nav-link @(Model.ActiveTab == type ? "active" : "") @clr"
-           href="/DataInputFormats?activeTab=@type">@label</a>
+        <a class="nav-link @(isSimTab ? "active" : "") text-info"
+           href="/DataInputFormats?activeTab=simulation">
+            <i class="bi bi-cpu me-1"></i>Simulation
+        </a>
     </li>
-}
 </ul>
 
-<div class="row g-3 mb-4">
-@foreach (var c in shown)
+@if (isSimTab)
 {
-    var fields = c.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>();
-    <div class="col-md-6 col-xl-4">
-        <div class="mss-card" id="card_@c.Id">
-            <div class="mss-card-body">
-                <div class="fw-bold small mb-1">@c.FormatName</div>
-                <div class="font-monospace text-muted mb-1" style="font-size:.62rem">@c.SourceId</div>
-                @if (!string.IsNullOrEmpty(c.InputSource))
-                { <div class="font-monospace text-primary mb-1" style="font-size:.62rem">→ @c.InputSource</div> }
-                <div class="text-muted" style="font-size:.72rem">@c.Description</div>
-                <div class="d-flex flex-wrap gap-1 mt-2">
-                    @foreach (var f in fields.Take(4))
-                    { <span class="badge bg-secondary font-monospace" style="font-size:.6rem">@f</span> }
-                    @if (fields.Length > 4)
-                    { <span class="badge bg-secondary font-monospace" style="font-size:.6rem">+@(fields.Length-4)</span> }
-                </div>
-                <div class="d-flex gap-2 mt-3 flex-wrap">
-                    <button type="button" class="btn btn-outline-success btn-sm flex-fill" onclick="generateAjax(@c.Id, this)">
-                        <i class="bi bi-play me-1"></i>Generate Payload
-                    </button>
-                    <button class="btn btn-outline-secondary btn-sm" onclick="openEditFmt(@c.Id)" data-bs-toggle="modal" data-bs-target="#fmtModal">
-                        <i class="bi bi-pencil"></i>
-                    </button>
-                    <div class="dropdown">
-                        <button class="btn btn-outline-info btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" title="Duplicate to another tab">
-                            <i class="bi bi-copy"></i>
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
-                            <li><span class="dropdown-header small">Duplicate to…</span></li>
-                            @foreach (var (type,label,_) in tabDefs)
-                            {
-                                if (type != Model.ActiveTab)
-                                {
-                                    <li><a class="dropdown-item small" href="#" onclick="duplicateConfig(@c.Id,'@type');return false;">@label</a></li>
-                                }
-                            }
-                        </ul>
-                    </div>
-                    <button class="btn btn-outline-danger btn-sm"
-                        onclick="ajaxFmtDelete(@c.Id,'@Model.ActiveTab','@c.FormatName')">
-                        <i class="bi bi-trash"></i>
-                    </button>
-                </div>
-            </div>
-            <div class="mss-payload-preview" id="preview_@c.Id">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <span class="small fw-semibold text-success"><i class="bi bi-check-circle me-1"></i><span id="previewLabel_@c.Id"></span></span>
-                    <div class="d-flex gap-1">
-                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyPayloadInline(@c.Id)"><i class="bi bi-clipboard"></i></button>
-                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="closePreview(@c.Id)"><i class="bi bi-x"></i></button>
-                    </div>
-                </div>
-                <pre class="mss-payload-code mb-0" id="previewCode_@c.Id" style="max-height:180px;overflow-y:auto;font-size:.65rem"></pre>
-            </div>
-        </div>
-    </div>
-}
-@if (!shown.Any())
-{ <div class="col-12"><p class="text-muted">No formats configured for this source type.</p></div> }
-</div>
+    <!-- ── Simulation Tab ──────────────────────────────────────────────────── -->
+    <div class="row g-3">
+        <!-- Left: config -->
+        <div class="col-lg-5">
+            <div class="mss-card">
+                <div class="mss-card-header"><i class="bi bi-cpu me-1"></i> Simulation Configuration</div>
+                <div class="mss-card-body">
 
-@if (Model.SavedPayloads.Any(p => p.SourceType == Model.ActiveTab))
-{
-    <div class="mss-card">
-        <div class="mss-card-header"><i class="bi bi-archive me-1"></i> Saved Payloads</div>
-        <div class="mss-card-body p-0">
-        @foreach (var p in Model.SavedPayloads.Where(p => p.SourceType == Model.ActiveTab))
-        {
-            <div class="mss-list-item">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <span class="@(p.IsValid ? "text-success" : "text-danger") me-2"><i class="bi @(p.IsValid ? "bi-check-circle" : "bi-x-circle")"></i></span>
-                        <span class="small fw-semibold">@p.Label</span>
-                        <span class="text-muted small ms-2">@p.CreatedDate.ToString("yyyy-MM-dd HH:mm")</span>
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Highway</label>
+                        <select class="form-select" id="simHighway" onchange="simFilterDropdowns()">
+                            <option value="">All Highways</option>
+                            @foreach (var h in Model.Highways)
+                            { <option value="@h.HighwayId">@h.Name</option> }
+                        </select>
                     </div>
-                    <div class="d-flex gap-1">
-                        <button class="btn btn-outline-secondary btn-sm" onclick="copySaved(@p.Id)"><i class="bi bi-clipboard"></i></button>
-                        <form method="post" asp-action="DeletePayload" asp-route-id="@p.Id" asp-route-activeTab="@Model.ActiveTab" style="display:inline">
-                            @Html.AntiForgeryToken()
-                            <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
-                        </form>
-                    </div>
-                </div>
-                <pre class="mss-payload-code mt-2 mb-0" id="pl_@p.Id" style="max-height:8rem;overflow-y:auto;font-size:.65rem">@p.Payload</pre>
-            </div>
-        }
-        </div>
-    </div>
-}
 
-<script id="fmtData" type="application/json">
-@Html.Raw(System.Text.Json.JsonSerializer.Serialize(allConfigs.Select(c => new {
-    c.Id, c.SourceType, c.FormatName, c.SourceId, c.InputSource, c.Description,
-    enabledFields = c.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>()
-})))
-</script>
-
-<div class="modal fade" id="fmtModal" tabindex="-1">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content mss-modal">
-      <div class="modal-header border-bottom border-secondary">
-        <h5 class="modal-title" id="fmtModalTitle">Add Format Config</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body">
-        <form id="fmtForm" method="post">
-            @Html.AntiForgeryToken()
-            <input type="hidden" name="Id" id="fm_id" value="0" />
-            <div class="row g-2 mb-3">
-                <div class="col-12"><label class="form-label small">Format Name *</label><input type="text" name="FormatName" id="fm_name" class="form-control" required /></div>
-                <div class="col-6"><label class="form-label small">Source ID</label><input type="text" name="SourceId" id="fm_sid" class="form-control font-monospace" /></div>
-                <div class="col-6"><label class="form-label small">Source Type</label>
-                    <select name="SourceType" id="fm_type" class="form-select">
-                        @foreach (var (type,label,_) in tabDefs)
-                        { <option value="@type">@label</option> }
-                    </select>
-                </div>
-                <div class="col-12"><label class="form-label small">Input Source (URL / stream)</label><input type="text" name="InputSource" id="fm_src" class="form-control" /></div>
-                <div class="col-12"><label class="form-label small">Description</label><input type="text" name="Description" id="fm_desc" class="form-control" /></div>
-            </div>
-            <div class="mb-3">
-                <label class="form-label small">Common Fields</label>
-                <div class="row g-1 overflow-auto" style="max-height:12rem">
-                @foreach (var f in commonFields)
-                {
-                    <div class="col-6 col-md-4">
-                        <div class="form-check">
-                            <input type="checkbox" class="form-check-input fm-field" name="enabledFields" value="@f" id="ff_@f" />
-                            <label class="form-check-label small font-monospace" for="ff_@f">@f</label>
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Switch Server</label>
+                            <select class="form-select form-select-sm" id="simServer">
+                                <option value="">Any Server</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Zone</label>
+                            <select class="form-select form-select-sm" id="simZone" onchange="simFilterServers()">
+                                <option value="">Any Zone</option>
+                            </select>
                         </div>
                     </div>
-                }
+
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Sensor / Source Type</label>
+                        <select class="form-select" id="simType">
+                            <option value="physical">Physical / Camera</option>
+                            <option value="satellite">Satellite / GPS</option>
+                            <option value="telecom">Telecom / V2X</option>
+                            <option value="tracker">Tag Tracker</option>
+                        </select>
+                    </div>
+
+                    <div class="row g-2 mb-4">
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Start Delay</label>
+                            <select class="form-select" id="simDelay">
+                                <option value="0">No delay</option>
+                                <option value="1">1 second</option>
+                                <option value="2">2 seconds</option>
+                                <option value="3">3 seconds</option>
+                                <option value="5">5 seconds</option>
+                                <option value="10">10 seconds</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Post Interval</label>
+                            <select class="form-select" id="simInterval">
+                                <option value="1">Every 1 second</option>
+                                <option value="2">Every 2 seconds</option>
+                                <option value="3">Every 3 seconds</option>
+                                <option value="4">Every 4 seconds</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button id="btnStartSim" class="btn btn-success flex-fill" onclick="startSim()">
+                            <i class="bi bi-play-fill me-1"></i>Start Simulation
+                        </button>
+                        <button id="btnStopSim" class="btn btn-danger flex-fill" onclick="stopSim()" style="display:none">
+                            <i class="bi bi-stop-fill me-1"></i>Stop
+                        </button>
+                    </div>
+
+                    <div class="d-flex align-items-center gap-2">
+                        <span id="simStatusDot" class="rounded-circle d-inline-block flex-shrink-0"
+                              style="width:9px;height:9px;background:#475569"></span>
+                        <span id="simStatus" class="small text-muted">Stopped — ready to simulate</span>
+                    </div>
                 </div>
             </div>
-            <div class="mb-2">
-                <label class="form-label small">Custom Fields</label>
-                <div id="customFields"></div>
-                <button type="button" class="btn btn-outline-secondary btn-sm mt-1" onclick="addCustomField()">
-                    <i class="bi bi-plus me-1"></i>Add Custom Field
-                </button>
+        </div>
+
+        <!-- Right: live log -->
+        <div class="col-lg-7">
+            <div class="mss-card" style="height:100%">
+                <div class="mss-card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-activity me-1"></i> Simulation Log</span>
+                    <div class="d-flex align-items-center gap-2">
+                        <span id="simTotalBadge" class="badge bg-secondary">0 posted</span>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="clearSimLog()" title="Clear log">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="simLog" style="max-height:500px;overflow-y:auto">
+                    <p class="text-muted small p-3">Start simulation to see live payloads posted here…</p>
+                </div>
             </div>
-        </form>
-      </div>
-      <div class="modal-footer border-top border-secondary">
-        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button class="btn btn-primary" onclick="ajaxFmtSubmit()">Save</button>
+        </div>
+    </div>
+
+    <!-- Hidden anti-forgery for simulation AJAX -->
+    <form id="simAFForm" style="display:none">@Html.AntiForgeryToken()</form>
+
+    <script id="simData" type="application/json">
+    @Html.Raw(System.Text.Json.JsonSerializer.Serialize(new {
+        zones   = Model.AllZones.Select(z => new { zoneId = z.ZoneId, zoneName = z.ZoneName, highwayId = z.HighwayId }),
+        servers = Model.AllSwitchServers.Select(s => new { serverId = s.ServerId, serverName = s.ServerName, zoneId = s.ZoneId, ipAddress = s.IpAddress, port = s.Port, status = s.Status })
+    }))
+    </script>
+}
+else
+{
+    <!-- ── Format Config Cards ─────────────────────────────────────────────── -->
+    <div class="row g-3 mb-4">
+    @foreach (var c in shown)
+    {
+        var fields = c.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>();
+        <div class="col-md-6 col-xl-4">
+            <div class="mss-card" id="card_@c.Id">
+                <div class="mss-card-body">
+                    <div class="fw-bold small mb-1">@c.FormatName</div>
+                    <div class="font-monospace text-muted mb-1" style="font-size:.62rem">@c.SourceId</div>
+                    @if (!string.IsNullOrEmpty(c.InputSource))
+                    { <div class="font-monospace text-primary mb-1" style="font-size:.62rem">→ @c.InputSource</div> }
+                    <div class="text-muted" style="font-size:.72rem">@c.Description</div>
+                    <div class="d-flex flex-wrap gap-1 mt-2">
+                        @foreach (var f in fields.Take(4))
+                        { <span class="badge bg-secondary font-monospace" style="font-size:.6rem">@f</span> }
+                        @if (fields.Length > 4)
+                        { <span class="badge bg-secondary font-monospace" style="font-size:.6rem">+@(fields.Length-4)</span> }
+                    </div>
+                    <div class="d-flex gap-2 mt-3 flex-wrap">
+                        <button type="button" class="btn btn-outline-success btn-sm flex-fill" onclick="generateAjax(@c.Id, this)">
+                            <i class="bi bi-play me-1"></i>Generate Payload
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="openEditFmt(@c.Id)" data-bs-toggle="modal" data-bs-target="#fmtModal">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <div class="dropdown">
+                            <button class="btn btn-outline-info btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" title="Duplicate to another tab">
+                                <i class="bi bi-copy"></i>
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+                                <li><span class="dropdown-header small">Duplicate to…</span></li>
+                                @foreach (var (type, label, _) in tabDefs)
+                                {
+                                    if (type != Model.ActiveTab)
+                                    {
+                                        <li><a class="dropdown-item small" href="#" onclick="duplicateConfig(@c.Id,'@type');return false;">@label</a></li>
+                                    }
+                                }
+                            </ul>
+                        </div>
+                        <button class="btn btn-outline-danger btn-sm"
+                            onclick="ajaxFmtDelete(@c.Id,'@Model.ActiveTab','@c.FormatName')">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="mss-payload-preview" id="preview_@c.Id">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="small fw-semibold text-success"><i class="bi bi-check-circle me-1"></i><span id="previewLabel_@c.Id"></span></span>
+                        <div class="d-flex gap-1">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyPayloadInline(@c.Id)"><i class="bi bi-clipboard"></i></button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="closePreview(@c.Id)"><i class="bi bi-x"></i></button>
+                        </div>
+                    </div>
+                    <pre class="mss-payload-code mb-0" id="previewCode_@c.Id" style="max-height:180px;overflow-y:auto;font-size:.65rem"></pre>
+                </div>
+            </div>
+        </div>
+    }
+    @if (!shown.Any())
+    { <div class="col-12"><p class="text-muted">No formats configured for this source type.</p></div> }
+    </div>
+
+    @if (Model.SavedPayloads.Any(p => p.SourceType == Model.ActiveTab))
+    {
+        <div class="mss-card">
+            <div class="mss-card-header"><i class="bi bi-archive me-1"></i> Saved Payloads</div>
+            <div class="mss-card-body p-0">
+            @foreach (var p in Model.SavedPayloads.Where(p => p.SourceType == Model.ActiveTab))
+            {
+                <div class="mss-list-item">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <span class="@(p.IsValid ? "text-success" : "text-danger") me-2"><i class="bi @(p.IsValid ? "bi-check-circle" : "bi-x-circle")"></i></span>
+                            <span class="small fw-semibold">@p.Label</span>
+                            <span class="text-muted small ms-2">@p.CreatedDate.ToString("yyyy-MM-dd HH:mm")</span>
+                        </div>
+                        <div class="d-flex gap-1">
+                            <button class="btn btn-outline-secondary btn-sm" onclick="copySaved(@p.Id)"><i class="bi bi-clipboard"></i></button>
+                            <form method="post" asp-action="DeletePayload" asp-route-id="@p.Id" asp-route-activeTab="@Model.ActiveTab" style="display:inline">
+                                @Html.AntiForgeryToken()
+                                <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                            </form>
+                        </div>
+                    </div>
+                    <pre class="mss-payload-code mt-2 mb-0" id="pl_@p.Id" style="max-height:8rem;overflow-y:auto;font-size:.65rem">@p.Payload</pre>
+                </div>
+            }
+            </div>
+        </div>
+    }
+
+    <script id="fmtData" type="application/json">
+    @Html.Raw(System.Text.Json.JsonSerializer.Serialize(allConfigs.Select(c => new {
+        c.Id, c.SourceType, c.FormatName, c.SourceId, c.InputSource, c.Description,
+        enabledFields = c.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>()
+    })))
+    </script>
+
+    <div class="modal fade" id="fmtModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content mss-modal">
+          <div class="modal-header border-bottom border-secondary">
+            <h5 class="modal-title" id="fmtModalTitle">Add Format Config</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <form id="fmtForm" method="post">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="Id" id="fm_id" value="0" />
+                <div class="row g-2 mb-3">
+                    <div class="col-12"><label class="form-label small">Format Name *</label><input type="text" name="FormatName" id="fm_name" class="form-control" required /></div>
+                    <div class="col-6"><label class="form-label small">Source ID</label><input type="text" name="SourceId" id="fm_sid" class="form-control font-monospace" /></div>
+                    <div class="col-6"><label class="form-label small">Source Type</label>
+                        <select name="SourceType" id="fm_type" class="form-select">
+                            @foreach (var (type, label, _) in tabDefs)
+                            { <option value="@type">@label</option> }
+                        </select>
+                    </div>
+                    <div class="col-12"><label class="form-label small">Input Source (URL / stream)</label><input type="text" name="InputSource" id="fm_src" class="form-control" /></div>
+                    <div class="col-12"><label class="form-label small">Description</label><input type="text" name="Description" id="fm_desc" class="form-control" /></div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small">Common Fields</label>
+                    <div class="row g-1 overflow-auto" style="max-height:12rem">
+                    @foreach (var f in commonFields)
+                    {
+                        <div class="col-6 col-md-4">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input fm-field" name="enabledFields" value="@f" id="ff_@f" />
+                                <label class="form-check-label small font-monospace" for="ff_@f">@f</label>
+                            </div>
+                        </div>
+                    }
+                    </div>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label small">Custom Fields</label>
+                    <div id="customFields"></div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm mt-1" onclick="addCustomField()">
+                        <i class="bi bi-plus me-1"></i>Add Custom Field
+                    </button>
+                </div>
+            </form>
+          </div>
+          <div class="modal-footer border-top border-secondary">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary" onclick="ajaxFmtSubmit()">Save</button>
+          </div>
+        </div>
       </div>
     </div>
-  </div>
-</div>
+}
 
 @section Scripts {
+@if (isSimTab)
+{
+<script>
+var simRaw      = JSON.parse(document.getElementById('simData').textContent);
+var simZones    = simRaw.zones   || [];
+var simServers  = simRaw.servers || [];
+var simTimer    = null;
+var simDelayTmr = null;
+var simTotal    = 0;
+var simLogItems = [];
+
+function simFilterDropdowns() {
+    var hwId = document.getElementById('simHighway').value;
+    var filtZones = hwId ? simZones.filter(function(z){ return z.highwayId === hwId; }) : simZones;
+    rebuildOpts('simZone', filtZones, 'Any Zone', function(z){ return { val: z.zoneId, label: z.zoneName }; });
+    simFilterServers();
+}
+
+function simFilterServers() {
+    var hwId   = document.getElementById('simHighway').value;
+    var zoneId = document.getElementById('simZone').value;
+    var filtZones = hwId ? simZones.filter(function(z){ return z.highwayId === hwId; }) : simZones;
+    var zoneIds   = zoneId ? [zoneId] : filtZones.map(function(z){ return z.zoneId; });
+    var filtSrvs  = simServers.filter(function(s){ return zoneIds.indexOf(s.zoneId) >= 0; });
+    rebuildOpts('simServer', filtSrvs, 'Any Server', function(s){
+        var addr = s.ipAddress ? ' — ' + s.ipAddress + ':' + s.port : '';
+        return { val: s.serverId, label: s.serverName + addr };
+    });
+}
+
+function rebuildOpts(selId, items, blank, mapper) {
+    var sel = document.getElementById(selId);
+    var cur = sel.value;
+    sel.innerHTML = '<option value="">' + blank + '</option>';
+    items.forEach(function(item) {
+        var m   = mapper(item);
+        var opt = document.createElement('option');
+        opt.value = m.val; opt.textContent = m.label;
+        sel.appendChild(opt);
+    });
+    var hasVal = Array.from(sel.options).some(function(o){ return o.value === cur; });
+    if (hasVal) sel.value = cur;
+}
+
+simFilterDropdowns();
+
+function startSim() {
+    var delay    = parseInt(document.getElementById('simDelay').value)    * 1000;
+    var interval = parseInt(document.getElementById('simInterval').value) * 1000;
+    document.getElementById('btnStartSim').style.display = 'none';
+    document.getElementById('btnStopSim').style.display  = '';
+    setSimStatus('pending', delay > 0 ? ('Starting in ' + delay/1000 + 's…') : 'Starting…');
+
+    function doPost() {
+        var hwId     = document.getElementById('simHighway').value;
+        var zoneId   = document.getElementById('simZone').value;
+        var serverId = document.getElementById('simServer').value;
+        var srcType  = document.getElementById('simType').value;
+        var tok      = document.querySelector('#simAFForm input[name="__RequestVerificationToken"]').value;
+        fetch('/DataInputFormats/SimulationPost', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+            body: 'highwayId=' + encodeURIComponent(hwId) +
+                  '&zoneId='   + encodeURIComponent(zoneId) +
+                  '&serverId=' + encodeURIComponent(serverId) +
+                  '&sourceType=' + encodeURIComponent(srcType) +
+                  '&__RequestVerificationToken=' + encodeURIComponent(tok)
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            if (d.ok) {
+                simTotal++;
+                document.getElementById('simTotalBadge').textContent = simTotal + ' posted';
+                setSimStatus('running', 'Running · ' + simTotal + ' posted · every ' + interval/1000 + 's');
+                appendSimLog(d.payload, d.label, srcType);
+            }
+        })
+        .catch(function(e){ console.error(e); });
+    }
+
+    simDelayTmr = setTimeout(function() {
+        if (!simTimer && !simDelayTmr) return;
+        doPost();
+        simTimer = setInterval(doPost, interval);
+        simDelayTmr = null;
+        setSimStatus('running', 'Running — posting every ' + interval/1000 + 's');
+    }, delay);
+}
+
+function stopSim() {
+    if (simTimer)    { clearInterval(simTimer);    simTimer    = null; }
+    if (simDelayTmr) { clearTimeout(simDelayTmr);  simDelayTmr = null; }
+    document.getElementById('btnStartSim').style.display = '';
+    document.getElementById('btnStopSim').style.display  = 'none';
+    setSimStatus('stopped', 'Stopped · ' + simTotal + ' total posted');
+}
+
+function setSimStatus(state, msg) {
+    document.getElementById('simStatus').textContent = msg;
+    var colors = { running: '#22c55e', pending: '#f59e0b', stopped: '#475569' };
+    document.getElementById('simStatusDot').style.background = colors[state] || '#475569';
+}
+
+var typeColors = { physical: '#3b82f6', satellite: '#22c55e', telecom: '#f59e0b', tracker: '#a855f7' };
+
+function appendSimLog(payloadStr, label, srcType) {
+    var clr = typeColors[srcType] || '#64748b';
+    var now = new Date().toLocaleTimeString();
+    var safePayload = payloadStr.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var safeForAttr = payloadStr.replace(/"/g, '&quot;');
+
+    var item = document.createElement('div');
+    item.className = 'mss-list-item';
+    item.style.cssText = 'border-left:3px solid ' + clr + ';padding-left:10px';
+    item.innerHTML =
+        '<div class="d-flex justify-content-between align-items-center mb-1">' +
+          '<span class="small fw-semibold" style="color:' + clr + '">' + (label || srcType.toUpperCase()) + '</span>' +
+          '<div class="d-flex gap-1 align-items-center">' +
+            '<span class="font-monospace text-muted" style="font-size:.6rem">' + now + '</span>' +
+            '<button class="btn btn-outline-secondary btn-sm p-0 px-1" style="font-size:.65rem" ' +
+              'title="Copy payload" onclick="navigator.clipboard.writeText(this.dataset.p)"' +
+              ' data-p="' + safeForAttr + '"><i class="bi bi-clipboard"></i></button>' +
+          '</div>' +
+        '</div>' +
+        '<pre style="font-size:.62rem;max-height:110px;overflow-y:auto;background:rgba(255,255,255,.04);' +
+          'border-radius:4px;padding:6px;margin:0;color:#94a3b8">' + safePayload + '</pre>';
+
+    var log = document.getElementById('simLog');
+    var placeholder = log.querySelector('p');
+    if (placeholder) log.innerHTML = '';
+    log.insertBefore(item, log.firstChild);
+    simLogItems.push(item);
+    if (simLogItems.length > 50) {
+        var old = simLogItems.shift();
+        if (old.parentNode) old.parentNode.removeChild(old);
+    }
+}
+
+function clearSimLog() {
+    document.getElementById('simLog').innerHTML = '<p class="text-muted small p-3">Log cleared.</p>';
+    simLogItems = [];
+    simTotal = 0;
+    document.getElementById('simTotalBadge').textContent = '0 posted';
+    if (simTimer) setSimStatus('running', 'Running (log cleared)');
+}
+</script>
+}
+else
+{
 <script>
 var fmts = JSON.parse(document.getElementById('fmtData').textContent);
 var antiForgeryToken = document.querySelector('input[name="__RequestVerificationToken"]').value;
 
-// ── AJAX payload generation ────────────────────────────────────────────────
 function generateAjax(configId, btn) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Generating…';
-
     fetch('/DataInputFormats/GeneratePayloadAjax', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'RequestVerificationToken': antiForgeryToken
-        },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'RequestVerificationToken': antiForgeryToken },
         body: 'configId=' + configId + '&__RequestVerificationToken=' + encodeURIComponent(antiForgeryToken)
     })
-    .then(function(r) { return r.json(); })
+    .then(function(r){ return r.json(); })
     .then(function(data) {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-play me-1"></i>Generate Payload';
         if (!data.ok) { alert('Error: ' + data.error); return; }
-
         var preview = document.getElementById('preview_' + configId);
         var codeEl  = document.getElementById('previewCode_' + configId);
         var lblEl   = document.getElementById('previewLabel_' + configId);
-        if (codeEl)  codeEl.textContent  = data.payload;
-        if (lblEl)   lblEl.textContent   = data.label;
+        if (codeEl)  codeEl.textContent = data.payload;
+        if (lblEl)   lblEl.textContent  = data.label;
         if (preview) preview.classList.add('show');
     })
     .catch(function(err) {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-play me-1"></i>Generate Payload';
-        console.error('GeneratePayloadAjax failed:', err);
+        console.error(err);
     });
 }
 
@@ -238,12 +509,11 @@ function copySaved(id) {
     if (pre) navigator.clipboard.writeText(pre.textContent).then(function(){ alert('Payload copied!'); });
 }
 
-// ── Format modal helpers ───────────────────────────────────────────────────
 function openNew(tab) {
     document.getElementById('fmtModalTitle').textContent = 'Add Format Config';
     document.getElementById('fmtForm').action = '/DataInputFormats/Create';
     document.getElementById('fm_id').value = 0;
-    ['fm_name','fm_sid','fm_src','fm_desc'].forEach(function(id){ document.getElementById(id).value=''; });
+    ['fm_name','fm_sid','fm_src','fm_desc'].forEach(function(id){ document.getElementById(id).value = ''; });
     document.getElementById('fm_type').value = tab;
     document.querySelectorAll('.fm-field').forEach(function(cb){ cb.checked = false; });
     document.getElementById('customFields').innerHTML = '';
@@ -252,14 +522,14 @@ function openEditFmt(id) {
     var c = fmts.find(function(x){ return x.id === id; }); if (!c) return;
     document.getElementById('fmtModalTitle').textContent = 'Edit Format Config';
     document.getElementById('fmtForm').action = '/DataInputFormats/Edit';
-    document.getElementById('fm_id').value    = c.id;
-    document.getElementById('fm_name').value  = c.formatName  || '';
-    document.getElementById('fm_sid').value   = c.sourceId    || '';
-    document.getElementById('fm_type').value  = c.sourceType  || 'physical';
-    document.getElementById('fm_src').value   = c.inputSource || '';
-    document.getElementById('fm_desc').value  = c.description || '';
+    document.getElementById('fm_id').value   = c.id;
+    document.getElementById('fm_name').value = c.formatName  || '';
+    document.getElementById('fm_sid').value  = c.sourceId    || '';
+    document.getElementById('fm_type').value = c.sourceType  || 'physical';
+    document.getElementById('fm_src').value  = c.inputSource || '';
+    document.getElementById('fm_desc').value = c.description || '';
     document.querySelectorAll('.fm-field').forEach(function(cb){
-        cb.checked = (c.enabledFields||[]).includes(cb.value);
+        cb.checked = (c.enabledFields || []).indexOf(cb.value) >= 0;
     });
     document.getElementById('customFields').innerHTML = '';
 }
@@ -273,7 +543,6 @@ function addCustomField() {
     document.getElementById('customFields').appendChild(div);
 }
 
-// ── AJAX form CRUD ─────────────────────────────────────────────────────────
 function ajaxFmtSubmit() {
     var form = document.getElementById('fmtForm');
     if (!form.reportValidity()) return;
@@ -286,9 +555,7 @@ function ajaxFmtSubmit() {
           if (d.ok) {
               bootstrap.Modal.getInstance(document.getElementById('fmtModal'))?.hide();
               window.location.href = '/DataInputFormats?activeTab=' + (d.activeTab || '@Model.ActiveTab');
-          } else {
-              alert('Error: ' + (d.error || 'Save failed'));
-          }
+          } else { alert('Error: ' + (d.error || 'Save failed')); }
       }).catch(function(e){ console.error(e); });
 }
 
@@ -305,7 +572,6 @@ function ajaxFmtDelete(id, activeTab, name) {
       .catch(function(e){ console.error(e); });
 }
 
-// ── Cross-tab duplicate ────────────────────────────────────────────────────
 function duplicateConfig(id, targetTab) {
     var tok = document.querySelector('input[name="__RequestVerificationToken"]');
     fetch('/DataInputFormats/DuplicateConfig', {
@@ -319,10 +585,9 @@ function duplicateConfig(id, targetTab) {
               var labels = { physical: 'Physical Sensors', satellite: 'Satellite / GPS', telecom: 'Telecom / V2X', tracker: 'Tag Trackers' };
               alert('Duplicated "' + d.name + '" to ' + (labels[d.targetTab] || d.targetTab) + ' tab.');
               window.location.href = '/DataInputFormats?activeTab=' + d.targetTab;
-          } else {
-              alert('Duplicate failed: ' + (d.error || 'Unknown error'));
-          }
+          } else { alert('Duplicate failed: ' + (d.error || 'Unknown error')); }
       }).catch(function(e){ console.error(e); });
 }
 </script>
+}
 }

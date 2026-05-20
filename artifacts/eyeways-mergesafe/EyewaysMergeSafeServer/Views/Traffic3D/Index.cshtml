@@ -34,7 +34,12 @@
                     <span><i class="bi bi-badge-3d me-1"></i> Scene3D — Three.js WebGL</span>
                     <span id="scene3dZoneLabel" class="badge bg-primary" style="display:none"></span>
                 </div>
-                <a href="/Vehicles" class="btn btn-outline-secondary btn-sm"><i class="bi bi-car-front me-1"></i>Vehicle Registry</a>
+                <div class="d-flex gap-2 align-items-center">
+                    <button id="btnAnimToggle" class="btn btn-outline-warning btn-sm" onclick="toggleAnimation()" style="display:none">
+                        <i class="bi bi-pause-fill me-1"></i>Pause
+                    </button>
+                    <a href="/Vehicles" class="btn btn-outline-secondary btn-sm"><i class="bi bi-car-front me-1"></i>Vehicle Registry</a>
+                </div>
             </div>
             <div id="scene3dContainer" style="width:100%;height:500px;border-radius:0 0 12px 12px;overflow:hidden;position:relative;">
                 <!-- Zone overlay inside 3D canvas -->
@@ -138,6 +143,10 @@
 </div>
 
 @section Scripts {
+<style>
+.mss-zone-tooltip{background:rgba(10,15,26,.9)!important;border:1px solid rgba(255,255,255,.2)!important;color:#e2e8f0!important;font-size:.67rem!important;font-weight:700!important;box-shadow:none!important;padding:2px 8px!important;white-space:nowrap!important;}
+.mss-zone-tooltip::before{border-top-color:rgba(255,255,255,.2)!important;}
+</style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
@@ -219,14 +228,28 @@ sensorData.forEach(function(s) {
         .bindPopup('<b>'+s.deviceName+'</b><br>'+s.deviceType+'<br>'+s.status).addTo(map);
 });
 
+// Highway polyline — connect zones in order to show the route
+if (zoneData.length > 1) {
+    L.polyline(zoneData.map(function(z){ return [z.lat, z.lon]; }),
+        { color: '#3b82f6', weight: 4, opacity: 0.42, dashArray: '10 6' }).addTo(map);
+}
+
 // Draw zone circles and keep refs for highlight updates
 var mapZoneRefs = [];
 zoneData.forEach(function(z) {
     var base = z.status === 'fault' ? '#ef4444' : '#22c55e';
-    var circle = L.circle([z.lat, z.lon], {radius: z.r, color: base, fillColor: base, fillOpacity: 0.1, weight: 1})
+    var circle = L.circle([z.lat, z.lon], {radius: z.r || 500, color: base, fillColor: base, fillOpacity: 0.12, weight: 2})
         .addTo(map);
-    var marker = L.circleMarker([z.lat, z.lon], {radius: 8, color: base, fillColor: base, fillOpacity: 0.9})
-        .bindPopup('<b>'+z.zoneName+'</b><br>'+z.status)
+    var marker = L.circleMarker([z.lat, z.lon], {radius: 10, color: base, fillColor: base, fillOpacity: 0.95, weight: 2})
+        .bindPopup(
+            '<div style="min-width:150px">' +
+            '<b style="font-size:.85rem">' + z.zoneName + '</b>' +
+            ' <span style="font-size:.7rem;color:' + base + '">● ' + z.status + '</span>' +
+            '<br><code style="font-size:.68rem;color:#94a3b8">' + z.zoneId + '</code>' +
+            '<br><a href="#" onclick="selectZone(\'' + z.zoneId + '\');return false;" ' +
+                'style="font-size:.75rem;color:#60a5fa">Filter to this zone →</a>' +
+            '</div>')
+        .bindTooltip(z.zoneName, { permanent: true, direction: 'top', offset: [0, -14], className: 'mss-zone-tooltip' })
         .on('click', function() { selectZone(z.zoneId); })
         .addTo(map);
     mapZoneRefs.push({ zoneId: z.zoneId, zoneName: z.zoneName, circle: circle, marker: marker, base: base, lat: z.lat, lon: z.lon });
@@ -337,6 +360,18 @@ function updateSceneZoneLabel(zoneId) {
         overlay.style.display = 'none';
         scLabel.style.display = 'none';
     }
+}
+
+// ── Animation play/pause ─────────────────────────────────────────────────────
+var animationPaused = false;
+function toggleAnimation() {
+    animationPaused = !animationPaused;
+    var btn = document.getElementById('btnAnimToggle');
+    if (!btn) return;
+    btn.innerHTML = animationPaused
+        ? '<i class="bi bi-play-fill me-1"></i>Resume'
+        : '<i class="bi bi-pause-fill me-1"></i>Pause';
+    btn.className = animationPaused ? 'btn btn-success btn-sm' : 'btn btn-outline-warning btn-sm';
 }
 
 // ── Mode toggle ──────────────────────────────────────────────────────────────
@@ -453,6 +488,9 @@ function initScene3D() {
     animate3d();
     startEventPolling();
 
+    var tb = document.getElementById('btnAnimToggle');
+    if (tb) { tb.style.display = ''; animationPaused = false; }
+
     window.addEventListener('resize', function() {
         if (!renderer3d) return;
         var W2 = container.clientWidth, H2 = container.clientHeight;
@@ -491,38 +529,40 @@ function spawnV(vSpec, fromEvent, zoneId) {
 function animate3d() {
     requestAnimationFrame(animate3d);
 
-    vehicles3d.forEach(function(v) {
-        // When zone filtered: dim ambient vehicles not from that zone
-        if (selectedZoneId && !v.userData.fromEvent) {
-            v.traverse(function(c) {
-                if (c.isMesh && c.material && c.material.color) {
-                    c.material.transparent = true;
-                    c.material.opacity     = 0.25;
-                }
-            });
-        } else if (!v.userData._opacityReset) {
-            v.userData._opacityReset = true;
-            v.traverse(function(c) {
-                if (c.isMesh && c.material) {
-                    c.material.transparent = false;
-                    c.material.opacity     = 1;
-                }
-            });
+    if (!animationPaused) {
+        vehicles3d.forEach(function(v) {
+            // When zone filtered: dim ambient vehicles not from that zone
+            if (selectedZoneId && !v.userData.fromEvent) {
+                v.traverse(function(c) {
+                    if (c.isMesh && c.material && c.material.color) {
+                        c.material.transparent = true;
+                        c.material.opacity     = 0.25;
+                    }
+                });
+            } else if (!v.userData._opacityReset) {
+                v.userData._opacityReset = true;
+                v.traverse(function(c) {
+                    if (c.isMesh && c.material) {
+                        c.material.transparent = false;
+                        c.material.opacity     = 1;
+                    }
+                });
+            }
+
+            v.position.z += v.userData.dir * v.userData.speed * speedMult;
+            if (v.position.z >  42) { v.position.z = -42; pushFeed3d(v, false); }
+            if (v.position.z < -42) { v.position.z =  42; pushFeed3d(v, false); }
+        });
+
+        // Maintain ambient density
+        var ambient = vehicles3d.filter(function(v) { return !v.userData.fromEvent; });
+        while (ambient.length < density) {
+            var s = spawnV(null, false, '');
+            ambient.push(s);
         }
-
-        v.position.z += v.userData.dir * v.userData.speed * speedMult;
-        if (v.position.z >  42) { v.position.z = -42; pushFeed3d(v, false); }
-        if (v.position.z < -42) { v.position.z =  42; pushFeed3d(v, false); }
-    });
-
-    // Maintain ambient density
-    var ambient = vehicles3d.filter(function(v) { return !v.userData.fromEvent; });
-    while (ambient.length < density) {
-        var s = spawnV(null, false, '');
-        ambient.push(s);
+        // Trim excess
+        while (vehicles3d.length > density + 25) scene3d.remove(vehicles3d.shift());
     }
-    // Trim excess
-    while (vehicles3d.length > density + 25) scene3d.remove(vehicles3d.shift());
 
     renderer3d.render(scene3d, camera3d);
 }

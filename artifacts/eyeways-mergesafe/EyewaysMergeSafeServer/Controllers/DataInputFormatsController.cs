@@ -24,6 +24,11 @@ public class DataInputFormatsController : Controller
         var highwayId  = HttpContext.Session.GetString("HighwayId");
         var allConfigs = await _db.InputFormatConfigs.AsNoTracking().OrderBy(c => c.FormatName).ToListAsync();
         var payloads   = await _db.SamplePayloads.AsNoTracking().OrderByDescending(p => p.CreatedDate).Take(30).ToListAsync();
+        var zones      = await _db.MergeZones.AsNoTracking().OrderBy(z => z.HighwayId).ThenBy(z => z.ZoneName).ToListAsync();
+        var zoneIds    = zones.Select(z => z.ZoneId).ToList();
+        var srvs       = await _db.SwitchServers.AsNoTracking()
+                            .Where(s => s.ZoneId != null && zoneIds.Contains(s.ZoneId))
+                            .OrderBy(s => s.ServerName).ToListAsync();
 
         return View(new DataInputFormatsViewModel
         {
@@ -35,7 +40,31 @@ public class DataInputFormatsController : Controller
             TelecomConfigs    = allConfigs.Where(c => c.SourceType == "telecom").ToList(),
             TrackerConfigs    = allConfigs.Where(c => c.SourceType == "tracker").ToList(),
             SavedPayloads     = payloads,
+            AllZones          = zones,
+            AllSwitchServers  = srvs,
         });
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> SimulationPost(string? highwayId, string? zoneId, string? serverId, string? sourceType)
+    {
+        var type   = sourceType ?? "physical";
+        var fields = new[] { "vehicle_id","timestamp","speed_mph","latitude","longitude",
+                             "direction","lane","vehicle_type","event_type","zone_id",
+                             "highway_id","signal_strength","altitude_ft" };
+        var payload = _payloadSvc.Generate(type, fields);
+        var label   = $"Simulation [{type.ToUpper()}] — {DateTime.UtcNow:HH:mm:ss}";
+
+        _db.SamplePayloads.Add(new SamplePayload
+        {
+            SourceType  = type,
+            Label       = label,
+            Payload     = payload,
+            IsValid     = true,
+            CreatedDate = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync();
+        return Json(new { ok = true, label, payload });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
