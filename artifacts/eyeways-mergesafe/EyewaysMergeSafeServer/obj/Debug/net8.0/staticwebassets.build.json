@@ -1,0 +1,58 @@
+{
+  "Version": 1,
+  "Hash": "sHzxEe9iimyp8ARHvp1kxXyfyBVsnw2hCoSx3Tvd128=",
+  "Source": "EyewaysMergeSafeServer",
+  "BasePath": "_content/EyewaysMergeSafeServer",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [
+    {
+      "Name": "EyewaysMergeSafeServer/wwwroot",
+      "Source": "EyewaysMergeSafeServer",
+      "ContentRoot": "/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/wwwroot/",
+      "BasePath": "_content/EyewaysMergeSafeServer",
+      "Pattern": "**"
+    }
+  ],
+  "Assets": [
+    {
+      "Identity": "/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/wwwroot/css/site.css",
+      "SourceId": "EyewaysMergeSafeServer",
+      "SourceType": "Discovered",
+      "ContentRoot": "/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/wwwroot/",
+      "BasePath": "_content/EyewaysMergeSafeServer",
+      "RelativePath": "css/site.css",
+      "AssetKind": "All",
+      "AssetMode": "All",
+      "AssetRole": "Primary",
+      "AssetMergeBehavior": "PreferTarget",
+      "AssetMergeSource": "",
+      "RelatedAsset": "",
+      "AssetTraitName": "",
+      "AssetTraitValue": "",
+      "CopyToOutputDirectory": "Never",
+      "CopyToPublishDirectory": "PreserveNewest",
+      "OriginalItemSpec": "wwwroot/css/site.css"
+    },
+    {
+      "Identity": "/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/wwwroot/js/site.js",
+      "SourceId": "EyewaysMergeSafeServer",
+      "SourceType": "Discovered",
+      "ContentRoot": "/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/wwwroot/",
+      "BasePath": "_content/EyewaysMergeSafeServer",
+      "RelativePath": "js/site.js",
+      "AssetKind": "All",
+      "AssetMode": "All",
+      "AssetRole": "Primary",
+      "AssetMergeBehavior": "PreferTarget",
+      "AssetMergeSource": "",
+      "RelatedAsset": "",
+      "AssetTraitName": "",
+      "AssetTraitValue": "",
+      "CopyToOutputDirectory": "Never",
+      "CopyToPublishDirectory": "PreserveNewest",
+      "OriginalItemSpec": "wwwroot/js/site.js"
+    }
+  ]
+}

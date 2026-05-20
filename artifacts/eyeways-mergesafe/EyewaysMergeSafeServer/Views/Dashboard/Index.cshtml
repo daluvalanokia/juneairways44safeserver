@@ -1,0 +1,136 @@
+@model EyewaysMergeSafeServer.ViewModels.DashboardViewModel
+@{ ViewData["Title"] = "Dashboard"; ViewBag.Highways = Model.Highways; ViewBag.SelectedHighwayId = Model.SelectedHighwayId; }
+
+<div class="mss-page-header">
+    <div>
+        <h2 class="mss-page-title">System Overview</h2>
+        <p class="mss-page-sub">@(Model.SelectedHighwayId != null ? $"Monitoring: {Model.SelectedHighwayId}" : "Select a highway to begin monitoring")</p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="small text-muted">Demo Mode</span>
+        <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" id="demoToggle" role="switch" onchange="toggleDemo(this.checked)" />
+        </div>
+        <span id="demoStatus" class="mss-badge mss-badge--inactive">OFF</span>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-6 col-xl-3">
+        <div class="mss-stat @(Model.FaultZones > 0 ? "mss-stat--danger" : "")">
+            <div class="mss-stat-label">Merge Zones</div>
+            <div class="mss-stat-value">@Model.Zones.Count</div>
+            <div class="mss-stat-sub">@(Model.FaultZones > 0 ? $"{Model.FaultZones} in fault" : "All nominal")</div>
+        </div>
+    </div>
+    <div class="col-6 col-xl-3">
+        <div class="mss-stat @(Model.OnlineServers < Model.Servers.Count ? "mss-stat--warn" : "")">
+            <div class="mss-stat-label">Switch Servers</div>
+            <div class="mss-stat-value">@Model.OnlineServers<span class="mss-stat-denom">/@Model.Servers.Count</span></div>
+            <div class="mss-stat-sub">Online</div>
+        </div>
+    </div>
+    <div class="col-6 col-xl-3">
+        <div class="mss-stat">
+            <div class="mss-stat-label">Sensor Devices</div>
+            <div class="mss-stat-value">@Model.OnlineSensors<span class="mss-stat-denom">/@Model.Sensors.Count</span></div>
+            <div class="mss-stat-sub">Online</div>
+        </div>
+    </div>
+    <div class="col-6 col-xl-3">
+        <div class="mss-stat @(Model.AlertCount > 0 ? "mss-stat--danger" : "")">
+            <div class="mss-stat-label">Recent Alerts</div>
+            <div class="mss-stat-value">@Model.AlertCount</div>
+            <div class="mss-stat-sub">Faults / Conflicts</div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-4">
+        <div class="mss-card h-100">
+            <div class="mss-card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-map me-1"></i> Merge Zones</span>
+                <a href="/MergeZones" class="btn btn-outline-secondary btn-sm">View All</a>
+            </div>
+            <div class="mss-card-body p-0">
+                @if (!Model.Zones.Any())
+                {
+                    <p class="text-muted small p-3">No zones found for this highway.</p>
+                }
+                @foreach (var z in Model.Zones.Take(10))
+                {
+                    <div class="mss-list-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="fw-semibold small">@z.ZoneName</div>
+                            <div class="font-monospace text-muted" style="font-size:.65rem">@z.ZoneId &nbsp;·&nbsp; MM @z.MileMarker</div>
+                        </div>
+                        <span class="mss-badge mss-badge--@z.Status">@z.Status</span>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-8">
+        <div class="mss-card h-100">
+            <div class="mss-card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-activity me-1"></i> Recent Events</span>
+                <a href="/Events" class="btn btn-outline-secondary btn-sm">View All</a>
+            </div>
+            <div class="mss-card-body p-0" style="max-height:420px;overflow-y:auto" id="eventFeed">
+                @if (!Model.RecentEvents.Any())
+                {
+                    <p class="text-muted small p-3">No events recorded yet.</p>
+                }
+                @foreach (var ev in Model.RecentEvents)
+                {
+                    <div class="mss-list-item d-flex align-items-center gap-3">
+                        <span class="mss-event-type mss-event--@ev.EventType">@ev.EventType.ToUpper()</span>
+                        <span class="font-monospace small text-muted">@ev.ZoneId</span>
+                        <span class="font-monospace small">@ev.VehicleId</span>
+                        @if (ev.SpeedMph.HasValue)
+                        { <span class="small text-muted">@ev.SpeedMph mph</span> }
+                        <span class="ms-auto font-monospace small text-muted">@ev.CreatedDate.ToString("HH:mm:ss")</span>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+var demoTimer = null;
+var demoZones = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Zones.Select(z => z.ZoneId)));
+var eventTypes = ['detection','merge','conflict','speeding','fault'];
+var vehicles = ['VEH-1001','VEH-2034','VEH-3087','VEH-4412','VEH-5500'];
+
+function toggleDemo(on) {
+    document.getElementById('demoStatus').textContent = on ? 'ON' : 'OFF';
+    document.getElementById('demoStatus').className = 'mss-badge ' + (on ? 'mss-badge--active' : 'mss-badge--inactive');
+    if (on) {
+        demoTimer = setInterval(function() {
+            var zone = demoZones[Math.floor(Math.random() * demoZones.length)] || 'I20-Z001';
+            var evType = eventTypes[Math.floor(Math.random() * eventTypes.length)];
+            var veh = vehicles[Math.floor(Math.random() * vehicles.length)];
+            var speed = Math.floor(Math.random() * 80 + 20);
+            var row = '<div class="mss-list-item d-flex align-items-center gap-3 mss-demo-row">' +
+                '<span class="mss-event-type mss-event--' + evType + '">' + evType.toUpperCase() + '</span>' +
+                '<span class="font-monospace small text-muted">' + zone + '</span>' +
+                '<span class="font-monospace small">' + veh + '</span>' +
+                '<span class="small text-muted">' + speed + ' mph</span>' +
+                '<span class="ms-auto font-monospace small text-muted">' + new Date().toLocaleTimeString() + '</span>' +
+                '</div>';
+            var feed = document.getElementById('eventFeed');
+            feed.insertAdjacentHTML('afterbegin', row);
+            var rows = feed.querySelectorAll('.mss-demo-row');
+            if (rows.length > 30) rows[rows.length-1].remove();
+        }, 2000);
+    } else {
+        clearInterval(demoTimer);
+        demoTimer = null;
+    }
+}
+</script>
+}

@@ -1,0 +1,29 @@
+{
+  "Files": [
+    {
+      "Id": "/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/wwwroot/css/site.css",
+      "PackagePath": "staticwebassets/css/site.css"
+    },
+    {
+      "Id": "/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/wwwroot/js/site.js",
+      "PackagePath": "staticwebassets/js/site.js"
+    },
+    {
+      "Id": "obj/Debug/net8.0/staticwebassets/msbuild.EyewaysMergeSafeServer.Microsoft.AspNetCore.StaticWebAssets.props",
+      "PackagePath": "build\\Microsoft.AspNetCore.StaticWebAssets.props"
+    },
+    {
+      "Id": "obj/Debug/net8.0/staticwebassets/msbuild.build.EyewaysMergeSafeServer.props",
+      "PackagePath": "build\\EyewaysMergeSafeServer.props"
+    },
+    {
+      "Id": "obj/Debug/net8.0/staticwebassets/msbuild.buildMultiTargeting.EyewaysMergeSafeServer.props",
+      "PackagePath": "buildMultiTargeting\\EyewaysMergeSafeServer.props"
+    },
+    {
+      "Id": "obj/Debug/net8.0/staticwebassets/msbuild.buildTransitive.EyewaysMergeSafeServer.props",
+      "PackagePath": "buildTransitive\\EyewaysMergeSafeServer.props"
+    }
+  ],
+  "ElementsToRemove": []
+}

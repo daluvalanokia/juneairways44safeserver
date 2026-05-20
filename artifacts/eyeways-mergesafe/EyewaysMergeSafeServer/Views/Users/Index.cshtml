@@ -1,0 +1,197 @@
+@model EyewaysMergeSafeServer.ViewModels.UsersViewModel
+@{ ViewData["Title"] = "Users"; ViewBag.Highways = null; }
+@{
+    var typeCls = new Dictionary<string,string>{
+        {"admin","text-danger"},{"operator","text-primary"},{"viewer","text-secondary"},
+        {"technician","text-warning"},{"supervisor","text-purple"}};
+}
+
+<div class="mss-page-header">
+    <div><h2 class="mss-page-title">Users & Access Control</h2><p class="mss-page-sub">Manage operator and viewer profiles</p></div>
+    <div class="d-flex gap-2">
+        <form method="get" class="d-flex gap-2">
+            <input type="text" name="search" value="@Model.Search" class="form-control form-control-sm" placeholder="Search name / ID…" />
+            <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-search"></i></button>
+        </form>
+        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#userModal" onclick="openNew()">
+            <i class="bi bi-plus me-1"></i>Add User
+        </button>
+    </div>
+</div>
+
+<div class="mss-card">
+    <div class="table-responsive">
+        <table class="table table-dark table-hover table-sm mb-0">
+            <thead><tr><th>User</th><th>Type</th><th class="d-none d-md-table-cell">Phone</th><th class="d-none d-md-table-cell">Interstate</th><th class="d-none d-lg-table-cell">Devices</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+            @foreach (var u in Model.Users)
+            {
+                var devCount = u.DeviceIdsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries).Length ?? 0;
+                var cls = typeCls.GetValueOrDefault(u.UserType, "text-muted");
+                <tr>
+                    <td>
+                        <div class="fw-semibold small">@u.FullName</div>
+                        <div class="font-monospace text-muted" style="font-size:.65rem">@u.UserId</div>
+                    </td>
+                    <td><span class="small fw-semibold @cls">@u.UserType</span></td>
+                    <td class="d-none d-md-table-cell small text-muted">@u.Phone</td>
+                    <td class="d-none d-md-table-cell font-monospace small text-muted">@u.HighwayName</td>
+                    <td class="d-none d-lg-table-cell small">@devCount device(s)</td>
+                    <td>
+                        @if (u.IsActive)
+                        { <span class="mss-badge mss-badge--active">active</span> }
+                        else
+                        { <span class="mss-badge mss-badge--inactive">inactive</span> }
+                    </td>
+                    <td class="text-end">
+                        <button class="btn btn-outline-secondary btn-sm me-1" onclick="openEdit(@u.Id)" data-bs-toggle="modal" data-bs-target="#userModal">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <form method="post" asp-action="Delete" asp-route-id="@u.Id" style="display:inline"
+                              onsubmit="return confirm('Delete user @u.FullName?')">
+                            @Html.AntiForgeryToken()
+                            <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                        </form>
+                    </td>
+                </tr>
+            }
+            @if (!Model.Users.Any())
+            { <tr><td colspan="7" class="text-muted text-center py-4">No user profiles found.</td></tr> }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script id="userData" type="application/json">
+@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Users.Select(u => new {
+    u.Id, u.UserId, u.FullName, u.Phone, u.Address, u.UserType,
+    u.HighwayId, u.HighwayName, u.Notes, u.IsActive,
+    deviceIds = u.DeviceIdsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>()
+})))
+</script>
+<script id="hwData" type="application/json">
+@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Highways.Select(h => new { h.HighwayId, h.Name })))
+</script>
+<script id="devData" type="application/json">
+@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Devices.Select(d => new { d.DeviceId, d.DeviceName, d.DeviceType, d.HighwayId, d.MileMarker })))
+</script>
+
+<div class="modal fade" id="userModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content mss-modal">
+      <div class="modal-header border-bottom border-secondary">
+        <h5 class="modal-title" id="userModalTitle">Add User Profile</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <form id="userForm" method="post">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="Id" id="u_id" value="0" />
+            <div class="row g-2">
+                <div class="col-12"><label class="form-label small">Full Name *</label><input type="text" name="FullName" id="u_name" class="form-control" required /></div>
+                <div class="col-6"><label class="form-label small">User ID</label><input type="text" name="UserId" id="u_uid" class="form-control font-monospace" placeholder="admin001" /></div>
+                <div class="col-6"><label class="form-label small">Phone</label><input type="text" name="Phone" id="u_phone" class="form-control" /></div>
+                <div class="col-6"><label class="form-label small">User Type</label>
+                    <select name="UserType" id="u_type" class="form-select">
+                        @foreach (var t in new[]{"admin","operator","viewer","technician","supervisor"})
+                        { <option value="@t">@t</option> }
+                    </select>
+                </div>
+                <div class="col-6"><label class="form-label small">Password (demo)</label><input type="password" name="Password" id="u_pwd" class="form-control" placeholder="Leave blank = any accepted" /></div>
+                <div class="col-12"><label class="form-label small">Address</label><input type="text" name="Address" id="u_addr" class="form-control" /></div>
+                <div class="col-6"><label class="form-label small">Interstate Assignment</label>
+                    <select name="HighwayId" id="u_hw" class="form-select" onchange="loadDevices(this.value)">
+                        <option value="">— None —</option>
+                        @foreach (var h in Model.Highways)
+                        { <option value="@h.HighwayId">@h.Name</option> }
+                    </select>
+                    <input type="hidden" name="HighwayName" id="u_hwname" />
+                </div>
+                <div class="col-6 d-flex align-items-end">
+                    <div class="form-check ms-1 pb-1">
+                        <input type="checkbox" name="IsActive" id="u_active" class="form-check-input" value="true" checked />
+                        <label class="form-check-label small" for="u_active">Active</label>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <label class="form-label small">Device Access</label>
+                    <input type="text" id="devSearch" class="form-control form-control-sm mb-1" placeholder="Search devices…" oninput="filterDevices(this.value)" />
+                    <div id="deviceList" class="border border-secondary rounded p-2 overflow-auto" style="max-height:180px">
+                        <p class="text-muted small">Select a highway to load devices.</p>
+                    </div>
+                </div>
+                <div class="col-12"><label class="form-label small">Notes</label><textarea name="Notes" id="u_notes" class="form-control" rows="2"></textarea></div>
+            </div>
+        </form>
+      </div>
+      <div class="modal-footer border-top border-secondary">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary" onclick="document.getElementById('userForm').submit()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+@section Scripts {
+<script>
+var users = JSON.parse(document.getElementById('userData').textContent);
+var hws   = JSON.parse(document.getElementById('hwData').textContent);
+var allDevs = JSON.parse(document.getElementById('devData').textContent);
+var currentDevs=[], selectedIds=[];
+
+function openNew() {
+    document.getElementById('userModalTitle').textContent='Add User Profile';
+    document.getElementById('userForm').action='/Users/Create';
+    document.getElementById('u_id').value=0;
+    ['u_name','u_uid','u_phone','u_addr','u_notes','u_pwd'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('u_type').value='viewer';
+    document.getElementById('u_hw').value='';
+    document.getElementById('u_hwname').value='';
+    document.getElementById('u_active').checked=true;
+    selectedIds=[]; renderDevices([],[]);
+}
+function openEdit(id) {
+    var u=users.find(x=>x.id===id); if(!u) return;
+    document.getElementById('userModalTitle').textContent='Edit User Profile';
+    document.getElementById('userForm').action='/Users/Edit';
+    document.getElementById('u_id').value=u.id;
+    document.getElementById('u_name').value=u.fullName||'';
+    document.getElementById('u_uid').value=u.userId||'';
+    document.getElementById('u_phone').value=u.phone||'';
+    document.getElementById('u_addr').value=u.address||'';
+    document.getElementById('u_type').value=u.userType||'viewer';
+    document.getElementById('u_hw').value=u.highwayId||'';
+    document.getElementById('u_hwname').value=u.highwayName||'';
+    document.getElementById('u_active').checked=u.isActive;
+    document.getElementById('u_pwd').value='';
+    document.getElementById('u_notes').value=u.notes||'';
+    selectedIds=u.deviceIds||[];
+    loadDevices(u.highwayId||'');
+}
+function loadDevices(hwId) {
+    var hw=hws.find(h=>h.highwayId===hwId);
+    document.getElementById('u_hwname').value=hw?hw.name:'';
+    currentDevs=hwId?allDevs.filter(d=>d.highwayId===hwId):[];
+    renderDevices(currentDevs,selectedIds);
+}
+function filterDevices(q) {
+    var lq=q.toLowerCase();
+    renderDevices(currentDevs.filter(d=>(d.deviceName||'').toLowerCase().includes(lq)||(d.deviceType||'').toLowerCase().includes(lq)),selectedIds);
+}
+function renderDevices(devs,sel) {
+    var el=document.getElementById('deviceList');
+    if(!devs.length){el.innerHTML='<p class="text-muted small m-0">No devices found.</p>';return;}
+    el.innerHTML=devs.map(d=>{
+        var chk=sel.includes(d.deviceId)?'checked':'';
+        return '<label class="d-flex align-items-center gap-2 py-1 px-1 rounded" style="cursor:pointer">'+
+            '<input type="checkbox" class="form-check-input" name="selectedDeviceIds" value="'+d.deviceId+'" '+chk+' onchange="toggleDev(this,\''+d.deviceId+'\')">'+
+            '<span class="small">'+d.deviceName+'</span>'+
+            '<span class="text-muted ms-1" style="font-size:.65rem">'+d.deviceType+'</span></label>';
+    }).join('');
+}
+function toggleDev(cb,devId) {
+    if(cb.checked) selectedIds.push(devId);
+    else selectedIds=selectedIds.filter(id=>id!==devId);
+}
+</script>
+}

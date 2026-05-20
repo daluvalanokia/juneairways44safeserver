@@ -1,0 +1,69 @@
+@model EyewaysMergeSafeServer.ViewModels.PortalViewModel
+@{ Layout = null; ViewData["Title"] = "Operator Login"; }
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EyewaysMergeSafeServer — Operator Login</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="~/css/site.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+</head>
+<body class="mss-portal-body d-flex align-items-center justify-content-center min-vh-100">
+<div class="mss-portal-card">
+    <div class="text-center mb-4">
+        <div class="mss-portal-icon mb-3"><i class="bi bi-broadcast-pin"></i></div>
+        <h1 class="h4 fw-bold">EyewaysMergeSafeServer</h1>
+        <p class="text-muted small">Autonomous Merge Zone Control Platform</p>
+    </div>
+
+    @if (!string.IsNullOrEmpty(Model.Error))
+    {
+        <div class="alert alert-danger py-2 small"><i class="bi bi-exclamation-triangle me-1"></i>@Model.Error</div>
+    }
+
+    <form asp-action="Login" asp-controller="Portal" method="post">
+        @Html.AntiForgeryToken()
+        <div class="mb-3">
+            <label class="form-label small text-muted">Interstate / Highway</label>
+            <select name="highwayId" class="form-select" required>
+                <option value="">Select a highway…</option>
+                @foreach (var hw in Model.Highways)
+                {
+                    <option value="@hw.HighwayId" selected="@(Model.SelectedHighwayId == hw.HighwayId ? "selected" : null)">
+                        @hw.Name
+                    </option>
+                }
+            </select>
+        </div>
+        <div class="mb-3">
+            <label class="form-label small text-muted">User ID</label>
+            <input name="userId" type="text" class="form-control font-monospace" placeholder="e.g. admin001" value="@Model.UserId" required />
+        </div>
+        <div class="mb-4 position-relative">
+            <label class="form-label small text-muted">Password / Access Code</label>
+            <input name="password" type="password" id="pwdInput" class="form-control" placeholder="Leave blank if none set" value="@Model.Password" />
+            <button type="button" class="mss-pwd-toggle" onclick="togglePwd()">
+                <i class="bi bi-eye" id="pwdIcon"></i>
+            </button>
+        </div>
+        <button type="submit" class="btn btn-primary w-100">
+            <i class="bi bi-box-arrow-in-right me-1"></i> Sign In
+        </button>
+    </form>
+    <p class="text-center text-muted small mt-4">
+        <i class="bi bi-shield-lock me-1"></i>Demo: use <code>admin001</code> / <code>admin</code> on I20-TX
+    </p>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function togglePwd() {
+    var i = document.getElementById('pwdInput');
+    var icon = document.getElementById('pwdIcon');
+    if (i.type === 'password') { i.type = 'text'; icon.className = 'bi bi-eye-slash'; }
+    else { i.type = 'password'; icon.className = 'bi bi-eye'; }
+}
+</script>
+</body>
+</html>

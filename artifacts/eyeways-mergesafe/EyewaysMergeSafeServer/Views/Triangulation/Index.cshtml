@@ -1,0 +1,152 @@
+@model EyewaysMergeSafeServer.ViewModels.TriangulationViewModel
+@{ ViewData["Title"] = "Triangulation"; ViewBag.Highways = Model.Highways; ViewBag.SelectedHighwayId = Model.SelectedHighwayId; }
+
+<div class="mss-page-header">
+    <div><h2 class="mss-page-title">Triangulation Config</h2><p class="mss-page-sub">3-switch GPS triangulation per merge zone</p></div>
+    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#triModal" onclick="openNew()">
+        <i class="bi bi-plus me-1"></i>Add Config
+    </button>
+</div>
+
+<div class="row g-3">
+@foreach (var c in Model.Configs)
+{
+    <div class="col-lg-6">
+        <div class="mss-card">
+            <div class="mss-card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <div class="fw-bold">Zone: <span class="font-monospace">@c.ZoneId</span></div>
+                        <div class="text-muted small">Highway: @c.HighwayId &nbsp;·&nbsp; Geofence: @c.GeofenceRadius m</div>
+                    </div>
+                    <span class="mss-badge @(c.IsActive ? "mss-badge--active" : "mss-badge--inactive")">@(c.IsActive ? "Active" : "Inactive")</span>
+                </div>
+                <div class="row g-2">
+                    @foreach (var sw in new[]{
+                        (c.Switch1Label,c.Switch1ServerId,c.Switch1Lat,c.Switch1Lon),
+                        (c.Switch2Label,c.Switch2ServerId,c.Switch2Lat,c.Switch2Lon),
+                        (c.Switch3Label,c.Switch3ServerId,c.Switch3Lat,c.Switch3Lon)})
+                    {
+                        <div class="col-4">
+                            <div class="rounded p-2 bg-secondary bg-opacity-25">
+                                <div class="text-primary small fw-semibold">@sw.Item1</div>
+                                <div class="font-monospace" style="font-size:.62rem">@sw.Item2</div>
+                                <div class="text-muted" style="font-size:.6rem">@sw.Item3?.ToString("F4"), @sw.Item4?.ToString("F4")</div>
+                            </div>
+                        </div>
+                    }
+                </div>
+                <div class="d-flex gap-2 mt-3">
+                    <button class="btn btn-outline-secondary btn-sm flex-fill" onclick="openEdit(@c.Id)"
+                            data-bs-toggle="modal" data-bs-target="#triModal">
+                        <i class="bi bi-pencil"></i> Edit
+                    </button>
+                    <form method="post" asp-action="Delete" asp-route-id="@c.Id" asp-route-highwayId="@Model.SelectedHighwayId"
+                          onsubmit="return confirm('Delete this triangulation config?')">
+                        @Html.AntiForgeryToken()
+                        <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+@if (!Model.Configs.Any())
+{ <div class="col-12"><p class="text-muted">No triangulation configs found.</p></div> }
+</div>
+
+<script id="triData" type="application/json">
+@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Configs.Select(c => new {
+    c.Id, c.ZoneId, c.HighwayId, c.GeofenceRadius, c.IsActive,
+    c.Switch1Label, c.Switch1ServerId, c.Switch1Lat, c.Switch1Lon,
+    c.Switch2Label, c.Switch2ServerId, c.Switch2Lat, c.Switch2Lon,
+    c.Switch3Label, c.Switch3ServerId, c.Switch3Lat, c.Switch3Lon
+})))
+</script>
+
+<div class="modal fade" id="triModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content mss-modal">
+      <div class="modal-header border-bottom border-secondary">
+        <h5 class="modal-title" id="triModalTitle">Add Triangulation Config</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <form id="triForm" method="post">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="Id" id="tr_id" value="0" />
+            <div class="row g-2 mb-3">
+                <div class="col-6"><label class="form-label small">Zone ID *</label><input type="text" name="ZoneId" id="tr_zone" class="form-control font-monospace" required /></div>
+                <div class="col-6"><label class="form-label small">Highway ID</label><input type="text" name="HighwayId" id="tr_hw" class="form-control font-monospace" value="@Model.SelectedHighwayId" /></div>
+                <div class="col-6"><label class="form-label small">Geofence Radius (m)</label><input type="number" name="GeofenceRadius" id="tr_gfr" class="form-control" value="500" /></div>
+                <div class="col-6 d-flex align-items-end">
+                    <div class="form-check ms-1">
+                        <input type="checkbox" name="IsActive" id="tr_active" class="form-check-input" value="true" checked />
+                        <label class="form-check-label small" for="tr_active">Active</label>
+                    </div>
+                </div>
+            </div>
+            @for (int n = 1; n <= 3; n++)
+            {
+                var letters = new[]{"A","B","C"};
+                <div class="rounded border border-secondary p-3 mb-2">
+                    <p class="text-primary small fw-semibold mb-2"><i class="bi bi-triangle me-1"></i>Switch @n</p>
+                    <div class="row g-2">
+                        <div class="col-6"><label class="form-label small">Label</label><input type="text" name="Switch@(n)Label" id="tr_s@(n)l" class="form-control" value="Switch @letters[n-1]" /></div>
+                        <div class="col-6"><label class="form-label small">Server ID</label><input type="text" name="Switch@(n)ServerId" id="tr_s@(n)srv" class="form-control font-monospace" /></div>
+                        <div class="col-6"><label class="form-label small">Latitude</label><input type="number" step="any" name="Switch@(n)Lat" id="tr_s@(n)lat" class="form-control" /></div>
+                        <div class="col-6"><label class="form-label small">Longitude</label><input type="number" step="any" name="Switch@(n)Lon" id="tr_s@(n)lon" class="form-control" /></div>
+                    </div>
+                </div>
+            }
+        </form>
+      </div>
+      <div class="modal-footer border-top border-secondary">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary" onclick="document.getElementById('triForm').submit()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+@section Scripts {
+<script>
+var tris = JSON.parse(document.getElementById('triData').textContent);
+function openNew() {
+    document.getElementById('triModalTitle').textContent = 'Add Triangulation Config';
+    document.getElementById('triForm').action = '/Triangulation/Create';
+    document.getElementById('tr_id').value = 0;
+    document.getElementById('tr_zone').value = '';
+    document.getElementById('tr_hw').value = '@Model.SelectedHighwayId';
+    document.getElementById('tr_gfr').value = 500;
+    document.getElementById('tr_active').checked = true;
+    for (var n=1;n<=3;n++) {
+        var letters=['A','B','C'];
+        document.getElementById('tr_s'+n+'l').value='Switch '+letters[n-1];
+        ['srv','lat','lon'].forEach(f => document.getElementById('tr_s'+n+f).value='');
+    }
+}
+function openEdit(id) {
+    var c = tris.find(x => x.id===id); if(!c) return;
+    document.getElementById('triModalTitle').textContent = 'Edit Triangulation Config';
+    document.getElementById('triForm').action = '/Triangulation/Edit';
+    document.getElementById('tr_id').value = c.id;
+    document.getElementById('tr_zone').value = c.zoneId||'';
+    document.getElementById('tr_hw').value = c.highwayId||'';
+    document.getElementById('tr_gfr').value = c.geofenceRadius||500;
+    document.getElementById('tr_active').checked = c.isActive;
+    var sd=[
+        {l:c.switch1Label,srv:c.switch1ServerId,lat:c.switch1Lat,lon:c.switch1Lon},
+        {l:c.switch2Label,srv:c.switch2ServerId,lat:c.switch2Lat,lon:c.switch2Lon},
+        {l:c.switch3Label,srv:c.switch3ServerId,lat:c.switch3Lat,lon:c.switch3Lon},
+    ];
+    sd.forEach(function(s,i){
+        var n=i+1;
+        document.getElementById('tr_s'+n+'l').value=s.l||'';
+        document.getElementById('tr_s'+n+'srv').value=s.srv||'';
+        document.getElementById('tr_s'+n+'lat').value=s.lat||'';
+        document.getElementById('tr_s'+n+'lon').value=s.lon||'';
+    });
+}
+</script>
+}

@@ -1,0 +1,75 @@
+is_global = true
+build_property.TargetFramework = net8.0
+build_property.TargetPlatformMinVersion = 
+build_property.UsingMicrosoftNETSdkWeb = true
+build_property.ProjectTypeGuids = 
+build_property.InvariantGlobalization = 
+build_property.PlatformNeutralAssembly = 
+build_property.EnforceExtendedAnalyzerRules = 
+build_property._SupportedPlatformList = Linux,macOS,Windows
+build_property.RootNamespace = EyewaysMergeSafeServer
+build_property.RootNamespace = EyewaysMergeSafeServer
+build_property.ProjectDir = /home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/
+build_property.EnableComHosting = 
+build_property.EnableGeneratedComInterfaceComImportInterop = 
+build_property.RazorLangVersion = 8.0
+build_property.SupportLocalizedComponentNames = 
+build_property.GenerateRazorMetadataSourceChecksumAttributes = 
+build_property.MSBuildProjectDirectory = /home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer
+build_property._RazorSourceGeneratorDebug = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/Dashboard/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvRGFzaGJvYXJkL0luZGV4LmNzaHRtbA==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/DataInputFormats/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvRGF0YUlucHV0Rm9ybWF0cy9JbmRleC5jc2h0bWw=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/Events/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvRXZlbnRzL0luZGV4LmNzaHRtbA==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/MergeZones/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvTWVyZ2Vab25lcy9JbmRleC5jc2h0bWw=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/Portal/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvUG9ydGFsL0luZGV4LmNzaHRtbA==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/Sensors/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvU2Vuc29ycy9JbmRleC5jc2h0bWw=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/Settings/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvU2V0dGluZ3MvSW5kZXguY3NodG1s
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/Shared/_Layout.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvU2hhcmVkL19MYXlvdXQuY3NodG1s
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/SwitchServers/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvU3dpdGNoU2VydmVycy9JbmRleC5jc2h0bWw=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/Traffic3D/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvVHJhZmZpYzNEL0luZGV4LmNzaHRtbA==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/Triangulation/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvVHJpYW5ndWxhdGlvbi9JbmRleC5jc2h0bWw=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/Users/Index.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvVXNlcnMvSW5kZXguY3NodG1s
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/_ViewImports.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvX1ZpZXdJbXBvcnRzLmNzaHRtbA==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/workspace/artifacts/eyeways-mergesafe/EyewaysMergeSafeServer/Views/_ViewStart.cshtml]
+build_metadata.AdditionalFiles.TargetPath = Vmlld3MvX1ZpZXdTdGFydC5jc2h0bWw=
+build_metadata.AdditionalFiles.CssScope = 

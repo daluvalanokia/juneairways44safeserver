@@ -1,0 +1,67 @@
+@model EyewaysMergeSafeServer.ViewModels.EventsViewModel
+@{ ViewData["Title"] = "Vehicle Events"; ViewBag.Highways = Model.Highways; ViewBag.SelectedHighwayId = Model.SelectedHighwayId; }
+
+<div class="mss-page-header">
+    <div><h2 class="mss-page-title">Vehicle Events</h2><p class="mss-page-sub">Real-time sensor event feed (last 100 records)</p></div>
+    <div class="d-flex gap-2 align-items-center">
+        <form method="get" id="evFilter" class="d-flex gap-2">
+            <input type="hidden" name="highwayId" value="@Model.SelectedHighwayId" />
+            <select name="filterType" class="form-select form-select-sm" onchange="document.getElementById('evFilter').submit()">
+                @foreach (var t in new[]{"all","detection","merge","conflict","speeding","fault"})
+                { <option value="@t" selected="@(Model.FilterType == t ? "selected" : null)">@(t == "all" ? "All Types" : t)</option> }
+            </select>
+        </form>
+        <a href="/Events?highwayId=@Model.SelectedHighwayId&filterType=@Model.FilterType" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </a>
+    </div>
+</div>
+
+<div class="mss-card mb-4">
+    <div class="mss-card-header"><i class="bi bi-lightning me-1"></i> Demo — Inject Event</div>
+    <div class="mss-card-body">
+        <form method="post" asp-action="InjectDemo" asp-controller="Events" class="row g-2 align-items-end">
+            @Html.AntiForgeryToken()
+            <div class="col"><label class="form-label small">Zone ID</label><input type="text" name="zoneId" class="form-control form-control-sm font-monospace" placeholder="I20-Z001" required /></div>
+            <div class="col"><label class="form-label small">Highway ID</label><input type="text" name="highwayId" class="form-control form-control-sm font-monospace" value="@Model.SelectedHighwayId" required /></div>
+            <div class="col"><label class="form-label small">Event Type</label>
+                <select name="eventType" class="form-select form-select-sm">
+                    @foreach (var t in new[]{"detection","merge","conflict","speeding","fault"})
+                    { <option value="@t">@t</option> }
+                </select>
+            </div>
+            <div class="col"><label class="form-label small">Speed (mph)</label><input type="number" name="speedMph" class="form-control form-control-sm" value="65" /></div>
+            <div class="col-auto"><button type="submit" class="btn btn-warning btn-sm"><i class="bi bi-lightning me-1"></i>Inject</button></div>
+        </form>
+    </div>
+</div>
+
+<div class="mss-card">
+    <div class="table-responsive">
+        <table class="table table-dark table-hover table-sm mb-0">
+            <thead>
+                <tr><th>Type</th><th>Zone</th><th>Device</th><th>Vehicle</th><th>Speed</th><th>Coordinates</th><th>Time</th></tr>
+            </thead>
+            <tbody>
+            @foreach (var ev in Model.Events)
+            {
+                var cls = ev.EventType switch {
+                    "detection" => "text-primary", "merge" => "text-success",
+                    "conflict" or "fault" => "text-danger", "speeding" => "text-warning", _ => ""
+                };
+                <tr>
+                    <td><span class="@cls fw-semibold font-monospace" style="font-size:.7rem">@ev.EventType.ToUpper()</span></td>
+                    <td class="font-monospace small text-muted">@ev.ZoneId</td>
+                    <td class="font-monospace small text-muted">@ev.DeviceId</td>
+                    <td class="font-monospace small">@ev.VehicleId</td>
+                    <td class="small">@(ev.SpeedMph.HasValue ? $"{ev.SpeedMph} mph" : "—")</td>
+                    <td class="font-monospace small text-muted">@ev.Latitude?.ToString("F5"), @ev.Longitude?.ToString("F5")</td>
+                    <td class="font-monospace small text-muted">@ev.CreatedDate.ToString("HH:mm:ss")</td>
+                </tr>
+            }
+            @if (!Model.Events.Any())
+            { <tr><td colspan="7" class="text-muted text-center py-4">No events recorded.</td></tr> }
+            </tbody>
+        </table>
+    </div>
+</div>

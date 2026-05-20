@@ -1,0 +1,146 @@
+@model EyewaysMergeSafeServer.ViewModels.SwitchServerViewModel
+@{ ViewData["Title"] = "Switch Servers"; ViewBag.Highways = Model.Highways; ViewBag.SelectedHighwayId = Model.SelectedHighwayId; }
+
+<div class="mss-page-header">
+    <div><h2 class="mss-page-title">Switch Servers</h2><p class="mss-page-sub">Monitor and manage autonomous merge control servers</p></div>
+    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#serverModal" onclick="openNew()">
+        <i class="bi bi-plus me-1"></i>Add Server
+    </button>
+</div>
+
+<div class="row g-3">
+@foreach (var s in Model.Servers)
+{
+    var uptimeH = s.UptimeSeconds / 3600;
+    var uptimeM = (s.UptimeSeconds % 3600) / 60;
+    <div class="col-md-6 col-xl-4">
+        <div class="mss-card">
+            <div class="mss-card-body">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div>
+                        <div class="fw-bold">@s.ServerName</div>
+                        <div class="font-monospace text-muted" style="font-size:.65rem">@s.ServerId</div>
+                    </div>
+                    <span class="mss-badge mss-badge--@s.Status">@s.Status</span>
+                </div>
+                <div class="mss-kv-grid small mb-3">
+                    <span class="text-muted"><i class="bi bi-wifi"></i> IP</span>
+                    <span class="font-monospace">@s.IpAddress:@s.Port</span>
+                    <span class="text-muted"><i class="bi bi-clock"></i> Uptime</span>
+                    <span>@uptimeH h @uptimeM m</span>
+                    <span class="text-muted">Firmware</span>
+                    <span>@(s.FirmwareVersion ?? "—")</span>
+                </div>
+                <div class="mb-1 small d-flex justify-content-between"><span class="text-muted">CPU</span><span>@s.CpuPercent%</span></div>
+                <div class="progress mb-2" style="height:4px">
+                    <div class="progress-bar bg-primary" style="width:@s.CpuPercent%"></div>
+                </div>
+                <div class="mb-1 small d-flex justify-content-between"><span class="text-muted">RAM</span><span>@s.MemoryPercent%</span></div>
+                <div class="progress mb-3" style="height:4px">
+                    <div class="progress-bar bg-info" style="width:@s.MemoryPercent%"></div>
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary btn-sm flex-fill"
+                        onclick="openEdit(@s.Id,'@s.ServerName','@s.ServerId','@(s.ZoneId ?? "")','@s.HighwayId','@(s.IpAddress ?? "")',@s.Port,'@s.Status','@(s.FirmwareVersion ?? "")')"
+                        data-bs-toggle="modal" data-bs-target="#serverModal">
+                        <i class="bi bi-pencil"></i> Edit
+                    </button>
+                    <form method="post" asp-action="Delete" asp-route-id="@s.Id" asp-route-highwayId="@Model.SelectedHighwayId"
+                          onsubmit="return confirm('Delete @s.ServerName?')">
+                        @Html.AntiForgeryToken()
+                        <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+@if (!Model.Servers.Any())
+{ <div class="col-12"><p class="text-muted">No switch servers found.</p></div> }
+</div>
+
+<div class="modal fade" id="serverModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content mss-modal">
+      <div class="modal-header border-bottom border-secondary">
+        <h5 class="modal-title" id="serverModalTitle">Add Switch Server</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <form id="serverForm" method="post">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="Id" id="s_id" value="0" />
+            <div class="row g-2">
+                <div class="col-12"><label class="form-label small">Server Name *</label><input type="text" name="ServerName" id="s_name" class="form-control" required /></div>
+                <div class="col-6"><label class="form-label small">Server ID *</label><input type="text" name="ServerId" id="s_sid" class="form-control font-monospace" required /></div>
+                <div class="col-6"><label class="form-label small">Zone ID</label><input type="text" name="ZoneId" id="s_zone" class="form-control font-monospace" /></div>
+                <div class="col-6"><label class="form-label small">Highway ID</label><input type="text" name="HighwayId" id="s_hw" class="form-control font-monospace" value="@Model.SelectedHighwayId" /></div>
+                <div class="col-12"><label class="form-label small">IP Address</label><input type="text" name="IpAddress" id="s_ip" class="form-control font-monospace" placeholder="192.168.1.1" /></div>
+                <div class="col-6"><label class="form-label small">Port</label><input type="number" name="Port" id="s_port" class="form-control" value="8080" /></div>
+                <div class="col-6"><label class="form-label small">Firmware Version</label><input type="text" name="FirmwareVersion" id="s_fw" class="form-control" /></div>
+                <div class="col-6"><label class="form-label small">Status</label>
+                    <select name="Status" id="s_status" class="form-select">
+                        @foreach (var st in new[]{"online","offline","degraded","fault"})
+                        { <option value="@st">@st</option> }
+                    </select>
+                </div>
+            </div>
+        </form>
+      </div>
+      <div class="modal-footer border-top border-secondary d-flex justify-content-between">
+        <button class="btn btn-outline-info btn-sm" type="button" onclick="startBarcodeScan('server')">
+            <i class="bi bi-upc-scan me-1"></i>Scan QR / Barcode
+        </button>
+        <div>
+            <button class="btn btn-secondary me-2" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary" onclick="document.getElementById('serverForm').submit()">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+@section Scripts {
+<script>
+function startBarcodeScan(target) {
+    var result = prompt('Barcode / QR scan (paste JSON or server ID string):');
+    if (!result) return;
+    try {
+        var obj = JSON.parse(result);
+        if (target === 'server') {
+            if (obj.server_id)  document.getElementById('s_sid').value = obj.server_id;
+            if (obj.ip_address) document.getElementById('s_ip').value = obj.ip_address;
+            if (obj.port)       document.getElementById('s_port').value = obj.port;
+            if (obj.zone_id)    document.getElementById('s_zone').value = obj.zone_id;
+            if (obj.firmware)   document.getElementById('s_fw').value = obj.firmware;
+        }
+    } catch(e) {
+        var cleaned = result.trim();
+        if (target === 'server') document.getElementById('s_sid').value = cleaned;
+    }
+}
+
+function openNew() {
+    document.getElementById('serverModalTitle').textContent = 'Add Switch Server';
+    document.getElementById('serverForm').action = '/SwitchServers/Create';
+    ['s_id','s_name','s_sid','s_zone','s_ip','s_fw'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('s_id').value = 0;
+    document.getElementById('s_port').value = 8080;
+    document.getElementById('s_status').value = 'online';
+    document.getElementById('s_hw').value = '@Model.SelectedHighwayId';
+}
+function openEdit(id,name,sid,zone,hw,ip,port,status,fw) {
+    document.getElementById('serverModalTitle').textContent = 'Edit Switch Server';
+    document.getElementById('serverForm').action = '/SwitchServers/Edit';
+    document.getElementById('s_id').value = id;
+    document.getElementById('s_name').value = name;
+    document.getElementById('s_sid').value = sid;
+    document.getElementById('s_zone').value = zone;
+    document.getElementById('s_hw').value = hw;
+    document.getElementById('s_ip').value = ip;
+    document.getElementById('s_port').value = port;
+    document.getElementById('s_status').value = status;
+    document.getElementById('s_fw').value = fw;
+}
+</script>
+}

@@ -1,0 +1,157 @@
+@model EyewaysMergeSafeServer.ViewModels.Traffic3DViewModel
+@{ ViewData["Title"] = "3D Traffic"; ViewBag.Highways = Model.Highways; ViewBag.SelectedHighwayId = Model.SelectedHighwayId; }
+@{
+    var zones   = Model.Zones;
+    var sensors = Model.Sensors;
+}
+
+<div class="mss-page-header">
+    <div><h2 class="mss-page-title">3D Traffic Visualization</h2><p class="mss-page-sub">Live highway map with sensor overlays and simulated 3D scene</p></div>
+    <div class="d-flex gap-2">
+        <button id="btnMap" class="btn btn-primary btn-sm" onclick="setMode('map')"><i class="bi bi-map me-1"></i>Map</button>
+        <button id="btn3d" class="btn btn-outline-secondary btn-sm" onclick="setMode('3d')"><i class="bi bi-badge-3d me-1"></i>3D Scene</button>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-9">
+        <div id="mapPanel" class="mss-card">
+            <div class="mss-card-header d-flex justify-content-between">
+                <span><i class="bi bi-map me-1"></i> Highway Map</span>
+                <span class="text-muted small" id="mapRefreshTimer">Refreshes in 5:00</span>
+            </div>
+            <div id="leafletMap" style="height:500px;border-radius:0 0 12px 12px;"></div>
+        </div>
+
+        <div id="canvas3dPanel" class="mss-card" style="display:none">
+            <div class="mss-card-header"><i class="bi bi-badge-3d me-1"></i> Immersive 3D Traffic Scene</div>
+            <canvas id="canvas3d" style="width:100%;height:500px;border-radius:0 0 12px 12px;background:#0a0f1a;display:block"></canvas>
+        </div>
+    </div>
+
+    <div class="col-lg-3">
+        <div class="mss-card mb-3">
+            <div class="mss-card-header"><i class="bi bi-info-circle me-1"></i> Zones</div>
+            <div class="mss-card-body p-0" style="max-height:200px;overflow-y:auto">
+                @foreach (var z in zones)
+                {
+                    <div class="mss-list-item d-flex justify-content-between align-items-center">
+                        <span class="small">@z.ZoneName</span>
+                        <span class="mss-badge mss-badge--@z.Status">@z.Status</span>
+                    </div>
+                }
+                @if (!zones.Any())
+                { <p class="text-muted small p-2">No zones.</p> }
+            </div>
+        </div>
+
+        <div class="mss-card mb-3">
+            <div class="mss-card-header"><i class="bi bi-sliders me-1"></i> Controls</div>
+            <div class="mss-card-body">
+                <label class="form-label small">Speed Multiplier</label>
+                <input type="range" class="form-range mb-2" id="speedMult" min="0.5" max="5" step="0.5" value="1" oninput="setSpeedMult(this.value)" />
+                <label class="form-label small">Vehicle Density</label>
+                <input type="range" class="form-range mb-2" id="density" min="1" max="30" step="1" value="10" oninput="setDensity(this.value)" />
+            </div>
+        </div>
+
+        <div class="mss-card">
+            <div class="mss-card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-activity me-1"></i> Live Feed</span>
+                <span class="mss-badge mss-badge--active" style="animation:pulse 1s infinite">LIVE</span>
+            </div>
+            <div class="mss-card-body p-0" id="trafficFeed" style="max-height:280px;overflow-y:auto">
+                <p class="text-muted small p-2">Waiting for events…</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+var sensorData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(sensors.Where(s => s.Latitude.HasValue && s.Longitude.HasValue).Select(s => new { s.DeviceName, s.DeviceType, s.Status, lat = s.Latitude, lon = s.Longitude })));
+var zoneData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(zones.Where(z => z.Latitude.HasValue && z.Longitude.HasValue).Select(z => new { z.ZoneName, z.Status, lat = z.Latitude, lon = z.Longitude, r = z.GeofenceRadius })));
+
+var mapCenter = zoneData.length > 0 ? [zoneData[0].lat, zoneData[0].lon] : [32.7767, -96.7970];
+var map = L.map('leafletMap').setView(mapCenter, 10);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {attribution:'© OSM, CARTO'}).addTo(map);
+
+sensorData.forEach(function(s) {
+    var color = {camera:'#3b82f6',lidar:'#a855f7',radar:'#f59e0b','vehicle tag reader':'#22c55e','signal receiver':'#64748b'}[s.deviceType] || '#fff';
+    L.circleMarker([s.lat, s.lon], {radius:6, color:color, fillColor:color, fillOpacity:0.8})
+        .bindPopup('<b>'+s.deviceName+'</b><br>'+s.deviceType+'<br>Status: '+s.status).addTo(map);
+});
+zoneData.forEach(function(z) {
+    var c = z.status==='fault'?'#ef4444':'#22c55e';
+    L.circle([z.lat,z.lon],{radius:z.r,color:c,fillColor:c,fillOpacity:0.1}).bindPopup('<b>'+z.zoneName+'</b>').addTo(map);
+    L.circleMarker([z.lat,z.lon],{radius:8,color:c,fillColor:c,fillOpacity:0.9}).bindPopup('<b>'+z.zoneName+'</b><br>'+z.status).addTo(map);
+});
+
+function setMode(m) {
+    document.getElementById('mapPanel').style.display = m==='map' ? '' : 'none';
+    document.getElementById('canvas3dPanel').style.display = m==='3d' ? '' : 'none';
+    document.getElementById('btnMap').className = m==='map' ? 'btn btn-primary btn-sm' : 'btn btn-outline-secondary btn-sm';
+    document.getElementById('btn3d').className = m==='3d' ? 'btn btn-primary btn-sm' : 'btn btn-outline-secondary btn-sm';
+    if (m==='3d') startCanvas3D();
+}
+
+var canvas, ctx, vehicles=[], running=false, speedMult=1, density=10;
+function setSpeedMult(v) { speedMult=parseFloat(v); }
+function setDensity(v) { density=parseInt(v); }
+function startCanvas3D() {
+    canvas = document.getElementById('canvas3d');
+    ctx = canvas.getContext('2d');
+    canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight;
+    running = true; vehicles = [];
+    for (var i=0;i<density;i++) spawnVehicle();
+    requestAnimationFrame(renderFrame);
+}
+function spawnVehicle() {
+    var types=['sedan','truck','suv','motorcycle'];
+    var colors=['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7'];
+    vehicles.push({
+        x: Math.random()*canvas.width, y: canvas.height*0.3+Math.random()*canvas.height*0.4,
+        speed: (30+Math.random()*50)*speedMult, color: colors[Math.floor(Math.random()*colors.length)],
+        type: types[Math.floor(Math.random()*types.length)], w:20, h:10
+    });
+}
+function renderFrame() {
+    if (!running) return;
+    ctx.fillStyle='rgba(10,15,26,0.4)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.strokeStyle='#1e293b'; ctx.lineWidth=2;
+    for (var l=0;l<4;l++) {
+        var y=canvas.height*0.25+l*(canvas.height*0.15);
+        ctx.setLineDash([30,15]); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    vehicles.forEach(function(v){
+        v.x += v.speed*speedMult*0.016;
+        if (v.x>canvas.width+30) { v.x=-30; addFeedEvent(v); }
+        ctx.fillStyle=v.color; ctx.fillRect(v.x-v.w/2,v.y-v.h/2,v.w,v.h);
+        ctx.fillStyle='rgba(255,255,255,0.4)'; ctx.fillRect(v.x-v.w/2+2,v.y-v.h/2+2,v.w-4,3);
+    });
+    while(vehicles.length<density) spawnVehicle();
+    while(vehicles.length>density) vehicles.pop();
+    requestAnimationFrame(renderFrame);
+}
+var feedItems=[];
+function addFeedEvent(v) {
+    feedItems.unshift({type:'detection',vehicle:v.type,speed:Math.round(v.speed*speedMult),time:new Date().toLocaleTimeString()});
+    if(feedItems.length>20) feedItems.pop();
+    var feed=document.getElementById('trafficFeed');
+    feed.innerHTML=feedItems.map(function(f){
+        return '<div class="mss-list-item"><span class="text-primary small fw-bold me-2">DETECTION</span><span class="small">'+f.vehicle+'</span><span class="text-muted small ms-2">'+f.speed+' mph</span><span class="ms-auto font-monospace text-muted" style="font-size:.65rem">'+f.time+'</span></div>';
+    }).join('');
+}
+
+var countdown=300;
+setInterval(function(){
+    countdown--;
+    if(countdown<=0) countdown=300;
+    var m=Math.floor(countdown/60), s=countdown%60;
+    document.getElementById('mapRefreshTimer').textContent='Refreshes in '+m+':'+(s<10?'0':'')+s;
+},1000);
+</script>
+}

@@ -1,0 +1,212 @@
+@model EyewaysMergeSafeServer.ViewModels.DataInputFormatsViewModel
+@{ ViewData["Title"] = "Data Input Formats"; ViewBag.Highways = null; }
+@{
+    var tabDefs = new[]{
+        ("physical","Physical Sensors","text-primary"),
+        ("satellite","Satellite / GPS","text-success"),
+        ("telecom","Telecom / V2X","text-warning"),
+        ("tracker","Tag Trackers","text-purple"),
+    };
+    var allConfigs = Model.PhysicalConfigs.Concat(Model.SatelliteConfigs).Concat(Model.TelecomConfigs).Concat(Model.TrackerConfigs).ToList();
+    var commonFields = new[]{"vehicle_id","timestamp","speed_mph","latitude","longitude","direction","lane","vehicle_type","event_type","zone_id","highway_id","signal_strength","altitude_ft","heading"};
+}
+
+<div class="mss-page-header">
+    <div><h2 class="mss-page-title">Data Input Formats</h2><p class="mss-page-sub">Configure sensor telemetry ingestion formats and generate test payloads</p></div>
+    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#fmtModal" onclick="openNew('@Model.ActiveTab')">
+        <i class="bi bi-plus me-1"></i>Add Format
+    </button>
+</div>
+
+<ul class="nav nav-tabs mb-3">
+@foreach (var (type,label,clr) in tabDefs)
+{
+    <li class="nav-item">
+        <a class="nav-link @(Model.ActiveTab == type ? "active" : "") @clr"
+           href="/DataInputFormats?activeTab=@type">@label</a>
+    </li>
+}
+</ul>
+
+@{
+    var shown = Model.ActiveTab switch {
+        "satellite" => Model.SatelliteConfigs,
+        "telecom"   => Model.TelecomConfigs,
+        "tracker"   => Model.TrackerConfigs,
+        _           => Model.PhysicalConfigs
+    };
+    var tabClr = tabDefs.First(t => t.Item1 == Model.ActiveTab).Item3;
+}
+
+<div class="row g-3 mb-4">
+@foreach (var c in shown)
+{
+    var fields = c.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>();
+    <div class="col-md-6 col-xl-4">
+        <div class="mss-card">
+            <div class="mss-card-body">
+                <div class="fw-bold small mb-1">@c.FormatName</div>
+                <div class="font-monospace text-muted mb-1" style="font-size:.62rem">@c.SourceId</div>
+                @if (!string.IsNullOrEmpty(c.InputSource))
+                { <div class="font-monospace text-primary mb-1" style="font-size:.62rem">→ @c.InputSource</div> }
+                <div class="text-muted" style="font-size:.72rem">@c.Description</div>
+                <div class="d-flex flex-wrap gap-1 mt-2">
+                    @foreach (var f in fields.Take(4))
+                    { <span class="badge bg-secondary font-monospace" style="font-size:.6rem">@f</span> }
+                    @if (fields.Length > 4)
+                    { <span class="badge bg-secondary font-monospace" style="font-size:.6rem">+@(fields.Length-4)</span> }
+                </div>
+                <div class="d-flex gap-2 mt-3">
+                    <form method="post" asp-action="GeneratePayload" class="flex-fill">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="configId" value="@c.Id" />
+                        <button type="submit" class="btn btn-outline-success btn-sm w-100">
+                            <i class="bi bi-play me-1"></i>Generate Payload
+                        </button>
+                    </form>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="openEditFmt(@c.Id)" data-bs-toggle="modal" data-bs-target="#fmtModal">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <form method="post" asp-action="Delete" asp-route-id="@c.Id" asp-route-activeTab="@Model.ActiveTab"
+                          onsubmit="return confirm('Delete @c.FormatName?')">
+                        @Html.AntiForgeryToken()
+                        <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+@if (!shown.Any())
+{ <div class="col-12"><p class="text-muted">No formats configured for this source type.</p></div> }
+</div>
+
+@if (Model.SavedPayloads.Any(p => p.SourceType == Model.ActiveTab))
+{
+    <div class="mss-card">
+        <div class="mss-card-header"><i class="bi bi-archive me-1"></i> Saved Payloads</div>
+        <div class="mss-card-body p-0">
+        @foreach (var p in Model.SavedPayloads.Where(p => p.SourceType == Model.ActiveTab))
+        {
+            <div class="mss-list-item">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <span class="@(p.IsValid ? "text-success" : "text-danger") me-2"><i class="bi @(p.IsValid ? "bi-check-circle" : "bi-x-circle")"></i></span>
+                        <span class="small fw-semibold">@p.Label</span>
+                        <span class="text-muted small ms-2">@p.CreatedDate.ToString("yyyy-MM-dd HH:mm")</span>
+                    </div>
+                    <div class="d-flex gap-1">
+                        <button class="btn btn-outline-secondary btn-sm" onclick="copyPayload(@p.Id)"><i class="bi bi-clipboard"></i></button>
+                        <form method="post" asp-action="DeletePayload" asp-route-id="@p.Id" asp-route-activeTab="@Model.ActiveTab" style="display:inline">
+                            @Html.AntiForgeryToken()
+                            <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                        </form>
+                    </div>
+                </div>
+                <pre class="mss-payload-code mt-2 mb-0" id="pl_@p.Id" style="max-height:8rem;overflow-y:auto;font-size:.65rem">@p.Payload</pre>
+            </div>
+        }
+        </div>
+    </div>
+}
+
+<script id="fmtData" type="application/json">
+@Html.Raw(System.Text.Json.JsonSerializer.Serialize(allConfigs.Select(c => new {
+    c.Id, c.SourceType, c.FormatName, c.SourceId, c.InputSource, c.Description,
+    enabledFields = c.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>()
+})))
+</script>
+
+<div class="modal fade" id="fmtModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content mss-modal">
+      <div class="modal-header border-bottom border-secondary">
+        <h5 class="modal-title" id="fmtModalTitle">Add Format Config</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <form id="fmtForm" method="post">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="Id" id="fm_id" value="0" />
+            <div class="row g-2 mb-3">
+                <div class="col-12"><label class="form-label small">Format Name *</label><input type="text" name="FormatName" id="fm_name" class="form-control" required /></div>
+                <div class="col-6"><label class="form-label small">Source ID</label><input type="text" name="SourceId" id="fm_sid" class="form-control font-monospace" /></div>
+                <div class="col-6"><label class="form-label small">Source Type</label>
+                    <select name="SourceType" id="fm_type" class="form-select">
+                        @foreach (var (type,label,_) in tabDefs)
+                        { <option value="@type">@label</option> }
+                    </select>
+                </div>
+                <div class="col-12"><label class="form-label small">Input Source (URL / stream)</label><input type="text" name="InputSource" id="fm_src" class="form-control" /></div>
+                <div class="col-12"><label class="form-label small">Description</label><input type="text" name="Description" id="fm_desc" class="form-control" /></div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label small">Common Fields</label>
+                <div class="row g-1 overflow-auto" style="max-height:12rem">
+                @foreach (var f in commonFields)
+                {
+                    <div class="col-6 col-md-4">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input fm-field" name="enabledFields" value="@f" id="ff_@f" />
+                            <label class="form-check-label small font-monospace" for="ff_@f">@f</label>
+                        </div>
+                    </div>
+                }
+                </div>
+            </div>
+            <div class="mb-2">
+                <label class="form-label small">Custom Fields</label>
+                <div id="customFields"></div>
+                <button type="button" class="btn btn-outline-secondary btn-sm mt-1" onclick="addCustomField()">
+                    <i class="bi bi-plus me-1"></i>Add Custom Field
+                </button>
+            </div>
+        </form>
+      </div>
+      <div class="modal-footer border-top border-secondary">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary" onclick="document.getElementById('fmtForm').submit()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+@section Scripts {
+<script>
+var fmts = JSON.parse(document.getElementById('fmtData').textContent);
+function openNew(tab) {
+    document.getElementById('fmtModalTitle').textContent='Add Format Config';
+    document.getElementById('fmtForm').action='/DataInputFormats/Create';
+    document.getElementById('fm_id').value=0;
+    ['fm_name','fm_sid','fm_src','fm_desc'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('fm_type').value=tab;
+    document.querySelectorAll('.fm-field').forEach(cb=>cb.checked=false);
+    document.getElementById('customFields').innerHTML='';
+}
+function openEditFmt(id) {
+    var c=fmts.find(x=>x.id===id); if(!c) return;
+    document.getElementById('fmtModalTitle').textContent='Edit Format Config';
+    document.getElementById('fmtForm').action='/DataInputFormats/Edit';
+    document.getElementById('fm_id').value=c.id;
+    document.getElementById('fm_name').value=c.formatName||'';
+    document.getElementById('fm_sid').value=c.sourceId||'';
+    document.getElementById('fm_type').value=c.sourceType||'physical';
+    document.getElementById('fm_src').value=c.inputSource||'';
+    document.getElementById('fm_desc').value=c.description||'';
+    document.querySelectorAll('.fm-field').forEach(cb=>cb.checked=(c.enabledFields||[]).includes(cb.value));
+    document.getElementById('customFields').innerHTML='';
+}
+function addCustomField() {
+    var div=document.createElement('div');
+    div.className='row g-1 mb-1 align-items-center';
+    div.innerHTML='<div class="col-6"><input type="text" name="customFieldNames" class="form-control form-control-sm font-monospace" placeholder="field_name" /></div>'+
+        '<div class="col-5"><select name="customFieldTypes" class="form-select form-select-sm"><option>string</option><option>number</option><option>boolean</option><option>array</option><option>object</option></select></div>'+
+        '<div class="col-1"><button type="button" class="btn btn-outline-danger btn-sm" onclick="this.closest(\'.row\').remove()"><i class="bi bi-x"></i></button></div>';
+    document.getElementById('customFields').appendChild(div);
+}
+function copyPayload(id) {
+    var pre=document.getElementById('pl_'+id);
+    if(pre) navigator.clipboard.writeText(pre.textContent).then(()=>alert('Payload copied!'));
+}
+</script>
+}
