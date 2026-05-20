@@ -131,8 +131,12 @@
         <!-- Live feed -->
         <div class="mss-card">
             <div class="mss-card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-activity me-1"></i> <span id="feedTitle">Live Feed</span></span>
-                <span class="mss-badge mss-badge--active" style="animation:pulse 1s infinite">LIVE</span>
+                <span><i class="bi bi-activity me-1"></i> <span id="feedTitle">Live Feed</span>
+                    <span id="simModeBadge" style="display:none;font-size:.58rem;vertical-align:middle;margin-left:4px;background:#f59e0b;color:#000;padding:1px 5px;border-radius:4px;font-weight:700">
+                        <i class="bi bi-cpu me-1"></i>SIM
+                    </span>
+                </span>
+                <span id="livePulseBadge" class="mss-badge mss-badge--active" style="animation:pulse 1s infinite">LIVE</span>
             </div>
             <div class="mss-card-body p-0" id="trafficFeed" style="max-height:260px;overflow-y:auto">
                 <p class="text-muted small p-2">Switch to 3D Scene to start feed…</p>
@@ -366,12 +370,35 @@ function updateSceneZoneLabel(zoneId) {
 var animationPaused = false;
 function toggleAnimation() {
     animationPaused = !animationPaused;
-    var btn = document.getElementById('btnAnimToggle');
+    var btn       = document.getElementById('btnAnimToggle');
+    var feedTitle = document.getElementById('feedTitle');
+    var simBadge  = document.getElementById('simModeBadge');
+    var liveBadge = document.getElementById('livePulseBadge');
     if (!btn) return;
     btn.innerHTML = animationPaused
         ? '<i class="bi bi-play-fill me-1"></i>Resume'
         : '<i class="bi bi-pause-fill me-1"></i>Pause';
     btn.className = animationPaused ? 'btn btn-success btn-sm' : 'btn btn-outline-warning btn-sm';
+
+    if (animationPaused) {
+        // ── PAUSED: stop live feed, start simulation-only polling ────────
+        if (liveEventInterval) { clearInterval(liveEventInterval); liveEventInterval = null; }
+        lastSimPollTime = new Date(Date.now() - 10000).toISOString();
+        simEventInterval = setInterval(pollSimulationEvents, 3000);
+        pollSimulationEvents();
+        if (feedTitle) { feedTitle.textContent = 'Simulation Feed'; feedTitle.style.color = '#f59e0b'; }
+        if (simBadge)  simBadge.style.display = '';
+        if (liveBadge) { liveBadge.textContent = 'SIM ONLY'; liveBadge.style.background = '#92400e'; }
+    } else {
+        // ── RESUMED: stop sim polling, restart live feed ──────────────────
+        if (simEventInterval) { clearInterval(simEventInterval); simEventInterval = null; }
+        liveEventInterval = setInterval(pollLiveEvents, 3000);
+        lastPollTime = new Date(Date.now() - 10000).toISOString();
+        pollLiveEvents();
+        if (feedTitle) { feedTitle.textContent = 'Live Feed'; feedTitle.style.color = ''; }
+        if (simBadge)  simBadge.style.display = 'none';
+        if (liveBadge) { liveBadge.textContent = 'LIVE'; liveBadge.style.background = ''; }
+    }
 }
 
 // ── Mode toggle ──────────────────────────────────────────────────────────────
@@ -502,22 +529,23 @@ function initScene3D() {
 
 // ── Vehicle spawning ─────────────────────────────────────────────────────────
 
-function spawnV(vSpec, fromEvent, zoneId) {
+function spawnV(vSpec, fromEvent, zoneId, isSimulation) {
     if (!vSpec) vSpec = vehicleGetRandom(null);
     var group = vehicleBuildMesh(vSpec);
     var lane  = [-4, -2, 2, 4][Math.floor(Math.random() * 4)];
     group.position.set(lane, 0, (Math.random() * 80) - 40);
     if (lane > 0) group.rotation.y = Math.PI;
     group.userData = {
-        speed:     (25 + Math.random() * 55) * 0.012,
-        dir:       lane < 0 ? 1 : -1,
-        lane:      lane,
-        type:      vSpec.type,
-        make:      vSpec.make,
-        model:     vSpec.model,
-        icon:      vSpec.icon,
-        zoneId:    zoneId || '',
-        fromEvent: fromEvent || false
+        speed:        (25 + Math.random() * 55) * 0.012,
+        dir:          lane < 0 ? 1 : -1,
+        lane:         lane,
+        type:         vSpec.type,
+        make:         vSpec.make,
+        model:        vSpec.model,
+        icon:         vSpec.icon,
+        zoneId:       zoneId || '',
+        fromEvent:    fromEvent || false,
+        isSimulation: isSimulation || false
     };
     scene3d.add(group);
     vehicles3d.push(group);
@@ -529,32 +557,36 @@ function spawnV(vSpec, fromEvent, zoneId) {
 function animate3d() {
     requestAnimationFrame(animate3d);
 
+    vehicles3d.forEach(function(v) {
+        // When paused: only simulation vehicles keep moving
+        var canMove = !animationPaused || v.userData.isSimulation;
+        if (!canMove) return;
+
+        // When zone filtered: dim ambient vehicles not from that zone
+        if (selectedZoneId && !v.userData.fromEvent) {
+            v.traverse(function(c) {
+                if (c.isMesh && c.material && c.material.color) {
+                    c.material.transparent = true;
+                    c.material.opacity     = 0.25;
+                }
+            });
+        } else if (!v.userData._opacityReset) {
+            v.userData._opacityReset = true;
+            v.traverse(function(c) {
+                if (c.isMesh && c.material) {
+                    c.material.transparent = false;
+                    c.material.opacity     = 1;
+                }
+            });
+        }
+
+        v.position.z += v.userData.dir * v.userData.speed * speedMult;
+        if (v.position.z >  42) { v.position.z = -42; pushFeed3d(v, false, null, v.userData.isSimulation); }
+        if (v.position.z < -42) { v.position.z =  42; pushFeed3d(v, false, null, v.userData.isSimulation); }
+    });
+
+    // Maintain ambient density only when live (not paused)
     if (!animationPaused) {
-        vehicles3d.forEach(function(v) {
-            // When zone filtered: dim ambient vehicles not from that zone
-            if (selectedZoneId && !v.userData.fromEvent) {
-                v.traverse(function(c) {
-                    if (c.isMesh && c.material && c.material.color) {
-                        c.material.transparent = true;
-                        c.material.opacity     = 0.25;
-                    }
-                });
-            } else if (!v.userData._opacityReset) {
-                v.userData._opacityReset = true;
-                v.traverse(function(c) {
-                    if (c.isMesh && c.material) {
-                        c.material.transparent = false;
-                        c.material.opacity     = 1;
-                    }
-                });
-            }
-
-            v.position.z += v.userData.dir * v.userData.speed * speedMult;
-            if (v.position.z >  42) { v.position.z = -42; pushFeed3d(v, false); }
-            if (v.position.z < -42) { v.position.z =  42; pushFeed3d(v, false); }
-        });
-
-        // Maintain ambient density
         var ambient = vehicles3d.filter(function(v) { return !v.userData.fromEvent; });
         while (ambient.length < density) {
             var s = spawnV(null, false, '');
@@ -569,11 +601,14 @@ function animate3d() {
 
 // ── Live event polling ───────────────────────────────────────────────────────
 
-var lastPollTime = new Date().toISOString();
-var feedItems3d  = [];
+var lastPollTime    = new Date().toISOString();
+var lastSimPollTime = new Date().toISOString();
+var feedItems3d     = [];
+var liveEventInterval = null;
+var simEventInterval  = null;
 
 function startEventPolling() {
-    setInterval(pollLiveEvents, 3000);
+    liveEventInterval = setInterval(pollLiveEvents, 3000);
 }
 
 function pollLiveEvents() {
@@ -588,11 +623,34 @@ function pollLiveEvents() {
             lastPollTime = data.serverTime;
             data.events.forEach(function(ev) {
                 var spec = vehicleGetRandom(ev.vehicleType || null);
-                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '');
+                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', false);
                 if (ev.speedMph) grp.userData.speed = ev.speedMph * 0.012;
                 // Reset opacity so event vehicles are always bright
                 grp.userData._opacityReset = false;
-                pushFeed3d(grp, true, ev);
+                pushFeed3d(grp, true, ev, false);
+            });
+        })
+        .catch(function() {});
+}
+
+// ── Simulation-only polling (used when paused) ───────────────────────────────
+
+function pollSimulationEvents() {
+    var url = '/api/events/simulation?highwayId=' + encodeURIComponent(highwayId) +
+              '&since=' + encodeURIComponent(lastSimPollTime);
+    if (selectedZoneId) url += '&zoneId=' + encodeURIComponent(selectedZoneId);
+
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.events || !data.events.length) return;
+            lastSimPollTime = data.serverTime;
+            data.events.forEach(function(ev) {
+                var spec = vehicleGetRandom(ev.vehicleType || null);
+                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', true);
+                if (ev.speedMph) grp.userData.speed = ev.speedMph * 0.012;
+                grp.userData._opacityReset = false;
+                pushFeed3d(grp, true, ev, true);
             });
         })
         .catch(function() {});
@@ -600,19 +658,20 @@ function pollLiveEvents() {
 
 // ── Feed rendering ───────────────────────────────────────────────────────────
 
-function pushFeed3d(v, fromInput, ev) {
+function pushFeed3d(v, fromInput, ev, isSimulation) {
     var evType = (ev && ev.eventType) ? ev.eventType : 'detection';
     var spd    = (ev && ev.speedMph)  ? Math.round(ev.speedMph) : Math.round((25 + Math.random() * 55) * speedMult);
     feedItems3d.unshift({
-        icon:      v.userData.icon  || '🚗',
-        make:      v.userData.make  || '',
-        model:     v.userData.model || '',
-        eventType: evType,
-        spd:       spd,
-        dir:       v.userData.lane < 0 ? 'SB' : 'NB',
-        zoneId:    v.userData.zoneId || '',
-        time:      new Date().toLocaleTimeString(),
-        fromInput: fromInput || false
+        icon:         v.userData.icon  || '🚗',
+        make:         v.userData.make  || '',
+        model:        v.userData.model || '',
+        eventType:    evType,
+        spd:          spd,
+        dir:          v.userData.lane < 0 ? 'SB' : 'NB',
+        zoneId:       v.userData.zoneId || '',
+        time:         new Date().toLocaleTimeString(),
+        fromInput:    fromInput || false,
+        isSimulation: isSimulation || v.userData.isSimulation || false
     });
     if (feedItems3d.length > 30) feedItems3d.length = 30;
     renderFeed3d();
@@ -622,9 +681,11 @@ function renderFeed3d() {
     var feed = document.getElementById('trafficFeed');
     feed.innerHTML = feedItems3d.map(function(f) {
         var ec = FEED_EVENT_COLORS[f.eventType] || '#64748b';
-        var inputTag = f.fromInput
-            ? '<span class="badge bg-warning text-dark ms-1" style="font-size:.58rem;vertical-align:middle">DATA INPUT</span>'
-            : '';
+        var inputTag = f.isSimulation
+            ? '<span class="badge ms-1" style="font-size:.58rem;vertical-align:middle;background:#f59e0b;color:#000;font-weight:700"><i class="bi bi-cpu me-1"></i>SIM</span>'
+            : (f.fromInput
+                ? '<span class="badge bg-warning text-dark ms-1" style="font-size:.58rem;vertical-align:middle">DATA INPUT</span>'
+                : '');
         // Show zone indicator when showing all zones
         var zoneTag = (!selectedZoneId && f.zoneId)
             ? '<span class="badge bg-secondary ms-1" style="font-size:.58rem;vertical-align:middle">' + f.zoneId + '</span>'

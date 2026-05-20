@@ -84,6 +84,48 @@ public class ApiController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Simulation-only vehicle events (VehicleId starts with "SIM-").
+    /// Used by Traffic3D when paused — shows only simulator-generated data.
+    /// </summary>
+    [HttpGet("events/simulation")]
+    public async Task<IActionResult> SimulationEvents(string? highwayId, string? zoneId, string? since)
+    {
+        DateTime cutoff;
+        if (string.IsNullOrEmpty(since) ||
+            !DateTime.TryParse(since, null, System.Globalization.DateTimeStyles.RoundtripKind, out cutoff))
+        {
+            cutoff = DateTime.UtcNow.AddSeconds(-30);
+        }
+
+        var events = await _db.VehicleEvents
+            .AsNoTracking()
+            .Where(e => e.CreatedDate >= cutoff &&
+                        e.VehicleId != null && e.VehicleId.StartsWith("SIM-") &&
+                        (string.IsNullOrEmpty(highwayId) || e.HighwayId == highwayId) &&
+                        (string.IsNullOrEmpty(zoneId)    || e.ZoneId    == zoneId))
+            .OrderByDescending(e => e.CreatedDate)
+            .Take(20)
+            .ToListAsync();
+
+        return Ok(new
+        {
+            events = events.Select(e => new
+            {
+                e.EventType,
+                e.VehicleId,
+                e.SpeedMph,
+                e.ZoneId,
+                vehicleType  = ParsePayload(e.Payload, "vehicle_type"),
+                vehicleColor = ParsePayload(e.Payload, "color"),
+                vehicleMake  = ParsePayload(e.Payload, "make"),
+                vehicleModel = ParsePayload(e.Payload, "model"),
+                e.CreatedDate
+            }),
+            serverTime = DateTime.UtcNow
+        });
+    }
+
     // ── Write endpoints (POST — require session OR X-Device-Token) ──────────
 
     /// <summary>

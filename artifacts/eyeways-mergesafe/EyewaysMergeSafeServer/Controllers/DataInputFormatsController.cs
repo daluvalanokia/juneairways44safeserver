@@ -86,7 +86,7 @@ public class DataInputFormatsController : Controller
                 EventType   = GetStr("event_type") is { Length: > 0 } et ? et : "detection",
                 ZoneId      = zid,
                 HighwayId   = hw,
-                VehicleId   = GetStr("vehicle_id"),
+                VehicleId   = "SIM-" + (GetStr("vehicle_id") is { Length: > 0 } vid ? vid : Guid.NewGuid().ToString("N")[..8]),
                 SpeedMph    = GetDbl("speed_mph"),
                 Latitude    = GetDbl("latitude"),
                 Longitude   = GetDbl("longitude"),
