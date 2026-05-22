@@ -1,9 +1,15 @@
 using EyewaysMergeSafeServer.Data;
 using EyewaysMergeSafeServer.Filters;
 using EyewaysMergeSafeServer.Services;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.WebHost.ConfigureKestrel(opts =>
+{
+    opts.AddServerHeader = false;
+});
 
 var tomTomKeyFile = Path.Combine(AppContext.BaseDirectory, "tomtomkey.json");
 if (File.Exists(tomTomKeyFile))
@@ -59,16 +65,19 @@ builder.Services.AddControllersWithViews(opts =>
 
 builder.Services.AddSession(options =>
 {
-    options.IdleTimeout    = TimeSpan.FromHours(8);
-    options.Cookie.HttpOnly   = true;
+    options.IdleTimeout        = TimeSpan.FromHours(2);
+    options.Cookie.HttpOnly    = true;
     options.Cookie.IsEssential = true;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SameSite    = SameSiteMode.Strict;
+    options.Cookie.Name        = "__mss";
 });
 
 builder.Services.AddMemoryCache();
 builder.Services.AddOutputCache(opts =>
 {
-    opts.AddPolicy("Highways",   p => p.Expire(TimeSpan.FromMinutes(10)).Tag("highways"));
-    opts.AddPolicy("ShortLive",  p => p.Expire(TimeSpan.FromMinutes(5)));
+    opts.AddPolicy("Highways",  p => p.Expire(TimeSpan.FromMinutes(10)).Tag("highways"));
+    opts.AddPolicy("ShortLive", p => p.Expire(TimeSpan.FromMinutes(5)));
 });
 
 builder.Services.AddHttpClient();
@@ -78,7 +87,6 @@ builder.Services.AddResponseCompression(opts =>
     opts.EnableForHttps = true;
 });
 
-// ── Application services ──────────────────────────────────────────────────
 builder.Services.AddScoped<InputPayloadService>();
 builder.Services.AddSingleton<TrafficService>();
 builder.Services.AddSingleton<ConfigService>();
@@ -88,18 +96,55 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    try
+    try { db.Database.EnsureCreated(); } catch { }
+
+    var isPostgres = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DATABASE_URL"));
+
+    if (isPostgres)
     {
-        var pending = db.Database.GetPendingMigrations();
-        if (pending.Any())
-            db.Database.Migrate();
-        else
-            db.Database.EnsureCreated();
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE \"UserProfiles\" ADD COLUMN IF NOT EXISTS \"FailedLoginAttempts\" INTEGER NOT NULL DEFAULT 0");
+        }
+        catch { }
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE \"UserProfiles\" ADD COLUMN IF NOT EXISTS \"LockedUntil\" TIMESTAMPTZ");
+        }
+        catch { }
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") " +
+                "VALUES ('20260520000000_Initial', '8.0.0') ON CONFLICT DO NOTHING");
+        }
+        catch { }
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") " +
+                "VALUES ('20260522000000_AddAccountLockout', '8.0.0') ON CONFLICT DO NOTHING");
+        }
+        catch { }
     }
-    catch
+    else
     {
-        db.Database.EnsureCreated();
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE \"UserProfiles\" ADD COLUMN \"FailedLoginAttempts\" INTEGER NOT NULL DEFAULT 0");
+        }
+        catch { }
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE \"UserProfiles\" ADD COLUMN \"LockedUntil\" TEXT");
+        }
+        catch { }
     }
+
     DbInitializer.Seed(db);
 }
 
@@ -110,6 +155,24 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseResponseCompression();
+
+app.Use(async (ctx, next) =>
+{
+    ctx.Response.Headers["X-Frame-Options"]           = "DENY";
+    ctx.Response.Headers["X-Content-Type-Options"]    = "nosniff";
+    ctx.Response.Headers["Referrer-Policy"]           = "strict-origin-when-cross-origin";
+    ctx.Response.Headers["Content-Security-Policy"]   =
+        "default-src 'self'; " +
+        "script-src 'self' 'unsafe-inline' cdn.jsdelivr.net unpkg.com cdnjs.cloudflare.com; " +
+        "style-src 'self' 'unsafe-inline' cdn.jsdelivr.net unpkg.com; " +
+        "font-src 'self' cdn.jsdelivr.net; " +
+        "img-src 'self' data: *.tile.openstreetmap.org; " +
+        "connect-src 'self'; " +
+        "frame-ancestors 'none'";
+    ctx.Response.Headers.Remove("X-Powered-By");
+    await next();
+});
+
 app.UseStaticFiles();
 app.UseRouting();
 app.UseSession();

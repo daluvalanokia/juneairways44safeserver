@@ -16,7 +16,9 @@ public class UserProfile
     [MaxLength(100)] public string? HighwayName { get; set; }
     [MaxLength(500)] public string? DeviceIdsRaw { get; set; }
     [MaxLength(300)] public string? Notes { get; set; }
-    [MaxLength(100)] public string? Password { get; set; }
+    [MaxLength(200)] public string? Password { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+    public int FailedLoginAttempts { get; set; } = 0;
+    public DateTime? LockedUntil { get; set; }
 }

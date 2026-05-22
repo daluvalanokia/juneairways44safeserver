@@ -1,4 +1,5 @@
 using EyewaysMergeSafeServer.Data;
+using EyewaysMergeSafeServer.Filters;
 using EyewaysMergeSafeServer.Models;
 using EyewaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
@@ -7,16 +8,17 @@ using System.Text.Json;
 
 namespace EyewaysMergeSafeServer.Controllers;
 
+[AdminOnly]
 public class SettingsController : Controller
 {
     private readonly AppDbContext _db;
     private readonly IConfiguration _cfg;
     private readonly IWebHostEnvironment _env;
+    private readonly ILogger<SettingsController> _logger;
 
-    public SettingsController(AppDbContext db, IConfiguration cfg, IWebHostEnvironment env)
-    { _db = db; _cfg = cfg; _env = env; }
+    public SettingsController(AppDbContext db, IConfiguration cfg, IWebHostEnvironment env, ILogger<SettingsController> logger)
+    { _db = db; _cfg = cfg; _env = env; _logger = logger; }
 
-    // ── Purge settings helpers ─────────────────────────────────────────────
     private static string PurgeSettingsPath =>
         Path.Combine(AppContext.BaseDirectory, "purgesettings.json");
 
@@ -82,6 +84,10 @@ public class SettingsController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public IActionResult SavePurgeSettings(int purgeMaxDays, int purgeMaxCount)
     {
+        var userId = HttpContext.Session.GetString("UserId") ?? "unknown";
+        _logger.LogInformation("Security: Admin action — SavePurgeSettings userId={UserId} maxDays={MaxDays} maxCount={MaxCount}",
+            userId, purgeMaxDays, purgeMaxCount);
+
         var json = JsonSerializer.Serialize(new Dictionary<string, int>
         {
             ["maxDays"]  = Math.Max(1,   purgeMaxDays),
@@ -95,21 +101,22 @@ public class SettingsController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> RunPurge()
     {
+        var userId = HttpContext.Session.GetString("UserId") ?? "unknown";
+        _logger.LogInformation("Security: Admin action — RunPurge userId={UserId}", userId);
+
         var (maxDays, maxCount) = LoadPurgeSettings();
 
-        // Step 1: delete by age
         var ageCutoff    = DateTime.UtcNow.AddDays(-maxDays);
         var deletedByAge = await _db.VehicleEvents
             .Where(e => e.CreatedDate < ageCutoff)
             .ExecuteDeleteAsync();
 
-        // Step 2: delete excess by count (oldest first)
         var remaining     = await _db.VehicleEvents.CountAsync();
         var deletedByCount = 0;
         if (remaining > maxCount)
         {
-            var excess  = remaining - maxCount;
-            var oldest  = await _db.VehicleEvents
+            var excess = remaining - maxCount;
+            var oldest = await _db.VehicleEvents
                               .OrderBy(e => e.CreatedDate)
                               .Take(excess)
                               .ToListAsync();
@@ -134,6 +141,9 @@ public class SettingsController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public IActionResult SaveTomTomKey(string apiKey)
     {
+        var userId = HttpContext.Session.GetString("UserId") ?? "unknown";
+        _logger.LogInformation("Security: Admin action — SaveTomTomKey userId={UserId}", userId);
+
         var keyFilePath = Path.Combine(AppContext.BaseDirectory, "tomtomkey.json");
         var payload = JsonSerializer.Serialize(new Dictionary<string, string>
         {

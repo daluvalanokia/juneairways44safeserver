@@ -1,4 +1,5 @@
 using EyewaysMergeSafeServer.Data;
+using EyewaysMergeSafeServer.Filters;
 using EyewaysMergeSafeServer.Models;
 using EyewaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
@@ -6,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EyewaysMergeSafeServer.Controllers;
 
+[AdminOnly]
 public class UsersController : Controller
 {
     private readonly AppDbContext _db;
@@ -29,6 +31,8 @@ public class UsersController : Controller
     public async Task<IActionResult> Create(UserProfile model, string[]? selectedDeviceIds)
     {
         model.DeviceIdsRaw = selectedDeviceIds != null ? string.Join(",", selectedDeviceIds) : null;
+        if (!string.IsNullOrEmpty(model.Password) && !model.Password.StartsWith("$2"))
+            model.Password = BCrypt.Net.BCrypt.HashPassword(model.Password);
         _db.UserProfiles.Add(model);
         await _db.SaveChangesAsync();
         return RedirectToAction(nameof(Index));
@@ -42,6 +46,10 @@ public class UsersController : Controller
         {
             var existing = await _db.UserProfiles.AsNoTracking().FirstOrDefaultAsync(u => u.Id == model.Id);
             model.Password = existing?.Password;
+        }
+        else if (!model.Password.StartsWith("$2"))
+        {
+            model.Password = BCrypt.Net.BCrypt.HashPassword(model.Password);
         }
         _db.UserProfiles.Update(model);
         await _db.SaveChangesAsync();

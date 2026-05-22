@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace EyewaysMergeSafeServer.Controllers;
 
@@ -13,6 +14,10 @@ public class Traffic3DController : Controller
     private readonly IConfiguration _cfg;
     private readonly IMemoryCache _cache;
     private readonly IHttpClientFactory _httpFactory;
+
+    private static readonly Regex _bboxRegex = new(
+        @"^-?\d{1,3}(\.\d+)?,-?\d{1,3}(\.\d+)?,-?\d{1,3}(\.\d+)?,-?\d{1,3}(\.\d+)?$",
+        RegexOptions.Compiled);
 
     public Traffic3DController(AppDbContext db, IConfiguration cfg, IMemoryCache cache, IHttpClientFactory httpFactory)
     { _db = db; _cfg = cfg; _cache = cache; _httpFactory = httpFactory; }
@@ -43,9 +48,12 @@ public class Traffic3DController : Controller
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetTrafficSegments(string highwayId)
+    public async Task<IActionResult> GetTrafficSegments(string highwayId, string? bbox)
     {
-        var cacheKey = $"traffic_{highwayId}";
+        if (!string.IsNullOrEmpty(bbox) && !_bboxRegex.IsMatch(bbox))
+            return BadRequest("Invalid bbox parameter.");
+
+        var cacheKey = $"traffic_{highwayId}_{bbox ?? ""}";
         if (_cache.TryGetValue(cacheKey, out object? cached))
             return Json(cached);
 
@@ -58,13 +66,17 @@ public class Traffic3DController : Controller
             {
                 var client = _httpFactory.CreateClient();
                 client.Timeout = TimeSpan.FromSeconds(8);
-                var bbox = highwayId == "I20-TX"
+
+                var resolvedBbox = bbox ?? (highwayId == "I20-TX"
                     ? "32.72,-97.15,32.80,-96.95"
                     : highwayId == "I35-TX"
                     ? "31.05,-97.38,31.60,-97.08"
-                    : "29.70,-95.80,29.90,-95.30";
+                    : "29.70,-95.80,29.90,-95.30");
 
-                var url = $"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key={tomTomKey}&bbox={bbox}";
+                if (!_bboxRegex.IsMatch(resolvedBbox))
+                    return BadRequest("Invalid bbox parameter.");
+
+                var url = $"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key={tomTomKey}&bbox={resolvedBbox}";
                 var response = await client.GetAsync(url);
                 if (response.IsSuccessStatusCode)
                 {

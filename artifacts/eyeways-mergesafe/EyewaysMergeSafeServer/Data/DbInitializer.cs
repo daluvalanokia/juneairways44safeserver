@@ -6,6 +6,8 @@ public static class DbInitializer
 {
     public static void Seed(AppDbContext db)
     {
+        HashExistingPasswords(db);
+
         if (db.Highways.Any()) return;
 
         var now = DateTime.UtcNow;
@@ -185,31 +187,50 @@ public static class DbInitializer
 
         var users = new[]
         {
-            new UserProfile { UserId = "admin001", FullName = "System Administrator", UserType = "admin", Phone = "214-555-0100", HighwayId = "I20-TX", HighwayName = "Interstate 20 — Texas", Password = "admin", IsActive = true, Notes = "Primary system admin for I20 corridor", CreatedDate = now },
-            new UserProfile { UserId = "op001", FullName = "Maria Gonzalez", UserType = "operator", Phone = "817-555-0210", HighwayId = "I20-TX", HighwayName = "Interstate 20 — Texas", Password = "password", IsActive = true, Notes = "Day shift operator", CreatedDate = now },
-            new UserProfile { UserId = "op002", FullName = "James Thompson", UserType = "operator", Phone = "214-555-0312", HighwayId = "I35-TX", HighwayName = "Interstate 35 — Texas", Password = "password", IsActive = true, Notes = "Night shift operator", CreatedDate = now },
-            new UserProfile { UserId = "tech001", FullName = "Carlos Rivera", UserType = "technician", Phone = "512-555-0401", HighwayId = "I35-TX", HighwayName = "Interstate 35 — Texas", Password = "tech123", IsActive = true, Notes = "Field technician, sensor maintenance", CreatedDate = now },
-            new UserProfile { UserId = "sup001", FullName = "Angela Kim", UserType = "supervisor", Phone = "713-555-0550", HighwayId = "I10-TX", HighwayName = "Interstate 10 — Texas", Password = "super", IsActive = true, Notes = "Regional supervisor", CreatedDate = now },
-            new UserProfile { UserId = "view001", FullName = "Robert Davis", UserType = "viewer", Phone = "832-555-0611", HighwayId = "I45-TX", HighwayName = "Interstate 45 — Texas", Password = "", IsActive = true, Notes = "Read-only viewer access", CreatedDate = now },
-            new UserProfile { UserId = "op003", FullName = "Sarah Mitchell", UserType = "operator", Phone = "214-555-0712", HighwayId = "I20-TX", HighwayName = "Interstate 20 — Texas", Password = "password", IsActive = false, Notes = "Inactive — on leave", CreatedDate = now },
-            new UserProfile { UserId = "tech002", FullName = "Wei Zhang", UserType = "technician", Phone = "713-555-0888", HighwayId = "I10-TX", HighwayName = "Interstate 10 — Texas", Password = "tech123", IsActive = true, Notes = "Specialist in LiDAR calibration", CreatedDate = now },
-            new UserProfile { UserId = "view002", FullName = "Diana Flores", UserType = "viewer", Phone = "512-555-0999", HighwayId = "I35-TX", HighwayName = "Interstate 35 — Texas", Password = "", IsActive = true, Notes = "Observer account", CreatedDate = now },
-            new UserProfile { UserId = "admin002", FullName = "Kevin Okafor", UserType = "admin", Phone = "214-555-1010", HighwayId = "I45-TX", HighwayName = "Interstate 45 — Texas", Password = "admin", IsActive = true, Notes = "Backup administrator", CreatedDate = now },
-            new UserProfile { UserId = "op004", FullName = "Patricia Nguyen", UserType = "operator", Phone = "713-555-1111", HighwayId = "I10-TX", HighwayName = "Interstate 10 — Texas", Password = "password", IsActive = true, Notes = "Certified V2X operator", CreatedDate = now },
+            new UserProfile { UserId = "admin001", FullName = "System Administrator", UserType = "admin",      Phone = "214-555-0100", HighwayId = "I20-TX", HighwayName = "Interstate 20 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("admin"),    IsActive = true,  Notes = "Primary system admin for I20 corridor", CreatedDate = now },
+            new UserProfile { UserId = "op001",    FullName = "Maria Gonzalez",        UserType = "operator",  Phone = "817-555-0210", HighwayId = "I20-TX", HighwayName = "Interstate 20 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("password"), IsActive = true,  Notes = "Day shift operator",                    CreatedDate = now },
+            new UserProfile { UserId = "op002",    FullName = "James Thompson",        UserType = "operator",  Phone = "214-555-0312", HighwayId = "I35-TX", HighwayName = "Interstate 35 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("password"), IsActive = true,  Notes = "Night shift operator",                  CreatedDate = now },
+            new UserProfile { UserId = "tech001",  FullName = "Carlos Rivera",         UserType = "technician",Phone = "512-555-0401", HighwayId = "I35-TX", HighwayName = "Interstate 35 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("tech123"),  IsActive = true,  Notes = "Field technician, sensor maintenance",  CreatedDate = now },
+            new UserProfile { UserId = "sup001",   FullName = "Angela Kim",            UserType = "supervisor",Phone = "713-555-0550", HighwayId = "I10-TX", HighwayName = "Interstate 10 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("super"),    IsActive = true,  Notes = "Regional supervisor",                   CreatedDate = now },
+            new UserProfile { UserId = "view001",  FullName = "Robert Davis",          UserType = "viewer",    Phone = "832-555-0611", HighwayId = "I45-TX", HighwayName = "Interstate 45 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("viewer"), IsActive = true,  Notes = "Read-only viewer access",               CreatedDate = now },
+            new UserProfile { UserId = "op003",    FullName = "Sarah Mitchell",        UserType = "operator",  Phone = "214-555-0712", HighwayId = "I20-TX", HighwayName = "Interstate 20 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("password"), IsActive = false, Notes = "Inactive — on leave",                   CreatedDate = now },
+            new UserProfile { UserId = "tech002",  FullName = "Wei Zhang",             UserType = "technician",Phone = "713-555-0888", HighwayId = "I10-TX", HighwayName = "Interstate 10 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("tech123"),  IsActive = true,  Notes = "Specialist in LiDAR calibration",       CreatedDate = now },
+            new UserProfile { UserId = "view002",  FullName = "Diana Flores",          UserType = "viewer",    Phone = "512-555-0999", HighwayId = "I35-TX", HighwayName = "Interstate 35 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("viewer"), IsActive = true,  Notes = "Observer account",                      CreatedDate = now },
+            new UserProfile { UserId = "admin002", FullName = "Kevin Okafor",          UserType = "admin",     Phone = "214-555-1010", HighwayId = "I45-TX", HighwayName = "Interstate 45 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("admin"),    IsActive = true,  Notes = "Backup administrator",                  CreatedDate = now },
+            new UserProfile { UserId = "op004",    FullName = "Patricia Nguyen",       UserType = "operator",  Phone = "713-555-1111", HighwayId = "I10-TX", HighwayName = "Interstate 10 — Texas", Password = BCrypt.Net.BCrypt.HashPassword("password"), IsActive = true,  Notes = "Certified V2X operator",                CreatedDate = now },
         };
         db.UserProfiles.AddRange(users);
         db.SaveChanges();
 
         var payloads = new[]
         {
-            new SamplePayload { ConfigId = 1, SourceType = "physical", Label = "Loop Detector Sample A", Payload = "{\"vehicle_id\":\"VEH-4821\",\"timestamp\":\"2026-05-20T09:32:11Z\",\"speed_mph\":67,\"latitude\":32.7767,\"longitude\":-96.9870,\"lane\":2}", IsValid = true, CreatedDate = now },
-            new SamplePayload { ConfigId = 3, SourceType = "satellite", Label = "GPS Feed Sample A", Payload = "{\"vehicle_id\":\"VEH-7742\",\"timestamp\":\"2026-05-20T10:11:05Z\",\"speed_mph\":72,\"latitude\":31.5493,\"longitude\":-97.1467,\"direction\":180,\"vehicle_type\":\"sedan\"}", IsValid = true, CreatedDate = now },
-            new SamplePayload { ConfigId = 5, SourceType = "telecom", Label = "V2X Cellular Sample", Payload = "{\"vehicle_id\":\"VEH-3391\",\"timestamp\":\"2026-05-20T11:44:22Z\",\"speed_mph\":55,\"event_type\":\"detection\",\"lane\":1,\"direction\":270}", IsValid = true, CreatedDate = now },
-            new SamplePayload { ConfigId = 7, SourceType = "tracker", Label = "RFID Tag Sample", Payload = "{\"vehicle_id\":\"VEH-9902\",\"timestamp\":\"2026-05-20T14:00:01Z\",\"latitude\":29.7604,\"longitude\":-95.5144,\"speed_mph\":45}", IsValid = true, CreatedDate = now },
-            new SamplePayload { ConfigId = 2, SourceType = "physical", Label = "Piezo Array Sample", Payload = "{\"vehicle_id\":\"VEH-1155\",\"timestamp\":\"2026-05-20T08:15:00Z\",\"speed_mph\":89,\"vehicle_type\":\"truck\",\"lane\":3}", IsValid = false, CreatedDate = now },
-            new SamplePayload { ConfigId = 4, SourceType = "satellite", Label = "DGPS Stream Sample", Payload = "{\"vehicle_id\":\"VEH-6604\",\"timestamp\":\"2026-05-20T12:22:44Z\",\"speed_mph\":65,\"latitude\":30.0860,\"longitude\":-94.1018,\"direction\":90}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 1, SourceType = "physical",  Label = "Loop Detector Sample A", Payload = "{\"vehicle_id\":\"VEH-4821\",\"timestamp\":\"2026-05-20T09:32:11Z\",\"speed_mph\":67,\"latitude\":32.7767,\"longitude\":-96.9870,\"lane\":2}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 3, SourceType = "satellite", Label = "GPS Feed Sample A",       Payload = "{\"vehicle_id\":\"VEH-7742\",\"timestamp\":\"2026-05-20T10:11:05Z\",\"speed_mph\":72,\"latitude\":31.5493,\"longitude\":-97.1467,\"direction\":180,\"vehicle_type\":\"sedan\"}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 5, SourceType = "telecom",   Label = "V2X Cellular Sample",    Payload = "{\"vehicle_id\":\"VEH-3391\",\"timestamp\":\"2026-05-20T11:44:22Z\",\"speed_mph\":55,\"event_type\":\"detection\",\"lane\":1,\"direction\":270}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 7, SourceType = "tracker",   Label = "RFID Tag Sample",        Payload = "{\"vehicle_id\":\"VEH-9902\",\"timestamp\":\"2026-05-20T14:00:01Z\",\"latitude\":29.7604,\"longitude\":-95.5144,\"speed_mph\":45}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 2, SourceType = "physical",  Label = "Piezo Array Sample",     Payload = "{\"vehicle_id\":\"VEH-1155\",\"timestamp\":\"2026-05-20T08:15:00Z\",\"speed_mph\":89,\"vehicle_type\":\"truck\",\"lane\":3}", IsValid = false, CreatedDate = now },
+            new SamplePayload { ConfigId = 4, SourceType = "satellite", Label = "DGPS Stream Sample",     Payload = "{\"vehicle_id\":\"VEH-6604\",\"timestamp\":\"2026-05-20T12:22:44Z\",\"speed_mph\":65,\"latitude\":30.0860,\"longitude\":-94.1018,\"direction\":90}", IsValid = true, CreatedDate = now },
         };
         db.SamplePayloads.AddRange(payloads);
+        db.SaveChanges();
+    }
+
+    private static void HashExistingPasswords(AppDbContext db)
+    {
+        var users = db.UserProfiles
+            .Where(u => u.Password == null || u.Password == "" || !u.Password.StartsWith("$2"))
+            .ToList();
+
+        if (!users.Any()) return;
+
+        foreach (var u in users)
+        {
+            if (string.IsNullOrEmpty(u.Password))
+                u.Password = BCrypt.Net.BCrypt.HashPassword("viewer");
+            else if (!u.Password.StartsWith("$2"))
+                u.Password = BCrypt.Net.BCrypt.HashPassword(u.Password);
+        }
+
         db.SaveChanges();
     }
 }

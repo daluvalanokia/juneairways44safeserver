@@ -1,4 +1,5 @@
 using EyewaysMergeSafeServer.Data;
+using EyewaysMergeSafeServer.Filters;
 using EyewaysMergeSafeServer.Models;
 using EyewaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
@@ -8,21 +9,24 @@ using System.Text.Json.Serialization;
 
 namespace EyewaysMergeSafeServer.Controllers;
 
+[AdminOnly]
 public class DatabaseViewerController : Controller
 {
     private readonly AppDbContext _db;
+    private readonly ILogger<DatabaseViewerController> _logger;
     private const int PageSize = 50;
 
-    public DatabaseViewerController(AppDbContext db) { _db = db; }
-
-    private bool IsAdmin => HttpContext.Session.GetString("UserType") == "admin";
+    public DatabaseViewerController(AppDbContext db, ILogger<DatabaseViewerController> logger)
+    {
+        _db     = db;
+        _logger = logger;
+    }
 
     public async Task<IActionResult> Index(string? table, int page = 1)
     {
-        if (HttpContext.Session.GetString("HighwayId") == null)
-            return RedirectToAction("Index", "Portal");
-        if (!IsAdmin)
-            return RedirectToAction("Index", "Dashboard");
+        var userId = HttpContext.Session.GetString("UserId") ?? "unknown";
+        _logger.LogInformation("Security: Admin action — DatabaseViewer accessed userId={UserId} table={Table}",
+            userId, table ?? "Highways");
 
         table ??= "Highways";
         page   = Math.Max(1, page);
@@ -42,7 +46,6 @@ public class DatabaseViewerController : Controller
         });
     }
 
-    // ── Table counts for sidebar ─────────────────────────────────────────────
     private async Task<List<(string Name, int Count)>> BuildSummaryAsync() => new()
     {
         ("Highways",             await _db.Highways.AsNoTracking().CountAsync()),
@@ -56,7 +59,6 @@ public class DatabaseViewerController : Controller
         ("UserProfiles",         await _db.UserProfiles.AsNoTracking().CountAsync()),
     };
 
-    // ── Paged row loader for each table ──────────────────────────────────────
     private async Task<(int total, List<string> cols, List<Dictionary<string,string>> rows)>
         LoadTableAsync(string table, int page)
     {
@@ -112,7 +114,6 @@ public class DatabaseViewerController : Controller
         };
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
     private static List<string> Cols<T>() =>
         typeof(T).GetProperties().Select(p => p.Name).ToList();
 

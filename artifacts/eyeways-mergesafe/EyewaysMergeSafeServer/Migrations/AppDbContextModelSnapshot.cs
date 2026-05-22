@@ -167,12 +167,14 @@ namespace EyewaysMergeSafeServer.Migrations
                 b.Property<string>("Address").HasMaxLength(200).HasColumnType("TEXT");
                 b.Property<DateTime>("CreatedDate").HasColumnType("TEXT");
                 b.Property<string>("DeviceIdsRaw").HasMaxLength(500).HasColumnType("TEXT");
+                b.Property<int>("FailedLoginAttempts").HasColumnType("INTEGER");
                 b.Property<string>("FullName").IsRequired().HasMaxLength(100).HasColumnType("TEXT");
                 b.Property<string>("HighwayId").HasMaxLength(50).HasColumnType("TEXT");
                 b.Property<string>("HighwayName").HasMaxLength(100).HasColumnType("TEXT");
                 b.Property<bool>("IsActive").HasColumnType("INTEGER");
+                b.Property<DateTime?>("LockedUntil").HasColumnType("TEXT");
                 b.Property<string>("Notes").HasMaxLength(300).HasColumnType("TEXT");
-                b.Property<string>("Password").HasMaxLength(100).HasColumnType("TEXT");
+                b.Property<string>("Password").HasMaxLength(200).HasColumnType("TEXT");
                 b.Property<string>("Phone").HasMaxLength(20).HasColumnType("TEXT");
                 b.Property<string>("UserId").HasMaxLength(50).HasColumnType("TEXT");
                 b.Property<string>("UserType").IsRequired().HasMaxLength(30).HasColumnType("TEXT");
