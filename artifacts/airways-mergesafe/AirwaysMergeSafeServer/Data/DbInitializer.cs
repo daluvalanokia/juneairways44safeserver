@@ -46,23 +46,42 @@ public static class DbInitializer
         int svIdx = 1;
         foreach (var z in zones)
         {
+            // Altitude corridor bands per highway type:
+            //   I20-TX → urban air mobility (50–150 m, 30 m wide)
+            //   I35-TX → express inter-city (200–400 m, 60 m wide)
+            //   I10-TX → mixed corridor    (100–250 m, 45 m wide)
+            //   I45-TX → urban express     (75–175 m, 35 m wide)
+            var (baseAltMin, baseAltMax, baseWidth) = z.HighwayId switch
+            {
+                "I20-TX" => (50.0,  150.0, 30.0),
+                "I35-TX" => (200.0, 400.0, 60.0),
+                "I10-TX" => (100.0, 250.0, 45.0),
+                "I45-TX" => (75.0,  175.0, 35.0),
+                _         => (50.0,  150.0, 30.0),
+            };
+
             for (int i = 1; i <= 3; i++)
             {
+                // Slight variation per server within the same zone
+                double jitter = rng.Next(-8, 9);
                 servers.Add(new SwitchServer
                 {
-                    ServerName = $"{z.ZoneId} Switch {(char)('A' + i - 1)}",
-                    ServerId = $"SRV-{svIdx:D4}",
-                    ZoneId = z.ZoneId,
-                    HighwayId = z.HighwayId,
-                    IpAddress = $"10.{rng.Next(1, 5)}.{rng.Next(1, 50)}.{rng.Next(10, 200)}",
-                    Port = 8080 + i,
-                    Status = statuses[rng.Next(statuses.Length)],
-                    FirmwareVersion = $"v3.{rng.Next(0, 4)}.{rng.Next(0, 20)}",
-                    UptimeSeconds = rng.Next(3600, 864000),
-                    CpuPercent = Math.Round(rng.NextDouble() * 80 + 5, 1),
-                    MemoryPercent = Math.Round(rng.NextDouble() * 70 + 10, 1),
-                    LastHeartbeat = now.AddMinutes(-rng.Next(0, 15)),
-                    CreatedDate = now,
+                    ServerName          = $"{z.ZoneId} Switch {(char)('A' + i - 1)}",
+                    ServerId            = $"SRV-{svIdx:D4}",
+                    ZoneId              = z.ZoneId,
+                    HighwayId           = z.HighwayId,
+                    IpAddress           = $"10.{rng.Next(1, 5)}.{rng.Next(1, 50)}.{rng.Next(10, 200)}",
+                    Port                = 8080 + i,
+                    Status              = statuses[rng.Next(statuses.Length)],
+                    FirmwareVersion     = $"v3.{rng.Next(0, 4)}.{rng.Next(0, 20)}",
+                    UptimeSeconds       = rng.Next(3600, 864000),
+                    CpuPercent          = Math.Round(rng.NextDouble() * 80 + 5, 1),
+                    MemoryPercent       = Math.Round(rng.NextDouble() * 70 + 10, 1),
+                    LastHeartbeat       = now.AddMinutes(-rng.Next(0, 15)),
+                    AltitudeMinMeters   = baseAltMin + jitter,
+                    AltitudeMaxMeters   = baseAltMax + jitter,
+                    AltitudeWidthMeters = baseWidth + rng.Next(-3, 4),
+                    CreatedDate         = now,
                 });
                 svIdx++;
             }
@@ -78,20 +97,30 @@ public static class DbInitializer
             for (int i = 0; i < 4; i++)
             {
                 var dtype = deviceTypes[i % deviceTypes.Length];
+                // Sensor mounting height: lidar/radar on taller towers, camera/tag at lower poles
+                double sensorAlt = dtype switch
+                {
+                    "lidar"             => rng.Next(18, 38),
+                    "radar"             => rng.Next(22, 45),
+                    "camera"            => rng.Next(8, 20),
+                    "vehicle tag reader"=> rng.Next(3, 10),
+                    _                   => rng.Next(5, 15),
+                };
                 sensors.Add(new SensorDevice
                 {
-                    DeviceName = $"{dtype.Substring(0, 1).ToUpper()}{dtype.Substring(1)} {z.ZoneId}-{i + 1}",
-                    DeviceId = $"DEV-{dIdx:D4}",
-                    DeviceType = dtype,
-                    ZoneId = z.ZoneId,
-                    HighwayId = z.HighwayId,
-                    MileMarker = z.MileMarker + rng.NextDouble() * 0.2 - 0.1,
-                    Latitude = z.Latitude.HasValue ? z.Latitude + rng.NextDouble() * 0.005 - 0.0025 : null,
-                    Longitude = z.Longitude.HasValue ? z.Longitude + rng.NextDouble() * 0.005 - 0.0025 : null,
-                    Status = rng.Next(10) > 1 ? "online" : (rng.Next(2) == 0 ? "offline" : "fault"),
+                    DeviceName      = $"{dtype.Substring(0, 1).ToUpper()}{dtype.Substring(1)} {z.ZoneId}-{i + 1}",
+                    DeviceId        = $"DEV-{dIdx:D4}",
+                    DeviceType      = dtype,
+                    ZoneId          = z.ZoneId,
+                    HighwayId       = z.HighwayId,
+                    MileMarker      = z.MileMarker + rng.NextDouble() * 0.2 - 0.1,
+                    Latitude        = z.Latitude.HasValue ? z.Latitude + rng.NextDouble() * 0.005 - 0.0025 : null,
+                    Longitude       = z.Longitude.HasValue ? z.Longitude + rng.NextDouble() * 0.005 - 0.0025 : null,
+                    AltitudeMeters  = sensorAlt,
+                    Status          = rng.Next(10) > 1 ? "online" : (rng.Next(2) == 0 ? "offline" : "fault"),
                     FirmwareVersion = $"fw-{rng.Next(1, 4)}.{rng.Next(0, 15)}",
-                    LastHeartbeat = now.AddMinutes(-rng.Next(0, 30)),
-                    CreatedDate = now,
+                    LastHeartbeat   = now.AddMinutes(-rng.Next(0, 30)),
+                    CreatedDate     = now,
                 });
                 dIdx++;
             }
@@ -127,27 +156,55 @@ public static class DbInitializer
         db.TriangulationConfigs.AddRange(triConfigs);
         db.SaveChanges();
 
-        var eventTypes = new[] { "detection", "merge", "conflict", "speeding", "fault" };
+        var eventTypes   = new[] { "detection", "merge", "conflict", "speeding", "fault" };
         var vehicleTypes = new[] { "sedan", "suv", "truck", "motorcycle", "van" };
         var events = new List<VehicleEvent>();
+        // Altitude corridor bands per highway (mirrors server seed above)
+        var hwAltBands = new Dictionary<string, (double min, double max)>
+        {
+            ["I20-TX"] = (50,  150),
+            ["I35-TX"] = (200, 400),
+            ["I10-TX"] = (100, 250),
+            ["I45-TX"] = (75,  175),
+        };
         foreach (var z in zones)
         {
+            var (bandMin, bandMax) = hwAltBands.GetValueOrDefault(z.HighwayId, (50, 150));
+            var dev = sensors.Where(s => s.ZoneId == z.ZoneId).ToList();
+
             for (int i = 0; i < 14; i++)
             {
                 var etype = eventTypes[rng.Next(eventTypes.Length)];
-                var dev = sensors.Where(s => s.ZoneId == z.ZoneId).ToList();
+                // First 4 events per zone are air vehicles; remaining 10 are ground
+                bool isAir     = i < 4;
+                bool isExpress = isAir && z.HighwayId == "I35-TX";
+
+                string vehicleMode     = isAir ? "air"   : "ground";
+                string vehicleCategory = isAir
+                    ? (isExpress ? "air_express" : "air_urban")
+                    : vehicleTypes[rng.Next(vehicleTypes.Length)];
+
+                double? altitude = isAir
+                    ? (isExpress ? rng.Next((int)bandMin, (int)bandMax) : rng.Next((int)bandMin, (int)(bandMin + 100)))
+                    : (double?)null;
+
+                string? vtype = isAir ? vehicleCategory : vehicleTypes[rng.Next(vehicleTypes.Length)];
                 events.Add(new VehicleEvent
                 {
-                    EventType = etype,
-                    ZoneId = z.ZoneId,
-                    HighwayId = z.HighwayId,
-                    DeviceId = dev.Count > 0 ? dev[rng.Next(dev.Count)].DeviceId : null,
-                    VehicleId = $"VEH-{rng.Next(1000, 9999)}",
-                    SpeedMph = etype == "speeding" ? rng.Next(85, 120) : rng.Next(45, 85),
-                    Latitude = z.Latitude.HasValue ? z.Latitude + rng.NextDouble() * 0.002 - 0.001 : null,
-                    Longitude = z.Longitude.HasValue ? z.Longitude + rng.NextDouble() * 0.002 - 0.001 : null,
-                    Payload = $"{{\"vehicle_type\":\"{vehicleTypes[rng.Next(vehicleTypes.Length)]}\",\"lane\":{rng.Next(1, 5)}}}",
-                    CreatedDate = now.AddMinutes(-rng.Next(0, 1440)),
+                    EventType       = etype,
+                    ZoneId          = z.ZoneId,
+                    HighwayId       = z.HighwayId,
+                    DeviceId        = dev.Count > 0 ? dev[rng.Next(dev.Count)].DeviceId : null,
+                    VehicleId       = isAir ? $"AFC-{rng.Next(1000, 9999)}" : $"VEH-{rng.Next(1000, 9999)}",
+                    SpeedMph        = isAir  ? rng.Next(80, 160)
+                                   : etype == "speeding" ? rng.Next(85, 120) : rng.Next(45, 85),
+                    Latitude        = z.Latitude.HasValue  ? z.Latitude  + rng.NextDouble() * 0.002 - 0.001 : null,
+                    Longitude       = z.Longitude.HasValue ? z.Longitude + rng.NextDouble() * 0.002 - 0.001 : null,
+                    AltitudeMeters  = altitude,
+                    VehicleMode     = vehicleMode,
+                    VehicleCategory = vehicleCategory,
+                    Payload         = $"{{\"vehicle_type\":\"{vtype}\",\"lane\":{rng.Next(1, 5)},\"altitude_m\":{altitude ?? 0}}}",
+                    CreatedDate     = now.AddMinutes(-rng.Next(0, 1440)),
                 });
             }
         }
@@ -162,7 +219,7 @@ public static class DbInitializer
             ["telecom"] = new[] { "Cellular V2X Data Feed", "DSRC 5.9GHz Protocol" },
             ["tracker"] = new[] { "RFID Tag Reader Stream", "Bluetooth Proximity Feed" },
         };
-        var fmtFields = new[] { "vehicle_id", "timestamp", "speed_mph", "latitude", "longitude", "direction", "lane", "vehicle_type", "event_type" };
+        var fmtFields = new[] { "vehicle_id", "timestamp", "speed_mph", "latitude", "longitude", "altitude_m", "direction", "lane", "vehicle_type", "event_type" };
         var formats = new List<InputFormatConfig>();
         int fIdx = 1;
         foreach (var ft in fmtTypes)
@@ -204,12 +261,12 @@ public static class DbInitializer
 
         var payloads = new[]
         {
-            new SamplePayload { ConfigId = 1, SourceType = "physical",  Label = "Loop Detector Sample A", Payload = "{\"vehicle_id\":\"VEH-4821\",\"timestamp\":\"2026-05-20T09:32:11Z\",\"speed_mph\":67,\"latitude\":32.7767,\"longitude\":-96.9870,\"lane\":2}", IsValid = true, CreatedDate = now },
-            new SamplePayload { ConfigId = 3, SourceType = "satellite", Label = "GPS Feed Sample A",       Payload = "{\"vehicle_id\":\"VEH-7742\",\"timestamp\":\"2026-05-20T10:11:05Z\",\"speed_mph\":72,\"latitude\":31.5493,\"longitude\":-97.1467,\"direction\":180,\"vehicle_type\":\"sedan\"}", IsValid = true, CreatedDate = now },
-            new SamplePayload { ConfigId = 5, SourceType = "telecom",   Label = "V2X Cellular Sample",    Payload = "{\"vehicle_id\":\"VEH-3391\",\"timestamp\":\"2026-05-20T11:44:22Z\",\"speed_mph\":55,\"event_type\":\"detection\",\"lane\":1,\"direction\":270}", IsValid = true, CreatedDate = now },
-            new SamplePayload { ConfigId = 7, SourceType = "tracker",   Label = "RFID Tag Sample",        Payload = "{\"vehicle_id\":\"VEH-9902\",\"timestamp\":\"2026-05-20T14:00:01Z\",\"latitude\":29.7604,\"longitude\":-95.5144,\"speed_mph\":45}", IsValid = true, CreatedDate = now },
-            new SamplePayload { ConfigId = 2, SourceType = "physical",  Label = "Piezo Array Sample",     Payload = "{\"vehicle_id\":\"VEH-1155\",\"timestamp\":\"2026-05-20T08:15:00Z\",\"speed_mph\":89,\"vehicle_type\":\"truck\",\"lane\":3}", IsValid = false, CreatedDate = now },
-            new SamplePayload { ConfigId = 4, SourceType = "satellite", Label = "DGPS Stream Sample",     Payload = "{\"vehicle_id\":\"VEH-6604\",\"timestamp\":\"2026-05-20T12:22:44Z\",\"speed_mph\":65,\"latitude\":30.0860,\"longitude\":-94.1018,\"direction\":90}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 1, SourceType = "physical",  Label = "Loop Detector Sample A", Payload = "{\"vehicle_id\":\"VEH-4821\",\"timestamp\":\"2026-05-20T09:32:11Z\",\"speed_mph\":67,\"latitude\":32.7767,\"longitude\":-96.9870,\"altitude_m\":0,\"lane\":2}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 3, SourceType = "satellite", Label = "GPS Feed Sample A",       Payload = "{\"vehicle_id\":\"VEH-7742\",\"timestamp\":\"2026-05-20T10:11:05Z\",\"speed_mph\":72,\"latitude\":31.5493,\"longitude\":-97.1467,\"altitude_m\":118,\"direction\":180,\"vehicle_type\":\"air_urban\"}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 5, SourceType = "telecom",   Label = "V2X Cellular Sample",    Payload = "{\"vehicle_id\":\"VEH-3391\",\"timestamp\":\"2026-05-20T11:44:22Z\",\"speed_mph\":55,\"altitude_m\":0,\"event_type\":\"detection\",\"lane\":1,\"direction\":270}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 7, SourceType = "tracker",   Label = "RFID Tag Sample (Air)",  Payload = "{\"vehicle_id\":\"AFC-8812\",\"timestamp\":\"2026-05-20T14:00:01Z\",\"latitude\":29.7604,\"longitude\":-95.5144,\"altitude_m\":285,\"speed_mph\":130,\"vehicle_type\":\"air_express\"}", IsValid = true, CreatedDate = now },
+            new SamplePayload { ConfigId = 2, SourceType = "physical",  Label = "Piezo Array Sample",     Payload = "{\"vehicle_id\":\"VEH-1155\",\"timestamp\":\"2026-05-20T08:15:00Z\",\"speed_mph\":89,\"altitude_m\":0,\"vehicle_type\":\"truck\",\"lane\":3}", IsValid = false, CreatedDate = now },
+            new SamplePayload { ConfigId = 4, SourceType = "satellite", Label = "DGPS Stream Sample",     Payload = "{\"vehicle_id\":\"VEH-6604\",\"timestamp\":\"2026-05-20T12:22:44Z\",\"speed_mph\":65,\"latitude\":30.0860,\"longitude\":-94.1018,\"altitude_m\":0,\"direction\":90}", IsValid = true, CreatedDate = now },
         };
         db.SamplePayloads.AddRange(payloads);
         db.SaveChanges();

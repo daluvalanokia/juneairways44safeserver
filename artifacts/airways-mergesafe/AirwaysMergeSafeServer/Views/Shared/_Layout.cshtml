@@ -17,7 +17,8 @@
 @{
     var highways = ViewBag.Highways as List<AirwaysMergeSafeServer.Models.Highway>;
     var selectedHw = ViewBag.SelectedHighwayId as string ?? Context.Session.GetString("HighwayId");
-    var currentCtrl = ViewContext.RouteData.Values["controller"]?.ToString()?.ToLower();
+    var currentCtrl   = ViewContext.RouteData.Values["controller"]?.ToString()?.ToLower();
+    var currentAction = ViewContext.RouteData.Values["action"]?.ToString()?.ToLower();
     var nav = new (string Ctrl, string Icon, string Label)[]
     {
         ("dashboard",         "bi-speedometer2",     "Dashboard"),
@@ -50,6 +51,11 @@
                 <span>@item.Label</span>
             </a>
         }
+    <a href="/Traffic3D/AirScene"
+       class="mss-nav-item @(currentCtrl == "traffic3d" && currentAction == "airscene" ? "active" : "")">
+        <i class="bi bi-wind mss-nav-icon"></i>
+        <span>3D Air Scene</span>
+    </a>
     @if (Context.Session.GetString("UserType") == "admin")
     {
         <a href="/DatabaseViewer"

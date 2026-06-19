@@ -213,6 +213,27 @@ public class InputPayloadService
         return JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
     }
 
+    /// <summary>
+    /// Parses altitude from a raw JSON payload string.
+    /// Checks fields: altitude_m, alt_m, alt, altitude, elevation (in that order).
+    /// Returns null if none found or payload is not valid JSON.
+    /// </summary>
+    public static double? ParseAltitude(string payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson)) return null;
+        try
+        {
+            using var doc  = JsonDocument.Parse(payloadJson);
+            var root       = doc.RootElement;
+            var candidates = new[] { "altitude_m", "alt_m", "alt", "altitude", "elevation" };
+            foreach (var key in candidates)
+                if (root.TryGetProperty(key, out var val) && val.TryGetDouble(out double d))
+                    return d;
+        }
+        catch { }
+        return null;
+    }
+
     public async Task<SamplePayload> GenerateAndSaveAsync(int configId)
     {
         var config = await _db.InputFormatConfigs.FindAsync(configId)
