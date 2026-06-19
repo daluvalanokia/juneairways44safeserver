@@ -19,5 +19,8 @@ public class SwitchServer
     public double CpuPercent { get; set; } = 0;
     public double MemoryPercent { get; set; } = 0;
     public DateTime LastHeartbeat { get; set; } = DateTime.UtcNow;
+    public double? AltitudeMinMeters { get; set; }
+    public double? AltitudeMaxMeters { get; set; }
+    public double? AltitudeWidthMeters { get; set; }
     public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 }

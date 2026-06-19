@@ -8,7 +8,8 @@ namespace AirwaysMergeSafeServer.Filters;
 /// <summary>
 /// Global action filter — enforces session authentication for all routes except:
 ///   • Portal / Home controllers (login page)
-/// All /api/* routes (GET and POST) require a valid session or X-Device-Token header.
+///   • Controllers / actions marked with [SkipSessionAuth] (e.g. HealthController)
+/// E4 UPDATE: Checks for [SkipSessionAuth] attribute before enforcing auth.
 /// </summary>
 public class SessionAuthFilter : IActionFilter
 {
@@ -17,10 +18,7 @@ public class SessionAuthFilter : IActionFilter
 
     private readonly ILogger<SessionAuthFilter> _logger;
 
-    public SessionAuthFilter(ILogger<SessionAuthFilter> logger)
-    {
-        _logger = logger;
-    }
+    public SessionAuthFilter(ILogger<SessionAuthFilter> logger) { _logger = logger; }
 
     public void OnActionExecuting(ActionExecutingContext context)
     {
@@ -29,19 +27,25 @@ public class SessionAuthFilter : IActionFilter
         var method = context.HttpContext.Request.Method;
         var ip     = context.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
+        // E4: allow [SkipSessionAuth]-decorated routes through unconditionally
+        if (context.ActionDescriptor.EndpointMetadata
+            .OfType<SkipSessionAuthAttribute>().Any()) return;
+
         if (_publicControllers.Contains(ctrl)) return;
 
-        if (path.StartsWithSegments("/api"))
+        if (path.StartsWithSegments("/api") || path.StartsWithSegments("/health"))
         {
             if (HasValidSession(context) || HasValidDeviceToken(context)) return;
-            _logger.LogWarning("Security: 401 Unauthorized — path={Path} method={Method} ip={Ip}", path, method, ip);
+            _logger.LogWarning(
+                "Security: 401 Unauthorized — path={Path} method={Method} ip={Ip}", path, method, ip);
             context.Result = new UnauthorizedResult();
             return;
         }
 
         if (!HasValidSession(context))
         {
-            _logger.LogWarning("Security: 401 Redirect — path={Path} method={Method} ip={Ip}", path, method, ip);
+            _logger.LogWarning(
+                "Security: 401 Redirect — path={Path} method={Method} ip={Ip}", path, method, ip);
             context.Result = new RedirectToActionResult("Index", "Portal", null);
         }
     }
@@ -55,12 +59,9 @@ public class SessionAuthFilter : IActionFilter
     {
         var token = ctx.HttpContext.Request.Headers["X-Device-Token"].ToString();
         if (string.IsNullOrEmpty(token)) return false;
-
         var cfg          = ctx.HttpContext.RequestServices.GetService<IConfiguration>();
         var configuredKey = cfg?["DeviceApiKey"];
-
         if (string.IsNullOrEmpty(configuredKey)) return false;
-
         var tokenBytes = Encoding.UTF8.GetBytes(token);
         var keyBytes   = Encoding.UTF8.GetBytes(configuredKey);
         return CryptographicOperations.FixedTimeEquals(tokenBytes, keyBytes);

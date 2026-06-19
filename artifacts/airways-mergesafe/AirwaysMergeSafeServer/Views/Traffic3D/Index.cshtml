@@ -1,964 +1,483 @@
 @model AirwaysMergeSafeServer.ViewModels.Traffic3DViewModel
-@{ ViewData["Title"] = "3D Traffic"; ViewBag.Highways = Model.Highways; ViewBag.SelectedHighwayId = Model.SelectedHighwayId; }
 @{
-    var zones   = Model.Zones;
-    var sensors = Model.Sensors;
-    var servers = Model.SwitchServers;
+    ViewData["Title"] = "3D Traffic";
+    var zonesJson   = System.Text.Json.JsonSerializer.Serialize(
+        Model.Zones.Where(z => z.Latitude.HasValue).Select(z => new {
+            zoneId = z.ZoneId, zoneName = z.ZoneName, status = z.Status,
+            lat = z.Latitude, lon = z.Longitude,
+            altM = z.AltitudeMeters ?? 0, radius = z.GeofenceRadius
+        }));
+    var serversJson = System.Text.Json.JsonSerializer.Serialize(
+        Model.SwitchServers.Select(s => new {
+            serverId = s.ServerId, serverName = s.ServerName,
+            zoneId = s.ZoneId, status = s.Status,
+            altMin = s.AltitudeMinMeters, altMax = s.AltitudeMaxMeters,
+            altWidth = s.AltitudeWidthMeters
+        }));
+    var sensorsJson = System.Text.Json.JsonSerializer.Serialize(
+        Model.Sensors.Where(s => s.Latitude.HasValue).Select(s => new {
+            deviceId = s.DeviceId, deviceName = s.DeviceName,
+            deviceType = s.DeviceType, status = s.Status,
+            lat = s.Latitude, lon = s.Longitude,
+            altM = s.AltitudeMeters ?? 0
+        }));
+    var hw = Model.SelectedHighwayId ?? "";
 }
 
-<div class="mss-page-header">
-    <div><h2 class="mss-page-title">3D Traffic Visualization</h2><p class="mss-page-sub">Highway map with Leaflet overlays and Three.js Scene3D</p></div>
-    <div class="d-flex gap-2">
-        <button id="btnMap" class="btn btn-primary btn-sm" onclick="setMode('map')"><i class="bi bi-map me-1"></i>Map</button>
-        <button id="btn3d"  class="btn btn-outline-secondary btn-sm" onclick="setMode('3d')"><i class="bi bi-badge-3d me-1"></i>3D Scene</button>
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <div>
+        <h4 class="mb-0">🏗 3D Traffic Scene</h4>
+        <small class="text-muted">Classification-aware rendering · Ground &amp; Air vehicles</small>
+    </div>
+    <div class="d-flex gap-2 align-items-center flex-wrap">
+        <select id="hwSel" class="form-select form-select-sm" style="width:210px"
+                onchange="location.href='/Traffic3D?highwayId='+this.value">
+            @foreach (var h in Model.Highways)
+            {
+                @if (h.HighwayId == Model.SelectedHighwayId)
+                { <option value="@h.HighwayId" selected>@h.Name</option> }
+                else
+                { <option value="@h.HighwayId">@h.Name</option> }
+            }
+        </select>
+        <!-- View-mode toggle -->
+        <div class="btn-group btn-group-sm" id="viewToggle">
+            <button class="btn btn-primary active"    data-view="perspective" title="Perspective">⬡ 3D</button>
+            <button class="btn btn-outline-primary"   data-view="side"        title="Side / Elevation">↕ Side</button>
+            <button class="btn btn-outline-primary"   data-view="top"         title="Top / Plan">⊞ Top</button>
+            <button class="btn btn-outline-primary"   data-view="split"       title="All three panels">⊟ Split</button>
+        </div>
+        <!-- Domain filter -->
+        <div class="btn-group btn-group-sm" id="domainFilter">
+            <button class="btn btn-secondary active" data-domain="all"    title="All">All</button>
+            <button class="btn btn-outline-info"     data-domain="ground" title="Ground only">🚗</button>
+            <button class="btn btn-outline-warning"  data-domain="air"    title="Air only">✈</button>
+        </div>
+        <a href="/Traffic3D/AirScene" class="btn btn-sm btn-outline-warning">🛫 Air Scene</a>
+        <button class="btn btn-sm btn-outline-success" onclick="refreshScene()">⟳ Live</button>
     </div>
 </div>
 
-<div class="row g-3">
-    <!-- ── Left: map / 3D canvas ─────────────────────────────────────────── -->
-    <div class="col-lg-9">
-        <div id="mapPanel" class="mss-card">
-            <div class="mss-card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-map me-1"></i> Highway Map</span>
-                <div class="d-flex align-items-center gap-2">
-                    <span id="mapZoneLabel" class="badge bg-primary" style="display:none"></span>
-                    <span class="text-muted small" id="mapRefreshTimer">Refreshes in 5:00</span>
-                </div>
-            </div>
-            <div id="leafletMap" style="height:500px;border-radius:0 0 12px 12px;"></div>
-        </div>
+<!-- ── Scene grid (split / single-panel modes) ────────────────────────── -->
+<div id="sceneWrap" style="position:relative;height:520px;background:#0a0a14;border-radius:8px;overflow:hidden">
+    <canvas id="mainCanvas" style="width:100%;height:100%"></canvas>
+    <!-- Overlay labels for split mode -->
+    <div id="labelA" class="badge bg-secondary position-absolute" style="top:6px;left:6px;display:none">Perspective</div>
+    <div id="labelB" class="badge bg-info text-dark position-absolute"    style="top:6px;display:none">Side ↕</div>
+    <div id="labelC" class="badge bg-warning text-dark position-absolute" style="top:6px;display:none">Top ⊞</div>
+</div>
 
-        <div id="scene3dPanel" class="mss-card" style="display:none">
-            <div class="mss-card-header d-flex justify-content-between align-items-center">
-                <div class="d-flex align-items-center gap-2">
-                    <span><i class="bi bi-badge-3d me-1"></i> Scene3D — Three.js WebGL</span>
-                    <span id="scene3dZoneLabel" class="badge bg-primary" style="display:none"></span>
+<!-- ── Classification legend + inspector ─────────────────────────────── -->
+<div class="row mt-3 g-3">
+    <div class="col-lg-8">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body py-2 px-3">
+                <h6 class="mb-2">🔑 Classification Legend</h6>
+                <div class="d-flex flex-wrap gap-2" id="classLegend">
+                    <!-- Ground -->
+                    <span class="badge rounded-pill px-3 py-2" style="background:#3b82f6">sedan</span>
+                    <span class="badge rounded-pill px-3 py-2" style="background:#22c55e">suv</span>
+                    <span class="badge rounded-pill px-3 py-2" style="background:#f59e0b;color:#000">truck</span>
+                    <span class="badge rounded-pill px-3 py-2" style="background:#a855f7">motorcycle</span>
+                    <span class="badge rounded-pill px-3 py-2" style="background:#64748b">van</span>
+                    <span class="badge rounded-pill px-3 py-2 ms-3" style="background:#00bcd4;color:#000">✈ air_urban</span>
+                    <span class="badge rounded-pill px-3 py-2" style="background:#ff6b35">✈ air_express</span>
                 </div>
-                <div class="d-flex gap-2 align-items-center">
-                    <button id="btnAnimToggle" class="btn btn-outline-warning btn-sm" onclick="toggleAnimation()" style="display:none">
-                        <i class="bi bi-pause-fill me-1"></i>Pause
-                    </button>
-                    <a href="/Vehicles" class="btn btn-outline-secondary btn-sm"><i class="bi bi-car-front me-1"></i>Vehicle Registry</a>
-                </div>
-            </div>
-            <div id="scene3dContainer" style="width:100%;height:500px;border-radius:0 0 12px 12px;overflow:hidden;position:relative;">
-                <!-- Zone overlay inside 3D canvas -->
-                <div id="zoneOverlay" style="display:none;position:absolute;top:10px;left:10px;z-index:10;
-                     background:rgba(10,15,26,.75);backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.12);
-                     border-radius:8px;padding:6px 12px;pointer-events:none">
-                    <span class="text-muted" style="font-size:.68rem">FILTERING</span><br>
-                    <span id="overlayZoneName" class="fw-semibold" style="font-size:.85rem;color:#f59e0b"></span>
+                <!-- Stats bar -->
+                <div class="d-flex flex-wrap gap-3 mt-2 small text-muted" id="statsRow">
+                    <span>Ground: <b id="statGround">–</b></span>
+                    <span>Air: <b id="statAir">–</b></span>
+                    <span>Zones: <b>@Model.Zones.Count</b></span>
+                    <span>Sensors: <b>@Model.Sensors.Count</b></span>
+                    <span>Highway: <b>@(Model.SelectedHighwayId ?? "–")</b></span>
                 </div>
             </div>
         </div>
     </div>
-
-    <!-- ── Right: sidebar ────────────────────────────────────────────────── -->
-    <div class="col-lg-3">
-
-        <!-- Zones list -->
-        <div class="mss-card mb-3">
-            <div class="mss-card-header"><i class="bi bi-diagram-2 me-1"></i> Zones</div>
-            <div class="mss-card-body p-0" style="max-height:180px;overflow-y:auto">
-                @foreach (var z in zones)
-                {
-                    <div class="mss-list-item d-flex justify-content-between align-items-center zone-list-item"
-                         data-zone-id="@z.ZoneId" style="cursor:pointer"
-                         onclick="selectZone('@z.ZoneId')" title="Filter to @z.ZoneName">
-                        <span class="small">@z.ZoneName</span>
-                        <span class="mss-badge mss-badge--@z.Status">@z.Status</span>
-                    </div>
-                }
-                @if (!zones.Any())
-                { <p class="text-muted small p-2">No zones.</p> }
+    <div class="col-lg-4">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body py-2 px-3">
+                <h6 class="mb-1">🔍 Inspector <small class="text-muted">(click vehicle)</small></h6>
+                <div id="inspector" class="text-muted small">No vehicle selected.</div>
             </div>
         </div>
-
-        <!-- Controls (camera / speed / density / zone filter) -->
-        <div class="mss-card mb-3">
-            <div class="mss-card-header"><i class="bi bi-sliders me-1"></i> Controls</div>
-            <div class="mss-card-body">
-                <label class="form-label small">Camera Angle</label>
-                <input type="range" class="form-range mb-2" id="camAngle" min="10" max="80" step="5" value="45" oninput="setCamAngle(this.value)" />
-                <label class="form-label small">Speed Multiplier</label>
-                <input type="range" class="form-range mb-2" id="speedMult" min="0.5" max="5" step="0.5" value="1" oninput="setSpeedMult(this.value)" />
-                <label class="form-label small">Vehicle Density</label>
-                <input type="range" class="form-range mb-3" id="density" min="3" max="30" step="1" value="10" oninput="setDensity(this.value)" />
-
-                <hr class="border-secondary my-0 mb-3" />
-
-                <label class="form-label small d-flex justify-content-between">
-                    <span><i class="bi bi-funnel me-1"></i>Zone / Server Filter</span>
-                    <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.7rem" onclick="selectZone('')">Clear</button>
-                </label>
-                <select class="form-select form-select-sm" id="zoneFilterSelect"
-                        onchange="selectZone(this.value)"
-                        style="background:#0f1624;border-color:rgba(255,255,255,.18);color:#e2e8f0">
-                    <option value="">All Zones</option>
-                    @foreach (var z in zones)
-                    {
-                        <option value="@z.ZoneId">@z.ZoneName</option>
-                    }
-                </select>
-
-                @if (servers.Any())
-                {
-                    <div class="mt-2">
-                        <label class="form-label small"><i class="bi bi-hdd-network me-1"></i>Switch Server</label>
-                        <select class="form-select form-select-sm" id="serverFilterSelect"
-                                onchange="selectZoneByServer(this.value)"
-                                style="background:#0f1624;border-color:rgba(255,255,255,.18);color:#e2e8f0">
-                            <option value="">All Servers</option>
-                            @foreach (var s in servers)
-                            {
-                                <option value="@s.ZoneId" data-server-id="@s.ServerId">@s.ServerName (@s.ZoneId)</option>
-                            }
-                        </select>
-                    </div>
-                }
-            </div>
-        </div>
-
-        <!-- Zone detail panel (visible when a zone is selected) -->
-        <div class="mss-card mb-3" id="zoneDetailCard" style="display:none">
-            <div class="mss-card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-hdd-network me-1"></i> <span id="zoneDetailTitle">Zone Servers</span></span>
-                <span id="zoneDetailBadge" class="mss-badge"></span>
-            </div>
-            <div class="mss-card-body p-0" id="zoneServerList" style="max-height:200px;overflow-y:auto"></div>
-        </div>
-
-        <!-- Live feed -->
-        <div class="mss-card">
-            <div class="mss-card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-activity me-1"></i> <span id="feedTitle">Live Feed</span>
-                    <span id="simModeBadge" style="display:none;font-size:.58rem;vertical-align:middle;margin-left:4px;background:#f59e0b;color:#000;padding:1px 5px;border-radius:4px;font-weight:700">
-                        <i class="bi bi-cpu me-1"></i>SIM
-                    </span>
-                </span>
-                <span id="livePulseBadge" class="mss-badge mss-badge--active" style="animation:pulse 1s infinite">LIVE</span>
-            </div>
-            <div class="mss-card-body p-0" id="trafficFeed" style="max-height:260px;overflow-y:auto">
-                <p class="text-muted small p-2">Switch to 3D Scene to start feed…</p>
-            </div>
-        </div>
-
     </div>
 </div>
 
-@section Scripts {
-<style>
-.mss-zone-tooltip{background:rgba(10,15,26,.9)!important;border:1px solid rgba(255,255,255,.2)!important;color:#e2e8f0!important;font-size:.67rem!important;font-weight:700!important;box-shadow:none!important;padding:2px 8px!important;white-space:nowrap!important;}
-.mss-zone-tooltip::before{border-top-color:rgba(255,255,255,.2)!important;}
-</style>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
-      crossorigin="anonymous" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
-        crossorigin="anonymous"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"
-        integrity="sha384-9EQoUIJYrv09/oYhSxnw1VpLcfPw3BM9dE7+D/3wGUPeLLa7F9Z6OAoD+i/M6FK9"
-        crossorigin="anonymous"></script>
-<script src="~/js/vehicleScene.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-// ── Server-side data ─────────────────────────────────────────────────────────
-var highwayId = '@(Model.SelectedHighwayId ?? "")';
+/* ══════════════════════════════════════════════════════════════════════
+   CLASSIFICATION-AWARE 3D TRAFFIC SCENE
+   ══════════════════════════════════════════════════════════════════════
+   Algorithm (mirrors VehicleClassifier.cs):
+     1. altitude_m > 10  → air   (≤150 = air_urban, >150 = air_express)
+     2. vehicle_type field → direct category map
+     3. speed_mph heuristic → motorcycle/sedan/suv/truck/van
+     4. VehicleClassJson from API overrides all (stored classification)
 
-var sensorData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
-    sensors.Where(s => s.Latitude.HasValue && s.Longitude.HasValue)
-           .Select(s => new { s.DeviceName, s.DeviceType, s.Status, lat = s.Latitude, lon = s.Longitude })));
+   Geometry per category (Three.js):
+     sedan       → BoxGeometry  1.6×0.8×0.4   colour #3b82f6
+     suv         → BoxGeometry  1.9×0.9×0.55  colour #22c55e
+     truck       → BoxGeometry  2.4×0.95×0.75 colour #f59e0b
+     motorcycle  → CylinderGeom 0.6×0.3       colour #a855f7
+     van         → BoxGeometry  2.1×1.0×1.0   colour #64748b
+     air_urban   → ConeGeom(inv)0.5            colour #00bcd4
+     air_express → Octahedron   0.6            colour #ff6b35
 
-var zoneData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
-    zones.Where(z => z.Latitude.HasValue && z.Longitude.HasValue)
-         .Select(z => new {
-             zoneId   = z.ZoneId,
-             zoneName = z.ZoneName,
-             status   = z.Status,
-             lat      = z.Latitude,
-             lon      = z.Longitude,
-             r        = z.GeofenceRadius
-         })));
+   Views:
+     Perspective  – full 3D, orbit controls
+     Side (elev.) – orthographic +X → shows altitude stacking
+     Top (plan)   – orthographic ↓  → shows lane spread
+     Split        – all three in one canvas (left 42%, mid 29%, right 29%)
+   ══════════════════════════════════════════════════════════════════════ */
 
-var serversByZone = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
-    servers.GroupBy(s => s.ZoneId ?? "")
-           .ToDictionary(
-               g => g.Key,
-               g => g.Select(s => new {
-                   serverId   = s.ServerId,
-                   serverName = s.ServerName,
-                   ipAddress  = s.IpAddress,
-                   port       = s.Port,
-                   status     = s.Status
-               }).ToList()
-           )));
+const ALT_SCALE = 0.05;
+const XZ_SCALE  = 800;
+const HW        = '@hw';
 
-// ── Zone selection state ─────────────────────────────────────────────────────
-var selectedZoneId = '';
+// ── Geometry + colour factory ─────────────────────────────────────────
+const CAT_SPEC = {
+    sedan:       { color:'#3b82f6', geo:()=>new THREE.BoxGeometry(1.6,0.4,0.8) },
+    suv:         { color:'#22c55e', geo:()=>new THREE.BoxGeometry(1.9,0.55,0.9) },
+    truck:       { color:'#f59e0b', geo:()=>new THREE.BoxGeometry(2.4,0.75,0.95) },
+    motorcycle:  { color:'#a855f7', geo:()=>new THREE.CylinderGeometry(0.15,0.15,0.5,8) },
+    van:         { color:'#64748b', geo:()=>new THREE.BoxGeometry(2.1,1.0,1.0) },
+    air_urban:   { color:'#00bcd4', geo:()=>new THREE.ConeGeometry(0.5,0.9,6) },
+    air_express: { color:'#ff6b35', geo:()=>new THREE.OctahedronGeometry(0.6) },
+};
+const DEFAULT_SPEC = CAT_SPEC.sedan;
 
-function selectZone(zoneId) {
-    selectedZoneId = zoneId || '';
-    // Sync dropdowns
-    document.getElementById('zoneFilterSelect').value = selectedZoneId;
-    var ss = document.getElementById('serverFilterSelect');
-    if (ss) ss.value = selectedZoneId ? selectedZoneId : '';
+function getSpec(vc) {
+    if (!vc) return DEFAULT_SPEC;
+    const cat = vc.category || vc.vehicleCategory || 'sedan';
+    return CAT_SPEC[cat] || DEFAULT_SPEC;
+}
 
-    // Highlight zone list items
-    document.querySelectorAll('.zone-list-item').forEach(function(el) {
-        var active = el.dataset.zoneId === selectedZoneId;
-        el.style.background    = active ? 'rgba(59,130,246,.15)'  : '';
-        el.style.borderLeft    = active ? '3px solid #3b82f6'     : '3px solid transparent';
-        el.style.paddingLeft   = active ? '9px'                   : '';
+// ── JS-side classifier (mirrors C# VehicleClassifier, used as fallback) ─
+function classifyLocal(ev) {
+    // Use stored classification if available
+    if (ev.vehicleClassJson) {
+        try {
+            const vc = typeof ev.vehicleClassJson === 'string'
+                ? JSON.parse(ev.vehicleClassJson) : ev.vehicleClassJson;
+            if (vc && vc.category) return vc;
+        } catch(e) {}
+    }
+    if (ev.vehicleCategory && ev.vehicleMode)
+        return { category: ev.vehicleCategory, domain: ev.vehicleMode, color: CAT_SPEC[ev.vehicleCategory]?.color || '#3b82f6' };
+
+    // Step 1: Altitude gate
+    const alt = ev.altitudeMeters ?? ev.altitudeM ?? null;
+    if (alt !== null && alt > 10)
+        return { category: alt <= 150 ? 'air_urban' : 'air_express', domain: 'air',
+                 color: alt <= 150 ? '#00bcd4' : '#ff6b35' };
+
+    // Step 3: Speed heuristic
+    const s = ev.speedMph;
+    let cat = 'sedan';
+    if (s !== null && s !== undefined) {
+        if (s <= 25) cat = 'motorcycle';
+        else if (s <= 55) cat = 'sedan';
+        else if (s <= 75) cat = 'suv';
+        else if (s <= 90) cat = 'truck';
+        else cat = 'van';
+    }
+    return { category: cat, domain: 'ground', color: CAT_SPEC[cat]?.color || '#3b82f6' };
+}
+
+// ── Lat/lon normalisation ─────────────────────────────────────────────
+let midLat = 32.75, midLon = -97.0;
+function norm(lat, lon) {
+    return { x: (lon - midLon) * XZ_SCALE, z: (lat - midLat) * XZ_SCALE };
+}
+
+// ── Scene setup ───────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a14);
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+dir.position.set(60, 200, 80); scene.add(dir);
+scene.add(new THREE.GridHelper(500, 50, 0x1a1a2e, 0x111133));
+
+// Static zones
+const ZONES = @Html.Raw(zonesJson);
+ZONES.forEach(z => {
+    if (!z.lat || !z.lon) return;
+    const p  = norm(z.lat, z.lon);
+    const r  = (z.radius / 20) || 15;
+    const cy = new THREE.CylinderGeometry(r, r, 0.2, 32);
+    const cm = new THREE.MeshPhongMaterial({
+        color: z.status === 'active' ? 0x22c55e : 0xf59e0b,
+        transparent: true, opacity: 0.18, depthWrite: false
     });
-
-    updateMapHighlight(selectedZoneId);
-    updateZoneDetailPanel(selectedZoneId);
-    updateFeedTitle(selectedZoneId);
-    updateSceneZoneLabel(selectedZoneId);
-
-    // Reset poll time so new zone events load immediately
-    lastPollTime = new Date().toISOString();
-    if (scene3dInitialized) pollLiveEvents();
-}
-
-function selectZoneByServer(zoneId) {
-    // Show the map first so the fly-to zoom is visible, then filter
-    setMode('map');
-    selectZone(zoneId);
-}
-
-// ── Leaflet map ──────────────────────────────────────────────────────────────
-var mapCenter = zoneData.length > 0 ? [zoneData[0].lat, zoneData[0].lon] : [32.7767, -96.7970];
-var map = L.map('leafletMap').setView(mapCenter, 10);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution:'© OSM, CARTO' }).addTo(map);
-
-sensorData.forEach(function(s) {
-    var color = {camera:'#3b82f6',lidar:'#a855f7',radar:'#f59e0b','vehicle tag reader':'#22c55e'}[s.deviceType] || '#fff';
-    L.circleMarker([s.lat, s.lon], {radius:5, color:color, fillColor:color, fillOpacity:0.9})
-        .bindPopup('<b>'+s.deviceName+'</b><br>'+s.deviceType+'<br>'+s.status).addTo(map);
+    const mesh = new THREE.Mesh(cy, cm);
+    mesh.position.set(p.x, 0.1 + z.altM * ALT_SCALE, p.z);
+    scene.add(mesh);
+    // Zone ring
+    const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(r, 0.15, 8, 48),
+        new THREE.MeshPhongMaterial({ color: 0x22c55e, opacity: 0.5, transparent: true })
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(p.x, 0.2, p.z);
+    scene.add(ring);
 });
 
-// Highway polyline — connect zones in order to show the route
-if (zoneData.length > 1) {
-    L.polyline(zoneData.map(function(z){ return [z.lat, z.lon]; }),
-        { color: '#3b82f6', weight: 4, opacity: 0.42, dashArray: '10 6' }).addTo(map);
-}
-
-// Draw zone circles and keep refs for highlight updates
-var mapZoneRefs = [];
-zoneData.forEach(function(z) {
-    var base = z.status === 'fault' ? '#ef4444' : '#22c55e';
-    var circle = L.circle([z.lat, z.lon], {radius: z.r || 500, color: base, fillColor: base, fillOpacity: 0.12, weight: 2})
-        .addTo(map);
-    var marker = L.circleMarker([z.lat, z.lon], {radius: 10, color: base, fillColor: base, fillOpacity: 0.95, weight: 2})
-        .bindPopup(
-            '<div style="min-width:150px">' +
-            '<b style="font-size:.85rem">' + z.zoneName + '</b>' +
-            ' <span style="font-size:.7rem;color:' + base + '">● ' + z.status + '</span>' +
-            '<br><code style="font-size:.68rem;color:#94a3b8">' + z.zoneId + '</code>' +
-            '<br><a href="#" onclick="selectZone(\'' + z.zoneId + '\');return false;" ' +
-                'style="font-size:.75rem;color:#60a5fa">Filter to this zone →</a>' +
-            '</div>')
-        .bindTooltip(z.zoneName, { permanent: true, direction: 'top', offset: [0, -14], className: 'mss-zone-tooltip' })
-        .on('click', function() { selectZone(z.zoneId); })
-        .addTo(map);
-    mapZoneRefs.push({ zoneId: z.zoneId, zoneName: z.zoneName, circle: circle, marker: marker, base: base, lat: z.lat, lon: z.lon });
+// Altitude band planes (from SwitchServers)
+const SERVERS = @Html.Raw(serversJson);
+SERVERS.filter(s => s.altMin && s.altMax).forEach((s, i) => {
+    const h   = (s.altMax - s.altMin) * ALT_SCALE;
+    const midY = ((s.altMin + s.altMax) / 2) * ALT_SCALE;
+    const hue = (i * 137.5) % 360;
+    const col = new THREE.Color(`hsl(${hue},70%,55%)`);
+    const geo  = new THREE.BoxGeometry((s.altWidth || 30) * ALT_SCALE * 20, h, 300);
+    const mat  = new THREE.MeshPhongMaterial({ color: col, transparent: true, opacity: 0.10, depthWrite: false });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(i * 12 - (SERVERS.length * 6), midY, 0);
+    scene.add(mesh);
 });
 
-function updateMapHighlight(zoneId) {
-    mapZoneRefs.forEach(function(ref) {
-        var sel = zoneId && ref.zoneId === zoneId;
-        ref.circle.setStyle({
-            color:       sel ? '#f59e0b' : ref.base,
-            fillOpacity: sel ? 0.22      : 0.1,
-            weight:      sel ? 3         : 1
-        });
-        ref.marker.setStyle({
-            color:       sel ? '#f59e0b' : ref.base,
-            fillColor:   sel ? '#f59e0b' : ref.base,
-            radius:      sel ? 13        : 8
-        });
-        if (sel) map.flyTo([ref.lat, ref.lon], 12, { duration: 0.8 });
+// ── Vehicle mesh management ───────────────────────────────────────────
+const vehicleMeshes = [], vehicleData = [];
+const raycaster = new THREE.Raycaster();
+const mouse2    = new THREE.Vector2();
+let domainFilter = 'all';
+
+function buildVehicleMesh(ev) {
+    const vc   = classifyLocal(ev);
+    const spec = getSpec(vc);
+    const geo  = spec.geo();
+    const mat  = new THREE.MeshPhongMaterial({ color: new THREE.Color(vc.color || spec.color) });
+    const mesh = new THREE.Mesh(geo, mat);
+
+    const p = (ev.latitude && ev.longitude) ? norm(ev.latitude, ev.longitude)
+              : { x: (Math.random()-0.5)*180, z: (Math.random()-0.5)*180 };
+    const altY = vc.domain === 'air' ? (ev.altitudeMeters || 50) * ALT_SCALE : 0.3;
+    mesh.position.set(p.x, altY, p.z);
+
+    // Rotate air vehicles slightly
+    if (vc.domain === 'air') mesh.rotation.y = Math.random() * Math.PI * 2;
+
+    mesh.userData = { ev, vc, baseY: altY, idx: vehicleMeshes.length };
+    return mesh;
+}
+
+function loadEvents(events) {
+    vehicleMeshes.forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
+    vehicleMeshes.length = 0; vehicleData.length = 0;
+
+    let gCount = 0, aCount = 0;
+    events.forEach(ev => {
+        const vc = classifyLocal(ev);
+        if (domainFilter !== 'all' && vc.domain !== domainFilter) return;
+        const mesh = buildVehicleMesh(ev);
+        scene.add(mesh);
+        vehicleMeshes.push(mesh);
+        vehicleData.push({ ev, vc });
+        if (vc.domain === 'air') aCount++; else gCount++;
     });
-    var label = document.getElementById('mapZoneLabel');
-    if (zoneId) {
-        var z = zoneData.find(function(z) { return z.zoneId === zoneId; });
-        label.textContent = z ? z.zoneName : zoneId;
-        label.style.display = '';
-    } else {
-        label.style.display = 'none';
-        if (zoneData.length) map.flyTo(mapCenter, 10, { duration: 0.8 });
-    }
+    document.getElementById('statGround').textContent = gCount;
+    document.getElementById('statAir').textContent    = aCount;
 }
 
-loadSegments();
-function loadSegments() {
-    fetch('/Traffic3D/GetTrafficSegments?highwayId=' + encodeURIComponent(highwayId))
-        .then(function(r) { return r.json(); })
-        .then(renderSegFeed)
-        .catch(function() { renderSegFeed({ segments: [] }); });
-}
-function renderSegFeed(data) {
-    var segs = (data.segments || []);
-    if (!segs.length) return;
-    var cm = { free: '#22c55e', moderate: '#f59e0b', heavy: '#ef4444' };
-    var feed = document.getElementById('trafficFeed');
-    feed.innerHTML = segs.map(function(s) {
-        var c = cm[s.congestion] || '#64748b';
-        return '<div class="mss-list-item d-flex justify-content-between align-items-center">' +
-            '<span class="small fw-semibold" style="color:'+c+'">'+s.name+'</span>' +
-            '<span class="small text-muted">'+s.speedMph+' mph</span></div>';
-    }).join('');
-}
-
-// ── Zone detail panel ────────────────────────────────────────────────────────
-function updateZoneDetailPanel(zoneId) {
-    var card  = document.getElementById('zoneDetailCard');
-    var title = document.getElementById('zoneDetailTitle');
-    var badge = document.getElementById('zoneDetailBadge');
-    var list  = document.getElementById('zoneServerList');
-
-    if (!zoneId) { card.style.display = 'none'; return; }
-
-    var zone    = zoneData.find(function(z) { return z.zoneId === zoneId; });
-    var srvList = serversByZone[zoneId] || [];
-    card.style.display = '';
-    title.textContent  = zone ? zone.zoneName : zoneId;
-    badge.textContent  = zone ? zone.status : '';
-    badge.className    = 'mss-badge mss-badge--' + (zone ? zone.status : 'active');
-
-    if (!srvList.length) {
-        list.innerHTML = '<p class="text-muted small p-2">No servers assigned to this zone.</p>';
-        return;
-    }
-    list.innerHTML = srvList.map(function(s) {
-        var dot = s.status === 'online' ? '#22c55e' : s.status === 'fault' ? '#ef4444' : '#f59e0b';
-        return '<div class="mss-list-item d-flex justify-content-between align-items-center">' +
-            '<div>' +
-            '<div class="small fw-semibold">' + s.serverName + '</div>' +
-            '<div class="font-monospace text-muted" style="font-size:.63rem">' +
-                (s.ipAddress || '—') + ':' + s.port +
-            '</div>' +
-            '</div>' +
-            '<span class="mss-badge mss-badge--' + s.status + '">' + s.status + '</span>' +
-            '</div>';
-    }).join('');
-}
-
-function updateFeedTitle(zoneId) {
-    var title = document.getElementById('feedTitle');
-    if (zoneId) {
-        var z = zoneData.find(function(z) { return z.zoneId === zoneId; });
-        title.textContent = (z ? z.zoneName : zoneId) + ' Feed';
-    } else {
-        title.textContent = 'Live Feed';
-    }
-}
-
-function updateSceneZoneLabel(zoneId) {
-    var overlay = document.getElementById('zoneOverlay');
-    var nameEl  = document.getElementById('overlayZoneName');
-    var scLabel = document.getElementById('scene3dZoneLabel');
-    if (zoneId) {
-        var z = zoneData.find(function(z) { return z.zoneId === zoneId; });
-        var name = z ? z.zoneName : zoneId;
-        nameEl.textContent   = name;
-        overlay.style.display = '';
-        scLabel.textContent  = name;
-        scLabel.style.display = '';
-    } else {
-        overlay.style.display = 'none';
-        scLabel.style.display = 'none';
-    }
-}
-
-// ── Animation play/pause ─────────────────────────────────────────────────────
-var animationPaused = false;
-function toggleAnimation() {
-    closeVehicleDetail();
-    animationPaused = !animationPaused;
-    var btn       = document.getElementById('btnAnimToggle');
-    var feedTitle = document.getElementById('feedTitle');
-    var simBadge  = document.getElementById('simModeBadge');
-    var liveBadge = document.getElementById('livePulseBadge');
-    if (!btn) return;
-    btn.innerHTML = animationPaused
-        ? '<i class="bi bi-play-fill me-1"></i>Resume'
-        : '<i class="bi bi-pause-fill me-1"></i>Pause';
-    btn.className = animationPaused ? 'btn btn-success btn-sm' : 'btn btn-outline-warning btn-sm';
-
-    if (animationPaused) {
-        // ── PAUSED: clear scene, stop live feed, start simulation-only ───
-        // 1. Remove every vehicle mesh from the WebGL scene
-        vehicles3d.forEach(function(v) { scene3d.remove(v); });
-        vehicles3d.length = 0;
-        // 2. Clear feed panel
-        feedItems3d.length = 0;
-        var feedEl = document.getElementById('trafficFeed');
-        if (feedEl) feedEl.innerHTML =
-            '<p class="text-muted small p-2"><i class="bi bi-cpu me-2"></i>' +
-            'Scene cleared — waiting for simulation events…</p>';
-        // 3. Switch polling to simulation-only
-        if (liveEventInterval) { clearInterval(liveEventInterval); liveEventInterval = null; }
-        lastSimPollTime = new Date(Date.now() - 5000).toISOString();
-        simEventInterval = setInterval(pollSimulationEvents, 3000);
-        pollSimulationEvents();
-        // 4. Update UI indicators
-        if (feedTitle) { feedTitle.textContent = 'Simulation Feed'; feedTitle.style.color = '#f59e0b'; }
-        if (simBadge)  simBadge.style.display = '';
-        if (liveBadge) { liveBadge.textContent = 'SIM ONLY'; liveBadge.style.background = '#92400e'; }
-    } else {
-        // ── RESUMED: clear sim vehicles, restart live feed ────────────────
-        // 1. Remove simulation vehicles from WebGL scene
-        vehicles3d.forEach(function(v) { scene3d.remove(v); });
-        vehicles3d.length = 0;
-        // 2. Clear feed
-        feedItems3d.length = 0;
-        var feedEl = document.getElementById('trafficFeed');
-        if (feedEl) feedEl.innerHTML =
-            '<p class="text-muted small p-2"><i class="bi bi-arrow-repeat me-2"></i>' +
-            'Resuming live feed…</p>';
-        // 3. Switch polling back to live
-        if (simEventInterval) { clearInterval(simEventInterval); simEventInterval = null; }
-        liveEventInterval = setInterval(pollLiveEvents, 3000);
-        lastPollTime = new Date(Date.now() - 10000).toISOString();
-        pollLiveEvents();
-        // 4. Restore UI indicators
-        if (feedTitle) { feedTitle.textContent = 'Live Feed'; feedTitle.style.color = ''; }
-        if (simBadge)  simBadge.style.display = 'none';
-        if (liveBadge) { liveBadge.textContent = 'LIVE'; liveBadge.style.background = ''; }
-    }
-}
-
-// ── Mode toggle ──────────────────────────────────────────────────────────────
-var scene3dInitialized = false;
-function setMode(m) {
-    document.getElementById('mapPanel').style.display     = m === 'map' ? '' : 'none';
-    document.getElementById('scene3dPanel').style.display = m === '3d'  ? '' : 'none';
-    document.getElementById('btnMap').className = m === 'map' ? 'btn btn-primary btn-sm' : 'btn btn-outline-secondary btn-sm';
-    document.getElementById('btn3d').className  = m === '3d'  ? 'btn btn-primary btn-sm' : 'btn btn-outline-secondary btn-sm';
-
-    if (m === '3d') {
-        if (!scene3dInitialized) {
-            initScene3D();
-        } else {
-            // Already running — flush feed and immediately re-poll for current zone
-            feedItems3d = [];
-            var zLabel = selectedZoneId
-                ? (zoneData.find(function(z) { return z.zoneId === selectedZoneId; }) || {}).zoneName || selectedZoneId
-                : null;
-            document.getElementById('trafficFeed').innerHTML =
-                '<p class="text-muted small p-2">' +
-                (zLabel ? 'Loading feed for <strong>' + zLabel + '</strong>…' : 'Refreshing live feed…') +
-                '</p>';
-            lastPollTime = new Date(Date.now() - 30000).toISOString();
-            pollLiveEvents();
-        }
-        updateSceneZoneLabel(selectedZoneId);
-    }
-
-    if (m === 'map') {
-        // Returning to map — restore segment feed if no live items yet
-        updateFeedTitle(selectedZoneId);
-        if (!feedItems3d.length) loadSegments();
-    }
-}
-
-// ── Three.js Scene3D ─────────────────────────────────────────────────────────
-var speedMult = 1, density = 10, camAngleVal = 45;
-var renderer3d, camera3d, scene3d, vehicles3d = [];
-var raycaster3d = null, mouse3d = null, selectedVehicle3d = null;
-
-function setCamAngle(v) {
-    camAngleVal = parseFloat(v);
-    if (camera3d) {
-        var d = 35, rad = camAngleVal * Math.PI / 180;
-        camera3d.position.set(0, Math.sin(rad) * d, Math.cos(rad) * d);
-        camera3d.lookAt(0, 0, 0);
-    }
-}
-function setSpeedMult(v) { speedMult = parseFloat(v); }
-function setDensity(v)   { density   = parseInt(v);   }
-
-function initScene3D() {
-    scene3dInitialized = true;
-    var container = document.getElementById('scene3dContainer');
-    var W = container.clientWidth, H = container.clientHeight;
-
-    scene3d = new THREE.Scene();
-    scene3d.background = new THREE.Color(0x0a0f1a);
-    scene3d.fog = new THREE.FogExp2(0x0a0f1a, 0.016);
-
-    camera3d = new THREE.PerspectiveCamera(45, W / H, 0.1, 500);
-    camera3d.position.set(0, 22, 28);
-    camera3d.lookAt(0, 0, 0);
-
-    renderer3d = new THREE.WebGLRenderer({ antialias: true });
-    renderer3d.setSize(W, H);
-    renderer3d.setPixelRatio(window.devicePixelRatio);
-    renderer3d.shadowMap.enabled = true;
-    container.appendChild(renderer3d.domElement);
-
-    scene3d.add(new THREE.AmbientLight(0x334466, 2));
-    var dir = new THREE.DirectionalLight(0x8899ff, 2.5);
-    dir.position.set(10, 20, 10); dir.castShadow = true;
-    scene3d.add(dir);
-
-    // Ground
-    var gnd = new THREE.Mesh(new THREE.PlaneGeometry(120, 120),
-        new THREE.MeshLambertMaterial({ color: 0x050a12 }));
-    gnd.rotation.x = -Math.PI / 2; gnd.receiveShadow = true;
-    scene3d.add(gnd);
-
-    // Road (6 lanes total — 3 each direction)
-    var road = new THREE.Mesh(new THREE.PlaneGeometry(14, 80),
-        new THREE.MeshLambertMaterial({ color: 0x1a2035 }));
-    road.rotation.x = -Math.PI / 2; road.position.y = 0.02; road.receiveShadow = true;
-    scene3d.add(road);
-
-    // Median
-    var med = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 80),
-        new THREE.MeshLambertMaterial({ color: 0x2a3a55 }));
-    med.rotation.x = -Math.PI / 2; med.position.y = 0.025;
-    scene3d.add(med);
-
-    // Lane markers
-    for (var zi = -36; zi < 37; zi += 6) {
-        [-5, -3, 3, 5].forEach(function(xl) {
-            var lm = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 3),
-                new THREE.MeshBasicMaterial({ color: Math.abs(xl) === 5 ? 0xffffff : 0xffff00 }));
-            lm.rotation.x = -Math.PI / 2; lm.position.set(xl, 0.03, zi);
-            scene3d.add(lm);
-        });
-    }
-
-    // Curbs
-    [-7.2, 7.2].forEach(function(cx) {
-        var curb = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.12, 80),
-            new THREE.MeshLambertMaterial({ color: 0x2c3a52 }));
-        curb.position.set(cx, 0.06, 0);
-        scene3d.add(curb);
-    });
-
-    vehicles3d = [];
-    for (var vi = 0; vi < density; vi++) spawnV();
-    animate3d();
-    startEventPolling();
-
-    var tb = document.getElementById('btnAnimToggle');
-    if (tb) { tb.style.display = ''; animationPaused = false; }
-
-    // Auto-enter simulation mode if a simulation was already running in another tab
+async function refreshScene() {
     try {
-        if (localStorage.getItem('airways_sim_active') === 'true') {
-            setTimeout(function() { if (!animationPaused) toggleAnimation(); }, 500);
+        const r = await fetch(`/api/events/live?highwayId=${HW}&take=100`);
+        if (!r.ok) return;
+        const evs = await r.json();
+        if (evs.length > 0) {
+            const lats = evs.filter(e=>e.latitude).map(e=>e.latitude);
+            const lons = evs.filter(e=>e.longitude).map(e=>e.longitude);
+            if (lats.length) {
+                midLat = lats.reduce((a,b)=>a+b,0)/lats.length;
+                midLon = lons.reduce((a,b)=>a+b,0)/lons.length;
+            }
         }
-    } catch(e) {}
-
-    // ── Click-to-inspect: raycaster setup ────────────────────────────────────
-    raycaster3d = new THREE.Raycaster();
-    mouse3d     = new THREE.Vector2();
-
-    // Build the floating detail panel inside the canvas container
-    var vpanel = document.createElement('div');
-    vpanel.id = 'vehicleDetailPanel';
-    vpanel.style.cssText =
-        'display:none;position:absolute;top:0;left:0;z-index:20;width:300px;' +
-        'background:rgba(8,12,24,.97);border:1px solid rgba(255,255,255,.14);' +
-        'border-radius:10px;backdrop-filter:blur(8px);' +
-        'box-shadow:0 8px 32px rgba(0,0,0,.6);overflow:hidden;';
-    vpanel.innerHTML =
-        '<div style="padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.09);' +
-            'display:flex;justify-content:space-between;align-items:center">' +
-            '<span id="vdTitle" style="font-size:.8rem;font-weight:700;color:#e2e8f0;' +
-                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px"></span>' +
-            '<button id="vdClose" style="background:none;border:none;color:#94a3b8;' +
-                'font-size:1.1rem;cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0">' +
-                '×</button>' +
-        '</div>' +
-        '<div style="display:flex;border-bottom:1px solid rgba(255,255,255,.07)">' +
-            '<button id="vdTabFmt" onclick="vdSwitchTab(\'fmt\')" ' +
-                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
-                'background:rgba(59,130,246,.18);border:none;color:#60a5fa;cursor:pointer">' +
-                'Formatted</button>' +
-            '<button id="vdTabRaw" onclick="vdSwitchTab(\'raw\')" ' +
-                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
-                'background:transparent;border:none;color:#64748b;cursor:pointer">' +
-                'Raw JSON</button>' +
-        '</div>' +
-        '<div id="vdBodyFmt" style="padding:10px 12px;max-height:240px;overflow-y:auto"></div>' +
-        '<div id="vdBodyRaw" style="display:none;padding:10px 12px;max-height:240px;overflow-y:auto">' +
-            '<pre id="vdRawPre" style="font-size:.6rem;color:#94a3b8;white-space:pre-wrap;' +
-                'word-break:break-all;margin:0;line-height:1.5"></pre>' +
-        '</div>';
-    container.appendChild(vpanel);
-    vpanel.addEventListener('click', function(e) { e.stopPropagation(); });
-    document.getElementById('vdClose').addEventListener('click', closeVehicleDetail);
-
-    // Hover: change cursor when over a vehicle
-    container.addEventListener('mousemove', function(e) {
-        if (!raycaster3d || !camera3d) return;
-        var rect = renderer3d.domElement.getBoundingClientRect();
-        mouse3d.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-        mouse3d.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
-        raycaster3d.setFromCamera(mouse3d, camera3d);
-        var hits = raycaster3d.intersectObjects(vehicles3d, true);
-        container.style.cursor = hits.length ? 'pointer' : '';
-    });
-
-    // Click: pick vehicle and show detail panel
-    container.addEventListener('click', function(e) {
-        var panel = document.getElementById('vehicleDetailPanel');
-        if (panel && panel.contains(e.target)) return;
-        if (!raycaster3d || !camera3d) return;
-        var rect = renderer3d.domElement.getBoundingClientRect();
-        mouse3d.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-        mouse3d.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
-        raycaster3d.setFromCamera(mouse3d, camera3d);
-        var hits = raycaster3d.intersectObjects(vehicles3d, true);
-        if (!hits.length) { closeVehicleDetail(); return; }
-        var obj = hits[0].object;
-        while (obj.parent && vehicles3d.indexOf(obj) < 0) obj = obj.parent;
-        if (vehicles3d.indexOf(obj) < 0) { closeVehicleDetail(); return; }
-        showVehicleDetail(obj, e.clientX, e.clientY);
-    });
-
-    // Keyboard dismiss
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') closeVehicleDetail();
-    });
-
-    // Outside-page dismiss: clicking sidebar, header, or any element outside the canvas container
-    document.addEventListener('click', function(e) {
-        var panel = document.getElementById('vehicleDetailPanel');
-        if (!panel || panel.style.display === 'none') return;
-        var cont = document.getElementById('scene3dContainer');
-        if (cont && !cont.contains(e.target)) closeVehicleDetail();
-    }, true);
-
-    window.addEventListener('resize', function() {
-        if (!renderer3d) return;
-        var W2 = container.clientWidth, H2 = container.clientHeight;
-        renderer3d.setSize(W2, H2);
-        camera3d.aspect = W2 / H2;
-        camera3d.updateProjectionMatrix();
-    });
+        loadEvents(evs);
+    } catch(e) { console.warn('Scene refresh error:', e); }
 }
 
-// ── Vehicle spawning ─────────────────────────────────────────────────────────
+// ── Camera setup ──────────────────────────────────────────────────────
+const canvas = document.getElementById('mainCanvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(canvas.clientWidth, canvas.clientHeight);
 
-function spawnV(vSpec, fromEvent, zoneId, isSimulation, ev) {
-    if (!vSpec) vSpec = vehicleGetRandom(null);
-    var group = vehicleBuildMesh(vSpec);
-    var lane  = [-4, -2, 2, 4][Math.floor(Math.random() * 4)];
-    group.position.set(lane, 0, (Math.random() * 80) - 40);
-    if (lane > 0) group.rotation.y = Math.PI;
-    group.userData = {
-        speed:        (25 + Math.random() * 55) * 0.012,
-        dir:          lane < 0 ? 1 : -1,
-        lane:         lane,
-        type:         vSpec.type,
-        make:         vSpec.make,
-        model:        vSpec.model,
-        icon:         vSpec.icon,
-        zoneId:       zoneId || '',
-        fromEvent:    fromEvent || false,
-        isSimulation: isSimulation || false,
-        evPayload:    ev ? (ev.payload    || '') : '',
-        evEventType:  ev ? (ev.eventType  || '') : '',
-        evVehicleId:  ev ? (ev.vehicleId  || '') : '',
-        evDeviceId:   ev ? (ev.deviceId   || '') : '',
-        evHighwayId:  ev ? (ev.highwayId  || '') : '',
-        evLatitude:   ev ? (ev.latitude   || null) : null,
-        evLongitude:  ev ? (ev.longitude  || null) : null,
-        evCreatedDate:ev ? (ev.createdDate|| '') : '',
-        evZoneId:     ev ? (ev.zoneId     || '') : ''
-    };
-    scene3d.add(group);
-    vehicles3d.push(group);
-    return group;
+// Perspective cam
+const camP = new THREE.PerspectiveCamera(58, canvas.clientWidth/canvas.clientHeight, 0.1, 3000);
+camP.position.set(100, 80, 180); camP.lookAt(0, 20, 0);
+
+// Side cam (elevation, orthographic, looking along -X)
+const oW = 160, oH = 120;
+const camS = new THREE.OrthographicCamera(-oW, oW, oH, -oH, 0.1, 2000);
+camS.position.set(500, 0, 0); camS.lookAt(0, 0, 0);
+
+// Top cam (plan, looking straight down)
+const camT = new THREE.OrthographicCamera(-oW, oW, oH, -oH, 0.1, 2000);
+camT.position.set(0, 600, 0); camT.up.set(0, 0, -1); camT.lookAt(0, 0, 0);
+
+// ── View mode ─────────────────────────────────────────────────────────
+let currentView = 'perspective';
+
+function setViewport(view) {
+    currentView = view;
+    const w = renderer.domElement.clientWidth;
+    const h = renderer.domElement.clientHeight;
+    // Show/hide split labels
+    document.getElementById('labelA').style.display = view === 'split' ? '' : 'none';
+    document.getElementById('labelB').style.display = view === 'split' ? '' : 'none';
+    document.getElementById('labelC').style.display = view === 'split' ? '' : 'none';
+    if (view === 'split') {
+        document.getElementById('labelB').style.left = Math.round(w * 0.43) + 'px';
+        document.getElementById('labelC').style.left = Math.round(w * 0.72) + 'px';
+    }
 }
 
-// ── Animation loop ───────────────────────────────────────────────────────────
+// ── Orbit (perspective) ───────────────────────────────────────────────
+let isDrag = false, prevM = {x:0,y:0}, theta = 0.6, phi = 0.5, radius = 280;
+canvas.addEventListener('mousedown', e => { isDrag = true; prevM = {x:e.clientX, y:e.clientY}; });
+window.addEventListener('mouseup', () => isDrag = false);
+window.addEventListener('mousemove', e => {
+    if (!isDrag || currentView !== 'perspective') return;
+    theta -= (e.clientX - prevM.x) * 0.005;
+    phi    = Math.max(0.05, Math.min(1.4, phi - (e.clientY - prevM.y) * 0.005));
+    prevM  = { x: e.clientX, y: e.clientY };
+});
+canvas.addEventListener('wheel', e => { radius = Math.max(60, Math.min(700, radius + e.deltaY * 0.25)); });
 
-function animate3d() {
-    requestAnimationFrame(animate3d);
+// ── Click — vehicle inspector ─────────────────────────────────────────
+canvas.addEventListener('click', e => {
+    const rect = canvas.getBoundingClientRect();
+    mouse2.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+    mouse2.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
 
-    vehicles3d.forEach(function(v) {
-        // When paused: only simulation vehicles keep moving
-        var canMove = !animationPaused || v.userData.isSimulation;
-        if (!canMove) return;
-
-        // When zone filtered: dim ambient vehicles not from that zone
-        if (selectedZoneId && !v.userData.fromEvent) {
-            v.traverse(function(c) {
-                if (c.isMesh && c.material && c.material.color) {
-                    c.material.transparent = true;
-                    c.material.opacity     = 0.25;
-                }
-            });
-        } else if (!v.userData._opacityReset) {
-            v.userData._opacityReset = true;
-            v.traverse(function(c) {
-                if (c.isMesh && c.material) {
-                    c.material.transparent = false;
-                    c.material.opacity     = 1;
-                }
-            });
-        }
-
-        v.position.z += v.userData.dir * v.userData.speed * speedMult;
-        if (v.position.z >  42) { v.position.z = -42; pushFeed3d(v, false, null, v.userData.isSimulation); }
-        if (v.position.z < -42) { v.position.z =  42; pushFeed3d(v, false, null, v.userData.isSimulation); }
-    });
-
-    // Maintain ambient density only when live (not paused)
-    if (!animationPaused) {
-        var ambient = vehicles3d.filter(function(v) { return !v.userData.fromEvent; });
-        while (ambient.length < density) {
-            var s = spawnV(null, false, '');
-            ambient.push(s);
-        }
-        // Trim excess
-        while (vehicles3d.length > density + 25) scene3d.remove(vehicles3d.shift());
+    let cam = camP;
+    if (currentView === 'side') cam = camS;
+    else if (currentView === 'top') cam = camT;
+    else if (currentView === 'split') {
+        const rx = (e.clientX - rect.left) / rect.width;
+        cam = rx < 0.42 ? camP : rx < 0.71 ? camS : camT;
     }
 
-    renderer3d.render(scene3d, camera3d);
+    raycaster.setFromCamera(mouse2, cam);
+    const hits = raycaster.intersectObjects(vehicleMeshes, false);
+    if (hits.length) showInspector(hits[0].object.userData);
+});
+
+function showInspector({ ev, vc }) {
+    const conf    = vc.confidence ?? vc.Confidence ?? 0;
+    const confPct = Math.round(conf * 100);
+    const confCls = conf < 0.4 ? 'danger' : conf < 0.65 ? 'warning' : 'success';
+    const isAir   = vc.domain === 'air';
+    document.getElementById('inspector').innerHTML = `
+    <table class="table table-sm table-borderless mb-0 small">
+      <tr><td class="text-muted">Vehicle ID</td><td><b>${ev.vehicleId||'—'}</b></td></tr>
+      <tr><td class="text-muted">Domain</td><td>
+        <span class="badge" style="background:${isAir?'#ff6b35':'#3b82f6'}">${vc.domain}</span>
+      </td></tr>
+      <tr><td class="text-muted">Category</td><td>
+        <span class="badge" style="background:${vc.color||'#64748b'}">${vc.category}</span>
+      </td></tr>
+      <tr><td class="text-muted">Confidence</td><td>
+        <div class="d-flex align-items-center gap-2">
+          <div class="progress flex-grow-1" style="height:6px">
+            <div class="progress-bar bg-${confCls}" style="width:${confPct}%"></div>
+          </div>
+          <small>${confPct}%</small>
+        </div>
+        ${conf < 0.4 ? '<small class="text-danger">⚠ low confidence</small>' : ''}
+      </td></tr>
+      <tr><td class="text-muted">Speed</td><td>${ev.speedMph!=null?ev.speedMph.toFixed(1)+' mph':'—'}</td></tr>
+      <tr><td class="text-muted">Altitude</td><td>${ev.altitudeMeters!=null?ev.altitudeMeters.toFixed(1)+' m':'ground'}</td></tr>
+      <tr><td class="text-muted">Event</td><td>${ev.eventType||'—'}</td></tr>
+      <tr><td class="text-muted">Zone</td><td>${ev.zoneId||'—'}</td></tr>
+    </table>`;
 }
 
-// ── Live event polling ───────────────────────────────────────────────────────
-
-var lastPollTime    = new Date().toISOString();
-var lastSimPollTime = new Date().toISOString();
-var feedItems3d     = [];
-var liveEventInterval = null;
-var simEventInterval  = null;
-
-function startEventPolling() {
-    liveEventInterval = setInterval(pollLiveEvents, 3000);
-}
-
-function pollLiveEvents() {
-    var url = '/api/events/live?highwayId=' + encodeURIComponent(highwayId) +
-              '&since=' + encodeURIComponent(lastPollTime);
-    if (selectedZoneId) url += '&zoneId=' + encodeURIComponent(selectedZoneId);
-
-    fetch(url)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!data.events || !data.events.length) return;
-            lastPollTime = data.serverTime;
-            data.events.forEach(function(ev) {
-                var spec = vehicleGetRandom(ev.vehicleType || null);
-                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', false, ev);
-                if (ev.speedMph) grp.userData.speed = ev.speedMph * 0.012;
-                // Reset opacity so event vehicles are always bright
-                grp.userData._opacityReset = false;
-                pushFeed3d(grp, true, ev, false);
-            });
-        })
-        .catch(function() {});
-}
-
-// ── Simulation-only polling (used when paused) ───────────────────────────────
-
-function pollSimulationEvents() {
-    var url = '/api/events/simulation?highwayId=' + encodeURIComponent(highwayId) +
-              '&since=' + encodeURIComponent(lastSimPollTime);
-    if (selectedZoneId) url += '&zoneId=' + encodeURIComponent(selectedZoneId);
-
-    fetch(url)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!data.events || !data.events.length) return;
-            lastSimPollTime = data.serverTime;
-            data.events.forEach(function(ev) {
-                var spec = vehicleGetRandom(ev.vehicleType || null);
-                var grp  = spawnV(spec, true, ev.zoneId || selectedZoneId || '', true, ev);
-                if (ev.speedMph) grp.userData.speed = ev.speedMph * 0.012;
-                grp.userData._opacityReset = false;
-                pushFeed3d(grp, true, ev, true);
-            });
-        })
-        .catch(function() {});
-}
-
-// ── Feed rendering ───────────────────────────────────────────────────────────
-
-function pushFeed3d(v, fromInput, ev, isSimulation) {
-    var evType = (ev && ev.eventType) ? ev.eventType : 'detection';
-    var spd    = (ev && ev.speedMph)  ? Math.round(ev.speedMph) : Math.round((25 + Math.random() * 55) * speedMult);
-    feedItems3d.unshift({
-        icon:         v.userData.icon  || '🚗',
-        make:         v.userData.make  || '',
-        model:        v.userData.model || '',
-        eventType:    evType,
-        spd:          spd,
-        dir:          v.userData.lane < 0 ? 'SB' : 'NB',
-        zoneId:       v.userData.zoneId || '',
-        time:         new Date().toLocaleTimeString(),
-        fromInput:    fromInput || false,
-        isSimulation: isSimulation || v.userData.isSimulation || false
+// ── Domain filter buttons ─────────────────────────────────────────────
+document.getElementById('domainFilter').querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('#domainFilter button').forEach(b => {
+            b.classList.remove('active','btn-secondary','btn-info','btn-warning');
+            b.classList.add('btn-outline-' + (b.dataset.domain === 'ground' ? 'info' : b.dataset.domain === 'air' ? 'warning' : 'secondary'));
+        });
+        btn.classList.add('active');
+        btn.classList.remove('btn-outline-secondary','btn-outline-info','btn-outline-warning');
+        btn.classList.add(btn.dataset.domain === 'ground' ? 'btn-info' : btn.dataset.domain === 'air' ? 'btn-warning' : 'btn-secondary');
+        domainFilter = btn.dataset.domain;
+        refreshScene();
     });
-    if (feedItems3d.length > 30) feedItems3d.length = 30;
-    renderFeed3d();
-}
+});
 
-function renderFeed3d() {
-    var feed = document.getElementById('trafficFeed');
-    feed.innerHTML = feedItems3d.map(function(f) {
-        var ec = FEED_EVENT_COLORS[f.eventType] || '#64748b';
-        var inputTag = f.isSimulation
-            ? '<span class="badge ms-1" style="font-size:.58rem;vertical-align:middle;background:#f59e0b;color:#000;font-weight:700"><i class="bi bi-cpu me-1"></i>SIM</span>'
-            : (f.fromInput
-                ? '<span class="badge bg-warning text-dark ms-1" style="font-size:.58rem;vertical-align:middle">DATA INPUT</span>'
-                : '');
-        // Show zone indicator when showing all zones
-        var zoneTag = (!selectedZoneId && f.zoneId)
-            ? '<span class="badge bg-secondary ms-1" style="font-size:.58rem;vertical-align:middle">' + f.zoneId + '</span>'
-            : '';
-        return '<div class="mss-list-item" style="padding:.35rem .75rem">' +
-            '<div class="d-flex justify-content-between align-items-center">' +
-            '<span style="font-size:.82rem">' + f.icon + ' <span class="fw-semibold">' + f.make + '</span> ' + f.model + inputTag + zoneTag + '</span>' +
-            '<span class="font-monospace text-muted" style="font-size:.6rem">' + f.time + '</span>' +
-            '</div>' +
-            '<div class="d-flex gap-2 align-items-center mt-1">' +
-            '<span class="fw-bold" style="color:' + ec + ';font-size:.74rem">' + f.eventType.toUpperCase() + '</span>' +
-            '<span class="text-muted" style="font-size:.74rem">' + f.dir + ' · ' + f.spd + ' mph</span>' +
-            '</div>' +
-            '</div>';
-    }).join('');
-}
-
-// ── Vehicle click-to-inspect ─────────────────────────────────────────────────
-
-function clearVehicleHighlight(v) {
-    if (!v) return;
-    v.traverse(function(c) {
-        if (c.isMesh && c.material && c.material.emissive) {
-            c.material.emissive.setHex(0x000000);
-            c.material.emissiveIntensity = 0;
-        }
+// ── View mode toggle ──────────────────────────────────────────────────
+document.getElementById('viewToggle').querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('#viewToggle button').forEach(b => {
+            b.classList.remove('active','btn-primary');
+            b.classList.add('btn-outline-primary');
+        });
+        btn.classList.add('active','btn-primary');
+        btn.classList.remove('btn-outline-primary');
+        setViewport(btn.dataset.view);
     });
-}
+});
 
-function closeVehicleDetail() {
-    clearVehicleHighlight(selectedVehicle3d);
-    selectedVehicle3d = null;
-    var panel = document.getElementById('vehicleDetailPanel');
-    if (panel) panel.style.display = 'none';
-}
+// ── Animate loop ──────────────────────────────────────────────────────
+let tick = 0;
+function animate() {
+    requestAnimationFrame(animate); tick++;
 
-function vdSwitchTab(tab) {
-    document.getElementById('vdBodyFmt').style.display = tab === 'fmt' ? '' : 'none';
-    document.getElementById('vdBodyRaw').style.display = tab === 'raw' ? '' : 'none';
-    document.getElementById('vdTabFmt').style.background = tab === 'fmt' ? 'rgba(59,130,246,.18)' : 'transparent';
-    document.getElementById('vdTabRaw').style.background = tab === 'raw' ? 'rgba(59,130,246,.18)' : 'transparent';
-    document.getElementById('vdTabFmt').style.color = tab === 'fmt' ? '#60a5fa' : '#64748b';
-    document.getElementById('vdTabRaw').style.color = tab === 'raw' ? '#60a5fa' : '#64748b';
-}
+    // Orbit perspective cam
+    camP.position.x = radius * Math.sin(theta) * Math.cos(phi);
+    camP.position.y = radius * Math.sin(phi);
+    camP.position.z = radius * Math.cos(theta) * Math.cos(phi);
+    camP.lookAt(0, 20, 0);
 
-function showVehicleDetail(v, cx, cy) {
-    if (selectedVehicle3d && selectedVehicle3d !== v) clearVehicleHighlight(selectedVehicle3d);
-    selectedVehicle3d = v;
-
-    // Amber emissive highlight on selected vehicle
-    v.traverse(function(c) {
-        if (c.isMesh && c.material && c.material.emissive) {
-            c.material.emissive.setHex(0xf59e0b);
-            c.material.emissiveIntensity = 0.55;
+    // Vehicle animation — ground vehicles idle bob; air vehicles gentle drift
+    vehicleMeshes.forEach((m, i) => {
+        const { vc, baseY } = m.userData;
+        if (vc.domain === 'air') {
+            m.position.y = baseY + Math.sin(tick * 0.025 + i * 0.8) * 1.5;
+            m.rotation.y += 0.005;
+        } else {
+            m.position.y = baseY + Math.sin(tick * 0.04 + i) * 0.05;
         }
     });
 
-    var ud = v.userData;
-    var srcTag = ud.isSimulation
-        ? '<span style="background:#f59e0b;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">SIM</span>'
-        : (ud.fromEvent
-            ? '<span style="background:#22c55e;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">LIVE</span>'
-            : '<span style="background:#475569;color:#fff;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">AMBIENT</span>');
-    var dirLabel = ud.lane < 0 ? 'Southbound' : 'Northbound';
-    var spdMph   = Math.round(ud.speed / 0.012);
+    const cw = renderer.domElement.clientWidth;
+    const ch = renderer.domElement.clientHeight;
+    renderer.setSize(cw, ch, false);
 
-    document.getElementById('vdTitle').innerHTML = (ud.icon || '🚗') + ' ' +
-        (ud.make || 'Vehicle') + ' ' + (ud.model || '') + srcTag;
-
-    // ── Formatted tab ──
-    var rows = [
-        ['Type',       ud.type         || '—'],
-        ['Make/Model', (ud.make || '—') + ' ' + (ud.model || '')],
-        ['Direction',  dirLabel],
-        ['Speed',      spdMph + ' mph'],
-        ['Event Type', ud.evEventType  || (ud.fromEvent ? '—' : 'ambient fill')],
-        ['Zone',       ud.evZoneId || ud.zoneId || '—'],
-        ['Highway',    ud.evHighwayId  || highwayId || '—'],
-        ['Vehicle ID', ud.evVehicleId  || '—'],
-        ['Device ID',  ud.evDeviceId   || '—'],
-    ];
-    if (ud.evLatitude)    rows.push(['Latitude',  ud.evLatitude]);
-    if (ud.evLongitude)   rows.push(['Longitude', ud.evLongitude]);
-    if (ud.evCreatedDate) rows.push(['Timestamp', new Date(ud.evCreatedDate).toLocaleString()]);
-
-    document.getElementById('vdBodyFmt').innerHTML =
-        '<table style="width:100%;border-collapse:collapse">' +
-        rows.map(function(r) {
-            return '<tr>' +
-                '<td style="color:#64748b;padding:3px 8px 3px 0;width:88px;vertical-align:top;' +
-                    'font-size:.7rem">' + r[0] + '</td>' +
-                '<td style="color:#e2e8f0;padding:3px 0;font-weight:500;font-size:.72rem">' +
-                    r[1] + '</td></tr>';
-        }).join('') + '</table>';
-
-    // ── Raw JSON tab ──
-    var rawContent = '(ambient vehicle — no event record)';
-    if (ud.evPayload) {
-        try { rawContent = JSON.stringify(JSON.parse(ud.evPayload), null, 2); }
-        catch(e) { rawContent = ud.evPayload; }
+    if (currentView === 'split') {
+        // Panel A — Perspective (left 42%)
+        renderer.setViewport(0, 0, cw*0.42, ch);
+        renderer.setScissor(0, 0, cw*0.42, ch);
+        renderer.setScissorTest(true);
+        renderer.render(scene, camP);
+        // Panel B — Side (mid 29%)
+        renderer.setViewport(cw*0.43, 0, cw*0.28, ch);
+        renderer.setScissor(cw*0.43, 0, cw*0.28, ch);
+        renderer.render(scene, camS);
+        // Panel C — Top (right 29%)
+        renderer.setViewport(cw*0.72, 0, cw*0.28, ch);
+        renderer.setScissor(cw*0.72, 0, cw*0.28, ch);
+        renderer.render(scene, camT);
+        renderer.setScissorTest(false);
+    } else {
+        renderer.setViewport(0, 0, cw, ch);
+        const cam = currentView === 'side' ? camS : currentView === 'top' ? camT : camP;
+        if (cam.isPerspectiveCamera) { cam.aspect = cw/ch; cam.updateProjectionMatrix(); }
+        renderer.render(scene, cam);
     }
-    document.getElementById('vdRawPre').textContent = rawContent;
-
-    vdSwitchTab('fmt');
-
-    // Position panel — clamped inside canvas container
-    var panel     = document.getElementById('vehicleDetailPanel');
-    var container = document.getElementById('scene3dContainer');
-    panel.style.display = '';
-    var rect   = container.getBoundingClientRect();
-    var pw     = 300, ph = panel.offsetHeight || 320;
-    var px     = (cx - rect.left) + 14;
-    var py     = (cy - rect.top)  + 14;
-    if (px + pw > container.clientWidth  - 4) px = (cx - rect.left) - pw - 14;
-    if (py + ph > container.clientHeight - 4) py = (cy - rect.top)  - ph - 14;
-    panel.style.left = Math.max(4, px) + 'px';
-    panel.style.top  = Math.max(4, py) + 'px';
 }
 
-// ── Cross-tab simulation sync ─────────────────────────────────────────────────
-(function() {
-    function onSimStateChange(simStarted) {
-        if (!scene3dInitialized) return;
-        if (simStarted && !animationPaused)  toggleAnimation();
-        if (!simStarted && animationPaused)  toggleAnimation();
-    }
-    if (typeof BroadcastChannel !== 'undefined') {
-        var bc = new BroadcastChannel('airways_sim');
-        bc.onmessage = function(e) {
-            if (!e.data || !e.data.type) return;
-            onSimStateChange(e.data.type === 'sim_started');
-        };
-    }
-    window.addEventListener('storage', function(e) {
-        if (e.key === 'airways_sim_active') onSimStateChange(e.newValue === 'true');
-    });
+// ── Boot ──────────────────────────────────────────────────────────────
+(async () => {
+    await refreshScene();
+    animate();
+    setViewport('perspective');
 })();
 
-// ── 5-min countdown ──────────────────────────────────────────────────────────
-var countdown = 300;
-setInterval(function() {
-    countdown--;
-    if (countdown <= 0) { countdown = 300; loadSegments(); }
-    var m = Math.floor(countdown / 60), s = countdown % 60;
-    document.getElementById('mapRefreshTimer').textContent =
-        'Refreshes in ' + m + ':' + (s < 10 ? '0' : '') + s;
-}, 1000);
+// Auto-refresh every 30 s
+setInterval(refreshScene, 30000);
 </script>
-}

@@ -1,5 +1,10 @@
 namespace AirwaysMergeSafeServer.Models;
 
+// ── D1 FIX: Enums are now the authoritative source for all status/type values.
+//    EF Core string converters in AppDbContext map these to lowercase strings
+//    in the database for readability and backward compatibility.
+//    Models still store the enum type; views use .ToString().ToLower() for display.
+
 public enum ZoneStatus
 {
     Active,
@@ -34,7 +39,7 @@ public enum EventType
     Fault
 }
 
-public enum UserType
+public enum UserRole
 {
     Admin,
     Operator,
@@ -47,4 +52,12 @@ public enum SourceType
     Satellite,
     Telecom,
     Tracker
+}
+
+// ── D5 FIX: IVehicleRegistry — DI interface for VehicleRegistry ─────────────
+// Allows VehiclesController to receive the registry via DI rather than
+// calling the static class directly, making the controller testable.
+public interface IVehicleRegistry
+{
+    IReadOnlyList<AirwaysMergeSafeServer.Services.VehicleSpec> All { get; }
 }

@@ -14,6 +14,7 @@ public class MergeZone
     public double? Latitude { get; set; }
     public double? Longitude { get; set; }
     public int GeofenceRadius { get; set; } = 500;
+    public double? AltitudeMeters { get; set; }
     [MaxLength(30)] public string Status { get; set; } = "active";
     public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 }

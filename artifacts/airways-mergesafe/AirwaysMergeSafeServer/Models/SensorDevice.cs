@@ -15,6 +15,7 @@ public class SensorDevice
     public double? MileMarker { get; set; }
     public double? Latitude { get; set; }
     public double? Longitude { get; set; }
+    public double? AltitudeMeters { get; set; }
     [MaxLength(30)]  public string Status { get; set; } = "online";
     [MaxLength(20)]  public string? FirmwareVersion { get; set; }
     public DateTime LastHeartbeat { get; set; } = DateTime.UtcNow;

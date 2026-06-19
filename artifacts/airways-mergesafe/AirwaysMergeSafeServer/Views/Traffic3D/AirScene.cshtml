@@ -1,0 +1,590 @@
+@model AirwaysMergeSafeServer.ViewModels.Traffic3DViewModel
+@{
+    ViewData["Title"] = "Air Scene — AirFlyCar 3D View";
+    var zonesJson   = System.Text.Json.JsonSerializer.Serialize(
+        Model.Zones.Where(z => z.Latitude.HasValue).Select(z => new {
+            zoneId=z.ZoneId, zoneName=z.ZoneName, status=z.Status,
+            lat=z.Latitude, lon=z.Longitude,
+            altM=z.AltitudeMeters??0, radius=z.GeofenceRadius
+        }));
+    var serversJson = System.Text.Json.JsonSerializer.Serialize(
+        Model.SwitchServers.Select(s => new {
+            serverId=s.ServerId, serverName=s.ServerName,
+            zoneId=s.ZoneId, status=s.Status,
+            altMin=s.AltitudeMinMeters, altMax=s.AltitudeMaxMeters
+        }));
+    var hw = Model.SelectedHighwayId ?? "";
+}
+
+<div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+    <div>
+        <h4 class="mb-0">🛫 AirFlyCar — 3D Altitude Scene</h4>
+        <small class="text-muted">
+            Ground: <b class="text-info">@Model.GroundCount</b> &nbsp;|&nbsp;
+            Air: <b class="text-warning">@Model.AirCount</b>
+            @if (Model.CategoryBreakdown.TryGetValue("air_vertiport", out var vpCount) && vpCount > 0)
+            { <span>&nbsp;|&nbsp; Vertiport: <b class="text-purple">@vpCount</b></span> }
+        </small>
+    </div>
+    <div class="d-flex gap-2 flex-wrap align-items-center">
+        <select class="form-select form-select-sm" style="width:200px"
+                onchange="location.href='/Traffic3D/AirScene?highwayId='+this.value">
+            @foreach (var h in Model.Highways)
+            {
+                if (h.HighwayId == Model.SelectedHighwayId)
+                { <option value="@h.HighwayId" selected>@h.Name</option> }
+                else
+                { <option value="@h.HighwayId">@h.Name</option> }
+            }
+        </select>
+        <!-- View toggle -->
+        <div class="btn-group btn-group-sm" id="panelToggle">
+            <button class="btn btn-primary active" data-panel="split" title="All three panels">⊟ Split</button>
+            <button class="btn btn-outline-primary"  data-panel="persp" title="Perspective 3D">⬡ 3D</button>
+            <button class="btn btn-outline-primary"  data-panel="side"  title="Side — Elevation">↕ Side</button>
+            <button class="btn btn-outline-primary"  data-panel="top"   title="Top — Plan view">⊞ Top</button>
+        </div>
+        <!-- Domain filter -->
+        <div class="btn-group btn-group-sm" id="domFilter">
+            <button class="btn btn-secondary active" data-dom="all">All</button>
+            <button class="btn btn-outline-info"     data-dom="ground">🚗 Ground</button>
+            <button class="btn btn-outline-warning"  data-dom="air">✈ Air</button>
+            <button class="btn btn-outline-purple"   data-dom="airflycar" title="AirFlyCar only" style="color:#f0abfc;border-color:#f0abfc">🛸 AFC</button>
+        </div>
+        <a href="/Traffic3D" class="btn btn-sm btn-outline-secondary">← Traffic 3D</a>
+        <button class="btn btn-sm btn-outline-success" onclick="doRefresh()">⟳ Live</button>
+    </div>
+</div>
+
+<!-- ══ 3-panel canvas ══════════════════════════════════════════════════════ -->
+<div id="sceneWrap" style="position:relative;height:500px;background:#060612;border-radius:10px;overflow:hidden;border:1px solid #1e1e3a">
+    <canvas id="airCanvas" style="width:100%;height:100%"></canvas>
+    <!-- Panel labels -->
+    <div class="position-absolute top-0 start-0 m-1 d-flex flex-column gap-1" id="labelsWrap">
+        <span id="lbA" class="badge bg-secondary" style="font-size:.65rem">⬡ Perspective</span>
+    </div>
+    <div class="position-absolute top-0 m-1" id="lbBWrap" style="left:43%">
+        <span class="badge bg-info text-dark" style="font-size:.65rem">↕ Side / Elevation</span>
+    </div>
+    <div class="position-absolute top-0 m-1" id="lbCWrap" style="left:72%">
+        <span class="badge bg-warning text-dark" style="font-size:.65rem">⊞ Top / Plan</span>
+    </div>
+    <!-- Altitude ruler on side panel -->
+    <div id="altRuler" class="position-absolute" style="right:30%;top:0;bottom:0;width:40px;pointer-events:none;display:none">
+        <canvas id="rulerCanvas" style="width:40px;height:100%"></canvas>
+    </div>
+</div>
+
+<!-- ══ Legend + Inspector + Stats ═══════════════════════════════════════════ -->
+<div class="row mt-3 g-3">
+
+    <!-- Legend -->
+    <div class="col-lg-4">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body py-2 px-3">
+                <h6 class="mb-2">🔑 Vehicle Classification</h6>
+                <div class="d-flex flex-wrap gap-1 mb-2">
+                    @{
+                        var cats = new[]{
+                            ("sedan","#3b82f6","🚗"),("suv","#22c55e","🚙"),("truck","#f59e0b","🛻"),
+                            ("motorcycle","#a855f7","🏍"),("van","#64748b","🚐"),
+                            ("air_urban","#00bcd4","✈"),("air_express","#ff6b35","🛩"),
+                            ("air_vertiport","#f0abfc","🛸")
+                        };
+                    }
+                    @foreach (var (cat,col,icon) in cats)
+                    {
+                        var cnt = Model.CategoryBreakdown.TryGetValue(cat, out var c) ? c : 0;
+                        var dark= cat is "truck" or "air_urban" or "air_vertiport";
+                        <span class="badge rounded-pill px-2 py-1"
+                              style="background:@col;color:@(dark?"#000":"#fff");font-size:.65rem">
+                            @icon @cat@(cnt>0?$" ({cnt})":"")
+                        </span>
+                    }
+                </div>
+                <h6 class="mb-1">📐 Altitude Bands</h6>
+                <div class="small text-muted d-flex flex-column gap-1">
+                    <div><span class="badge" style="background:#f0abfc;color:#000">0–5 m</span> Vertiport pad (air_vertiport)</div>
+                    <div><span class="badge" style="background:#00bcd4;color:#000">5–150 m</span> Urban air corridor (air_urban)</div>
+                    <div><span class="badge" style="background:#ff6b35">150–800 m</span> Express corridor (air_express)</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Inspector -->
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body py-2 px-3">
+                <h6 class="mb-1">🔍 Inspector <small class="text-muted">(click vehicle)</small></h6>
+                <div id="airInspector" class="text-muted small">Click any vehicle across any panel to inspect.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="col-lg-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body py-2 px-3">
+                <h6 class="mb-1">📊 Live Stats</h6>
+                <div class="small d-flex flex-column gap-1">
+                    <div>🚗 Ground: <b id="stGround">@Model.GroundCount</b></div>
+                    <div>✈ Air urban: <b id="stUrban">–</b></div>
+                    <div>🛩 Air express: <b id="stExpress">–</b></div>
+                    <div>🛸 Vertiport: <b id="stVport">–</b></div>
+                    <div>⚠ Conflict: <b id="stConflict" class="text-danger">–</b></div>
+                    <div class="text-muted mt-1" id="stTime">–</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+   AIRFLYCAR 3D SCENE — Phase 8
+   ══════════════════════════════════════════════════════════════════════════
+
+   GEOMETRY PER CATEGORY:
+   ┌──────────────────┬──────────────────────────────┬──────────────────────┐
+   │ Category         │ 3D / Perspective              │ Top view             │
+   ├──────────────────┼──────────────────────────────┼──────────────────────┤
+   │ air_vertiport    │ Ring + landing pad disc       │ Concentric rings     │
+   │ air_urban        │ Inverted cone (eVTOL shape)   │ Circle w/ wingspan Ø │
+   │ air_express      │ Octahedron                    │ Diamond (rotated sq) │
+   │ sedan            │ Box 1.6×0.4×0.8               │ Filled rectangle     │
+   │ suv              │ Box 1.9×0.55×0.9              │ Filled rectangle     │
+   │ truck            │ Box 2.4×0.75×0.95             │ Filled rectangle     │
+   │ motorcycle       │ Cylinder r=0.15               │ Small circle         │
+   │ van              │ Box 2.1×1.0×1.0               │ Filled rectangle     │
+   └──────────────────┴──────────────────────────────┴──────────────────────┘
+
+   SIDE VIEW (ELEVATION):
+   - Orthographic camera on +X axis looking toward origin
+   - Y axis = altitude (each unit = 1 / ALT_SCALE metres)
+   - Ground vehicles clustered at Y=0.3
+   - Air vehicles stacked at their real altitude Y = altM × ALT_SCALE
+   - Altitude band planes visible as translucent horizontal slabs
+
+   TOP VIEW (PLAN):
+   - Orthographic camera directly above (+Y)
+   - Vehicles shown at their XZ position
+   - air_urban: filled cyan circle, radius = wingspan / 2
+   - air_express: filled orange diamond
+   - air_vertiport: two concentric rings (pad marker)
+   - Ground: coloured rectangles proportional to vehicle footprint
+   - Conflict vehicles: red pulsing ring overlay
+
+   CONFLICT HIGHLIGHT:
+   - conflictFlag=true → vehicle colour overridden to #ef4444
+   - Pulsing red ring added around conflicted craft in all views
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const ALT_SCALE = 0.05;
+const XZ_SCALE  = 800;
+const HW        = '@hw';
+
+// ── Category specs ────────────────────────────────────────────────────
+const CAT = {
+    air_vertiport: { color:'#f0abfc', icon:'🛸', domain:'air',
+        geoPersp: ()=>new THREE.TorusGeometry(2.5, 0.25, 8, 32),
+        geoTop:   ()=>new THREE.RingGeometry(1.8, 2.5, 32),
+        geoSide:  ()=>new THREE.RingGeometry(1.8, 2.5, 32),
+        wingspan: 10.0 },
+    air_urban:    { color:'#00bcd4', icon:'✈',  domain:'air',
+        geoPersp: ()=>new THREE.ConeGeometry(0.55, 0.9, 6),
+        geoTop:   ()=>new THREE.CircleGeometry(0.9, 16),
+        geoSide:  ()=>new THREE.CircleGeometry(0.5, 12),
+        wingspan: 9.5 },
+    air_express:  { color:'#ff6b35', icon:'🛩', domain:'air',
+        geoPersp: ()=>new THREE.OctahedronGeometry(0.65),
+        geoTop:   ()=>{ const g=new THREE.CircleGeometry(0.7,4); g.rotateZ(Math.PI/4); return g; },
+        geoSide:  ()=>new THREE.CircleGeometry(0.5, 4),
+        wingspan: 9.2 },
+    sedan:       { color:'#3b82f6', icon:'🚗', domain:'ground',
+        geoPersp: ()=>new THREE.BoxGeometry(1.6,0.40,0.8),
+        geoTop:   ()=>new THREE.PlaneGeometry(1.6,0.8),
+        geoSide:  ()=>new THREE.PlaneGeometry(1.6,0.40), wingspan:1.8 },
+    suv:         { color:'#22c55e', icon:'🚙', domain:'ground',
+        geoPersp: ()=>new THREE.BoxGeometry(1.9,0.55,0.9),
+        geoTop:   ()=>new THREE.PlaneGeometry(1.9,0.9),
+        geoSide:  ()=>new THREE.PlaneGeometry(1.9,0.55), wingspan:1.9 },
+    truck:       { color:'#f59e0b', icon:'🛻', domain:'ground',
+        geoPersp: ()=>new THREE.BoxGeometry(2.4,0.75,0.95),
+        geoTop:   ()=>new THREE.PlaneGeometry(2.4,0.95),
+        geoSide:  ()=>new THREE.PlaneGeometry(2.4,0.75), wingspan:2.0 },
+    motorcycle:  { color:'#a855f7', icon:'🏍', domain:'ground',
+        geoPersp: ()=>new THREE.CylinderGeometry(0.15,0.15,0.5,8),
+        geoTop:   ()=>new THREE.CircleGeometry(0.25,8),
+        geoSide:  ()=>new THREE.PlaneGeometry(0.6,0.5), wingspan:0.9 },
+    van:         { color:'#64748b', icon:'🚐', domain:'ground',
+        geoPersp: ()=>new THREE.BoxGeometry(2.1,1.0,1.0),
+        geoTop:   ()=>new THREE.PlaneGeometry(2.1,1.0),
+        geoSide:  ()=>new THREE.PlaneGeometry(2.1,1.0), wingspan:2.1 },
+};
+const DEFAULT_CAT = CAT.sedan;
+
+function getSpec(category){ return CAT[category] || DEFAULT_CAT; }
+
+// ── Classification (stored JSON → columns → JS heuristic) ────────────
+function resolveClass(ev){
+    if(ev.vehicleClassJson){
+        try{
+            const vc=typeof ev.vehicleClassJson==='string'?JSON.parse(ev.vehicleClassJson):ev.vehicleClassJson;
+            if(vc&&vc.category) return vc;
+        }catch(e){}
+    }
+    if(ev.vehicleCategory&&ev.vehicleMode)
+        return {category:ev.vehicleCategory,domain:ev.vehicleMode,
+                color:CAT[ev.vehicleCategory]?.color||'#3b82f6',confidence:0.55};
+    const alt=ev.altitudeMeters;
+    if(alt!=null&&alt<=5)   return {category:'air_vertiport',domain:'air',color:'#f0abfc',confidence:0.5};
+    if(alt!=null&&alt<=150) return {category:'air_urban',domain:'air',color:'#00bcd4',confidence:0.5};
+    if(alt!=null&&alt>150)  return {category:'air_express',domain:'air',color:'#ff6b35',confidence:0.5};
+    const s=ev.speedMph;
+    let cat='sedan';
+    if(s!=null){if(s<=25)cat='motorcycle';else if(s<=55)cat='sedan';
+    else if(s<=75)cat='suv';else if(s<=90)cat='truck';else cat='van';}
+    return {category:cat,domain:'ground',color:CAT[cat]?.color||'#3b82f6',confidence:0.3};
+}
+
+// ── Coordinate normalisation ──────────────────────────────────────────
+let midLat=32.75, midLon=-97.0;
+function norm(lat,lon){return {x:(lon-midLon)*XZ_SCALE, z:(lat-midLat)*XZ_SCALE};}
+
+// ── Three.js ──────────────────────────────────────────────────────────
+const canvas=document.getElementById('airCanvas');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(canvas.clientWidth,canvas.clientHeight);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x060612);
+scene.add(new THREE.AmbientLight(0xffffff,0.5));
+const dl=new THREE.DirectionalLight(0xffffff,0.85);
+dl.position.set(80,200,100); scene.add(dl);
+
+// Ground grid
+scene.add(new THREE.GridHelper(500,40,0x1a1a3a,0x111128));
+
+// Altitude band slabs (visible in side + perspective)
+const BAND_DEFS=[
+    {lo:0,  hi:5,   col:0xf0abfc, label:'Vertiport'},
+    {lo:5,  hi:150, col:0x00bcd4, label:'Urban'},
+    {lo:150,hi:800, col:0xff6b35, label:'Express'},
+];
+BAND_DEFS.forEach(b=>{
+    const h=(b.hi-b.lo)*ALT_SCALE, midY=(b.lo+b.hi)/2*ALT_SCALE;
+    const m=new THREE.Mesh(
+        new THREE.BoxGeometry(600,h,600),
+        new THREE.MeshPhongMaterial({color:b.col,transparent:true,opacity:0.05,depthWrite:false})
+    );
+    m.position.set(0,midY,0); scene.add(m);
+    const edge=new THREE.Mesh(
+        new THREE.BoxGeometry(600,0.2,600),
+        new THREE.MeshPhongMaterial({color:b.col,opacity:0.3,transparent:true})
+    );
+    edge.position.set(0,b.lo*ALT_SCALE,0); scene.add(edge);
+});
+
+// Zone markers
+const ZONES=@Html.Raw(zonesJson);
+ZONES.forEach(z=>{
+    if(!z.lat||!z.lon) return;
+    const p=norm(z.lat,z.lon), r=(z.radius/20)||12;
+    const cy=new THREE.Mesh(
+        new THREE.CylinderGeometry(r,r,0.15,32),
+        new THREE.MeshPhongMaterial({color:z.status==='active'?0x22c55e:0xf59e0b,transparent:true,opacity:0.15})
+    );
+    cy.position.set(p.x,0.08,p.z); scene.add(cy);
+});
+
+// ── Cameras ───────────────────────────────────────────────────────────
+const camP=new THREE.PerspectiveCamera(55,1,0.1,3000);
+camP.position.set(120,110,220); camP.lookAt(0,35,0);
+const OW=180,OH=130;
+const camS=new THREE.OrthographicCamera(-OW,OW,OH,-OH,0.1,2000);
+camS.position.set(500,0,0); camS.lookAt(0,0,0);
+const camT=new THREE.OrthographicCamera(-OW,OW,OH,-OH,0.1,2000);
+camT.position.set(0,600,0); camT.up.set(0,0,-1); camT.lookAt(0,0,0);
+
+// ── Orbit ─────────────────────────────────────────────────────────────
+let isDrag=false,prevM={x:0,y:0},theta=0.6,phi=0.5,radius=310;
+canvas.addEventListener('mousedown',e=>{isDrag=true;prevM={x:e.clientX,y:e.clientY};});
+window.addEventListener('mouseup',()=>isDrag=false);
+window.addEventListener('mousemove',e=>{
+    if(!isDrag||panelMode!=='persp') return;
+    theta-=(e.clientX-prevM.x)*0.005;
+    phi=Math.max(0.05,Math.min(1.4,phi-(e.clientY-prevM.y)*0.005));
+    prevM={x:e.clientX,y:e.clientY};
+});
+canvas.addEventListener('wheel',e=>{radius=Math.max(60,Math.min(900,radius+e.deltaY*0.25));});
+
+// ── Vehicle mesh management ───────────────────────────────────────────
+const vmeshes=[], vdata=[], conflictRings=[];
+const raycaster=new THREE.Raycaster(), mouse2=new THREE.Vector2();
+let activeDomFilter='all';
+
+function buildMesh(ev, viewMode){
+    const vc   = resolveClass(ev);
+    const sp   = getSpec(vc.category);
+    const isAir= vc.domain==='air';
+    const altY = isAir ? (ev.altitudeMeters||60)*ALT_SCALE : 0.3;
+    const col  = vc.conflictFlag ? '#ef4444' : (vc.color||sp.color);
+
+    // Geometry choice — top view uses flat geometry for clarity
+    let geo;
+    if(viewMode==='top')       geo=sp.geoTop();
+    else if(viewMode==='side') geo=sp.geoSide();
+    else                       geo=sp.geoPersp();
+
+    const mat=new THREE.MeshPhongMaterial({color:new THREE.Color(col), side:THREE.DoubleSide});
+    const m=new THREE.Mesh(geo,mat);
+    const p=(ev.latitude&&ev.longitude)?norm(ev.latitude,ev.longitude)
+            :{x:(Math.random()-0.5)*160,z:(Math.random()-0.5)*160};
+    m.position.set(p.x,altY,p.z);
+
+    if(isAir) m.rotation.y=Math.random()*Math.PI*2;
+
+    m.userData={ev,vc,baseY:altY,col};
+    return m;
+}
+
+function buildConflictRing(m){
+    const geo=new THREE.TorusGeometry(2.0,0.18,8,32);
+    const mat=new THREE.MeshPhongMaterial({color:0xef4444,transparent:true,opacity:0.75});
+    const ring=new THREE.Mesh(geo,mat);
+    ring.rotation.x=Math.PI/2;
+    ring.position.copy(m.position);
+    ring.userData={baseY:m.userData.baseY};
+    return ring;
+}
+
+function clearMeshes(){
+    [...vmeshes,...conflictRings].forEach(m=>{
+        scene.remove(m); m.geometry.dispose(); m.material.dispose();
+    });
+    vmeshes.length=0; vdata.length=0; conflictRings.length=0;
+}
+
+function loadEvents(evs){
+    clearMeshes();
+    let stG=0,stU=0,stE=0,stV=0,stC=0;
+    const lats=evs.filter(e=>e.latitude).map(e=>e.latitude);
+    const lons=evs.filter(e=>e.longitude).map(e=>e.longitude);
+    if(lats.length){midLat=lats.reduce((a,b)=>a+b,0)/lats.length;midLon=lons.reduce((a,b)=>a+b,0)/lons.length;}
+
+    evs.forEach(ev=>{
+        const vc=resolveClass(ev);
+        if(activeDomFilter==='ground'&&vc.domain!=='ground') return;
+        if(activeDomFilter==='air'&&vc.domain!=='air') return;
+        if(activeDomFilter==='airflycar'&&vc.category!=='air_urban'&&vc.category!=='air_express'&&vc.category!=='air_vertiport') return;
+
+        const m=buildMesh(ev,'persp');
+        scene.add(m); vmeshes.push(m); vdata.push({ev,vc});
+
+        if(vc.conflictFlag||vc.color==='#ef4444'){
+            const ring=buildConflictRing(m);
+            scene.add(ring); conflictRings.push(ring);
+            stC++;
+        }
+        if(vc.category==='air_urban')    stU++;
+        else if(vc.category==='air_express') stE++;
+        else if(vc.category==='air_vertiport') stV++;
+        else stG++;
+    });
+
+    document.getElementById('stGround').textContent  =stG;
+    document.getElementById('stUrban').textContent   =stU;
+    document.getElementById('stExpress').textContent =stE;
+    document.getElementById('stVport').textContent   =stV;
+    document.getElementById('stConflict').textContent=stC||'0';
+    document.getElementById('stTime').textContent    ='Updated '+new Date().toLocaleTimeString();
+}
+
+async function doRefresh(){
+    try{
+        const url=`/api/events/live?highwayId=${HW}&take=140`;
+        const r=await fetch(url); if(!r.ok) return;
+        loadEvents(await r.json());
+    }catch(e){console.warn(e);}
+}
+
+// ── Domain filter ─────────────────────────────────────────────────────
+document.getElementById('domFilter').querySelectorAll('button').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+        document.querySelectorAll('#domFilter button').forEach(b=>{
+            b.className=b.dataset.dom==='all'?'btn btn-outline-secondary':
+                b.dataset.dom==='ground'?'btn btn-outline-info':
+                b.dataset.dom==='air'?'btn btn-outline-warning':'btn btn-outline-purple';
+        });
+        btn.classList.add('active');
+        activeDomFilter=btn.dataset.dom; doRefresh();
+    });
+});
+
+// ── Click inspector ───────────────────────────────────────────────────
+canvas.addEventListener('click',e=>{
+    const rect=canvas.getBoundingClientRect();
+    const nx=e.clientX-rect.left, ny=e.clientY-rect.top;
+    const cw=rect.width, ch=rect.height;
+    let cam=camP, mx=(nx/cw)*2-1, my=-(ny/ch)*2+1;
+    if(panelMode==='split'){
+        if(nx/cw<0.42){cam=camP;mx=(nx/(cw*0.42))*2-1;}
+        else if(nx/cw<0.71){cam=camS;mx=((nx-cw*0.43)/(cw*0.28))*2-1;}
+        else{cam=camT;mx=((nx-cw*0.72)/(cw*0.28))*2-1;}
+    }else if(panelMode==='side')cam=camS;
+    else if(panelMode==='top')cam=camT;
+    mouse2.set(mx,my);
+    raycaster.setFromCamera(mouse2,cam);
+    const hits=raycaster.intersectObjects(vmeshes,false);
+    if(hits.length) showInspector(hits[0].object.userData);
+});
+
+function showInspector({ev,vc}){
+    const conf=vc.confidence??0, pct=Math.round(conf*100);
+    const sp=getSpec(vc.category);
+    const isAir=vc.domain==='air';
+    const extra = vc.flightPhase||ev.vehicleClassJson ? (() => {
+        let vcFull={};
+        try{vcFull=typeof ev.vehicleClassJson==='string'?JSON.parse(ev.vehicleClassJson):{};}catch(e){}
+        const ph=vc.flightPhase||vcFull.flightPhase;
+        const soc=vc.batterySoc??vcFull.batterySoc;
+        const rpm=vc.rotorRpm??vcFull.rotorRpm;
+        const vr=vc.verticalRateFpm??vcFull.verticalRateFpm;
+        const dev=vc.corridorDeviationM??vcFull.corridorDeviationM;
+        const cor=vc.corridorId??vcFull.corridorId;
+        return `
+        ${ph?`<tr><td class="text-muted">Flight Phase</td><td><span class="badge bg-secondary">${ph}</span></td></tr>`:''}
+        ${soc!=null?`<tr><td class="text-muted">Battery SOC</td><td>
+            <div class="d-flex align-items-center gap-1">
+              <div class="progress flex-grow-1" style="height:5px">
+                <div class="progress-bar bg-${soc<25?'danger':soc<50?'warning':'success'}" style="width:${soc}%"></div>
+              </div>${soc.toFixed(0)}%</div></td></tr>`:''}
+        ${rpm!=null?`<tr><td class="text-muted">Rotor RPM</td><td>${rpm.toFixed(0)}</td></tr>`:''}
+        ${vr!=null?`<tr><td class="text-muted">Vert Rate</td><td>${vr>0?'+':''}${vr.toFixed(0)} fpm</td></tr>`:''}
+        ${cor?`<tr><td class="text-muted">Corridor</td><td>${cor}</td></tr>`:''}
+        ${dev!=null?`<tr><td class="text-muted">Deviation</td><td class="${dev>50?'text-warning':''}">${dev.toFixed(1)} m</td></tr>`:''}
+        ${vc.conflictFlag||vc.color==='#ef4444'?`<tr><td colspan="2" class="text-danger fw-bold">⚠ CONFLICT DETECTED</td></tr>`:''}`;
+    })() : '';
+
+    document.getElementById('airInspector').innerHTML=`
+    <table class="table table-sm table-borderless mb-0 small">
+      <tr><td class="text-muted">ID</td><td><b>${ev.vehicleId||'—'}</b></td></tr>
+      <tr><td class="text-muted">Domain</td><td>
+        <span class="badge" style="background:${isAir?'#ff6b35':'#3b82f6'}">${vc.domain}</span>
+        ${isAir?'<span class="badge ms-1" style="background:#f0abfc;color:#000">AirFlyCar</span>':''}
+      </td></tr>
+      <tr><td class="text-muted">Category</td><td>
+        ${sp.icon} <span class="badge" style="background:${sp.color}">${vc.category}</span>
+      </td></tr>
+      <tr><td class="text-muted">Confidence</td><td>
+        <div class="d-flex align-items-center gap-1">
+          <div class="progress flex-grow-1" style="height:5px">
+            <div class="progress-bar bg-${conf<0.4?'danger':conf<0.65?'warning':'success'}" style="width:${pct}%"></div>
+          </div>${pct}%
+        </div>
+      </td></tr>
+      <tr><td class="text-muted">Altitude</td><td>${ev.altitudeMeters!=null?ev.altitudeMeters.toFixed(1)+' m':'ground'}</td></tr>
+      <tr><td class="text-muted">Speed</td><td>${ev.speedMph!=null?ev.speedMph.toFixed(1)+' mph':'—'}</td></tr>
+      <tr><td class="text-muted">Event</td><td>${ev.eventType||'—'}</td></tr>
+      ${extra}
+    </table>`;
+}
+
+// ── Panel mode ────────────────────────────────────────────────────────
+let panelMode='split';
+document.getElementById('panelToggle').querySelectorAll('button').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+        document.querySelectorAll('#panelToggle button').forEach(b=>{
+            b.classList.remove('active','btn-primary'); b.classList.add('btn-outline-primary');
+        });
+        btn.classList.add('active','btn-primary'); btn.classList.remove('btn-outline-primary');
+        panelMode=btn.dataset.panel;
+        positionLabels();
+    });
+});
+
+function positionLabels(){
+    const cw=canvas.clientWidth;
+    document.getElementById('lbBWrap').style.left=panelMode==='split'?Math.round(cw*0.43+4)+'px':'';
+    document.getElementById('lbCWrap').style.left=panelMode==='split'?Math.round(cw*0.72+4)+'px':'';
+    document.getElementById('lbBWrap').style.display=(panelMode==='split'||panelMode==='side')?'':'none';
+    document.getElementById('lbCWrap').style.display=(panelMode==='split'||panelMode==='top')?'':'none';
+    document.getElementById('labelsWrap').style.display=(panelMode==='split'||panelMode==='persp')?'':'none';
+    document.getElementById('altRuler').style.display=(panelMode==='side'||panelMode==='split')?'':'none';
+}
+
+// ── Altitude ruler (side panel) ───────────────────────────────────────
+function drawRuler(){
+    const rc=document.getElementById('rulerCanvas');
+    rc.width=40; rc.height=rc.clientHeight||500;
+    const ctx=rc.getContext('2d');
+    ctx.clearRect(0,0,40,rc.height);
+    ctx.fillStyle='rgba(10,10,25,0.7)'; ctx.fillRect(0,0,40,rc.height);
+    const marks=[0,5,30,50,100,150,300,500,800];
+    marks.forEach(m=>{
+        const y=rc.height-(m*ALT_SCALE/((800*ALT_SCALE))*rc.height);
+        ctx.strokeStyle='rgba(255,255,255,0.25)';
+        ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(40,y); ctx.stroke();
+        ctx.fillStyle='rgba(200,200,255,0.7)';
+        ctx.font='8px monospace'; ctx.fillText(m+'m',2,y-2);
+    });
+}
+
+// ── Animate ───────────────────────────────────────────────────────────
+let tick=0;
+function animate(){
+    requestAnimationFrame(animate); tick++;
+    camP.position.x=radius*Math.sin(theta)*Math.cos(phi);
+    camP.position.y=radius*Math.sin(phi);
+    camP.position.z=radius*Math.cos(theta)*Math.cos(phi);
+    camP.lookAt(0,35,0);
+
+    // Vehicle animation
+    vmeshes.forEach((m,i)=>{
+        const {vc,baseY}=m.userData;
+        if(vc.domain==='air'&&vc.category!=='air_vertiport'){
+            m.position.y=baseY+Math.sin(tick*0.025+i*0.9)*1.8;
+            m.rotation.y+=0.006;
+        }else{
+            m.position.y=baseY+Math.sin(tick*0.05+i)*0.03;
+        }
+    });
+    // Conflict ring pulse
+    conflictRings.forEach((r,i)=>{
+        const {baseY}=r.userData;
+        r.position.y=baseY+Math.sin(tick*0.025+i*0.9)*1.8+0.5;
+        r.material.opacity=0.4+0.4*Math.sin(tick*0.1+i);
+        r.scale.setScalar(1+0.15*Math.sin(tick*0.08+i));
+    });
+
+    const cw=renderer.domElement.clientWidth, ch=renderer.domElement.clientHeight;
+    renderer.setSize(cw,ch,false);
+
+    if(panelMode==='split'){
+        renderer.setViewport(0,0,cw*0.42,ch);   renderer.setScissor(0,0,cw*0.42,ch);
+        renderer.setScissorTest(true);           renderer.render(scene,camP);
+        renderer.setViewport(cw*0.43,0,cw*0.28,ch); renderer.setScissor(cw*0.43,0,cw*0.28,ch);
+        renderer.render(scene,camS);
+        renderer.setViewport(cw*0.72,0,cw*0.28,ch); renderer.setScissor(cw*0.72,0,cw*0.28,ch);
+        renderer.render(scene,camT);
+        renderer.setScissorTest(false);
+    }else{
+        renderer.setViewport(0,0,cw,ch);
+        const cam=panelMode==='side'?camS:panelMode==='top'?camT:camP;
+        if(cam.isPerspectiveCamera){cam.aspect=cw/ch;cam.updateProjectionMatrix();}
+        renderer.render(scene,cam);
+    }
+}
+
+// Boot
+(async()=>{
+    await doRefresh();
+    animate();
+    positionLabels();
+    drawRuler();
+})();
+setInterval(doRefresh,30000);
+</script>

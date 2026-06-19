@@ -8,13 +8,23 @@ using System.Text.Json;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
+/// <summary>
+/// Phase 6: SimulationPost now calls VehicleClassifier.Classify() on every
+/// generated payload and stores the result in the VehicleEvent record.
+/// The classification result is also returned in the JSON response so the
+/// UI can immediately show the classified vehicle type without a page reload.
+/// </summary>
 public class DataInputFormatsController : Controller
 {
     private readonly AppDbContext        _db;
     private readonly InputPayloadService _payloadSvc;
+    private readonly VehicleClassifier   _classifier;
 
-    public DataInputFormatsController(AppDbContext db, InputPayloadService payloadSvc)
-    { _db = db; _payloadSvc = payloadSvc; }
+    public DataInputFormatsController(
+        AppDbContext        db,
+        InputPayloadService payloadSvc,
+        VehicleClassifier   classifier)
+    { _db = db; _payloadSvc = payloadSvc; _classifier = classifier; }
 
     private bool IsAjax => Request.Headers["X-Requested-With"] == "XMLHttpRequest";
 
@@ -39,22 +49,38 @@ public class DataInputFormatsController : Controller
             SatelliteConfigs  = allConfigs.Where(c => c.SourceType == "satellite").ToList(),
             TelecomConfigs    = allConfigs.Where(c => c.SourceType == "telecom").ToList(),
             TrackerConfigs    = allConfigs.Where(c => c.SourceType == "tracker").ToList(),
+            AirFlyCarConfigs  = allConfigs.Where(c => c.SourceType == "airflycar").ToList(), // Phase 8
             SavedPayloads     = payloads,
             AllZones          = zones,
             AllSwitchServers  = srvs,
         });
     }
 
+    /// <summary>
+    /// Phase 6: Classify payload, write classified VehicleEvent, return classification
+    /// in JSON response so the UI can render the correct vehicle shape immediately.
+    /// </summary>
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> SimulationPost(string? highwayId, string? zoneId, string? serverId, string? sourceType)
+    public async Task<IActionResult> SimulationPost(
+        string? highwayId, string? zoneId, string? serverId, string? sourceType)
     {
-        var type   = sourceType ?? "physical";
-        var fields = new[] { "vehicle_id","timestamp","speed_mph","latitude","longitude",
-                             "direction","lane","vehicle_type","event_type","zone_id",
-                             "highway_id","signal_strength","altitude_ft" };
+        var type    = sourceType ?? "physical";
+        var fields  = new[] {
+            "vehicle_id","timestamp","speed_mph","latitude","longitude",
+            "altitude_m","direction","lane","vehicle_type","event_type",
+            "zone_id","highway_id","signal_strength"
+        };
+
         var payload = _payloadSvc.Generate(type, fields);
         var label   = $"Simulation [{type.ToUpper()}] — {DateTime.UtcNow:HH:mm:ss}";
         var now     = DateTime.UtcNow;
+
+        // ── Phase 6: Classify the payload ─────────────────────────────────
+        var vc = _classifier.Classify(payload, type);
+        var vcJson = JsonSerializer.Serialize(vc, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
 
         _db.SamplePayloads.Add(new SamplePayload
         {
@@ -65,39 +91,58 @@ public class DataInputFormatsController : Controller
             CreatedDate = now
         });
 
-        // ── Also write a VehicleEvent so the 3D scene live feed picks it up ──
+        // Write classified VehicleEvent
         try
         {
-            using var doc  = System.Text.Json.JsonDocument.Parse(payload);
+            using var doc  = JsonDocument.Parse(payload);
             var root       = doc.RootElement;
             string GetStr(string k) => root.TryGetProperty(k, out var v) ? (v.GetString() ?? "") : "";
             double? GetDbl(string k) => root.TryGetProperty(k, out var v) &&
-                                        v.ValueKind == System.Text.Json.JsonValueKind.Number
-                                        ? v.GetDouble() : null;
+                                        v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
 
             var hw  = !string.IsNullOrEmpty(highwayId) ? highwayId : GetStr("highway_id");
             var zid = !string.IsNullOrEmpty(zoneId)    ? zoneId    : GetStr("zone_id");
-
-            // Truncate payload to fit [MaxLength(500)]
-            var shortPayload = payload.Length > 490 ? payload[..490] : payload;
+            var et  = GetStr("event_type") is { Length: > 0 } e ? e : "detection";
 
             _db.VehicleEvents.Add(new VehicleEvent
             {
-                EventType   = GetStr("event_type") is { Length: > 0 } et ? et : "detection",
-                ZoneId      = zid,
-                HighwayId   = hw,
-                VehicleId   = "SIM-" + (GetStr("vehicle_id") is { Length: > 0 } vid ? vid : Guid.NewGuid().ToString("N")[..8]),
-                SpeedMph    = GetDbl("speed_mph"),
-                Latitude    = GetDbl("latitude"),
-                Longitude   = GetDbl("longitude"),
-                Payload     = shortPayload,
-                CreatedDate = now
+                EventType        = et,
+                ZoneId           = zid,
+                HighwayId        = hw,
+                VehicleId        = $"SIM-{(GetStr("vehicle_id") is { Length: > 0 } vid ? vid : Guid.NewGuid().ToString("N")[..8])}",
+                SpeedMph         = GetDbl("speed_mph"),
+                Latitude         = GetDbl("latitude"),
+                Longitude        = GetDbl("longitude"),
+                AltitudeMeters   = vc.AltitudeM,
+                // Phase 6 classification fields
+                VehicleMode      = vc.Domain,
+                VehicleCategory  = vc.Category,
+                VehicleClassJson = vcJson[..Math.Min(800, vcJson.Length)],
+                Payload          = payload.Length > 490 ? payload[..490] : payload,
+                CreatedDate      = now
             });
         }
-        catch { /* non-fatal: log to 3D scene is best-effort */ }
+        catch { /* non-fatal */ }
 
         await _db.SaveChangesAsync();
-        return Json(new { ok = true, label, payload });
+
+        // Return classification in response so JS can update the scene immediately
+        return Json(new {
+            ok    = true,
+            label,
+            payload,
+            classification = new {
+                domain      = vc.Domain,
+                category    = vc.Category,
+                color       = vc.Color,
+                shape       = vc.Shape3D,
+                confidence  = vc.Confidence,
+                lowConf     = vc.LowConfidence,
+                altitudeM   = vc.AltitudeM,
+                speedMph    = vc.SpeedMph,
+                isAir       = vc.Domain == "air"
+            }
+        });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
@@ -134,38 +179,14 @@ public class DataInputFormatsController : Controller
     }
 
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> GeneratePayload(int configId)
-    {
-        var config = await _db.InputFormatConfigs.FindAsync(configId);
-        if (config == null) return RedirectToAction(nameof(Index));
-
-        var fields  = config.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>();
-        var payload = _payloadSvc.Generate(config.SourceType, fields);
-        var label   = $"{config.FormatName} — {DateTime.UtcNow:HH:mm:ss}";
-
-        _db.SamplePayloads.Add(new SamplePayload
-        {
-            ConfigId    = configId,
-            SourceType  = config.SourceType,
-            Label       = label,
-            Payload     = payload,
-            IsValid     = true,
-            CreatedDate = DateTime.UtcNow
-        });
-        await _db.SaveChangesAsync();
-        return RedirectToAction(nameof(Index), new { activeTab = config.SourceType });
-    }
-
-    /// <summary>AJAX endpoint — returns JSON payload without page reload.</summary>
-    [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> GeneratePayloadAjax(int configId)
     {
         var config = await _db.InputFormatConfigs.FindAsync(configId);
-        if (config == null)
-            return Json(new { ok = false, error = "Config not found" });
+        if (config == null) return Json(new { ok = false, error = "Config not found" });
 
         var fields  = config.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>();
         var payload = _payloadSvc.Generate(config.SourceType, fields);
+        var vc      = _classifier.Classify(payload, config.SourceType);
         var label   = $"{config.FormatName} — {DateTime.UtcNow:HH:mm:ss}";
 
         _db.SamplePayloads.Add(new SamplePayload
@@ -179,22 +200,28 @@ public class DataInputFormatsController : Controller
         });
         await _db.SaveChangesAsync();
 
-        return Json(new { ok = true, label, payload });
+        return Json(new {
+            ok    = true,
+            label,
+            payload,
+            classification = new {
+                domain     = vc.Domain,
+                category   = vc.Category,
+                color      = vc.Color,
+                shape      = vc.Shape3D,
+                confidence = vc.Confidence,
+                isAir      = vc.Domain == "air"
+            }
+        });
     }
 
-    /// <summary>
-    /// Cross-tab duplicate: copy a config into a different source type tab.
-    /// Returns JSON { ok, targetTab, configId, name }.
-    /// </summary>
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> DuplicateConfig(int id, string targetTab)
     {
         var original = await _db.InputFormatConfigs.FindAsync(id);
         if (original == null) return Json(new { ok = false, error = "Config not found" });
-
-        var validTabs = new[] { "physical", "satellite", "telecom", "tracker" };
-        if (!validTabs.Contains(targetTab))
-            return Json(new { ok = false, error = "Invalid target tab" });
+        var validTabs = new[] { "physical", "satellite", "telecom", "tracker", "airflycar" };
+        if (!validTabs.Contains(targetTab)) return Json(new { ok = false, error = "Invalid target tab" });
 
         var copy = new InputFormatConfig
         {
@@ -208,7 +235,6 @@ public class DataInputFormatsController : Controller
         };
         _db.InputFormatConfigs.Add(copy);
         await _db.SaveChangesAsync();
-
         return Json(new { ok = true, targetTab, configId = copy.Id, name = copy.FormatName });
     }
 

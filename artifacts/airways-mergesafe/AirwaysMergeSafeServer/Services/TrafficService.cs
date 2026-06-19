@@ -3,10 +3,14 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace AirwaysMergeSafeServer.Services;
 
+/// <summary>
+/// A1 FIX: Replaced static readonly Random _rng with Random.Shared throughout.
+///         Random is not thread-safe when shared across threads; Random.Shared is.
+/// </summary>
 public class TrafficService
 {
-    private readonly IConfiguration _cfg;
-    private readonly IMemoryCache _cache;
+    private readonly IConfiguration    _cfg;
+    private readonly IMemoryCache      _cache;
     private readonly IHttpClientFactory _httpFactory;
 
     public TrafficService(IConfiguration cfg, IMemoryCache cache, IHttpClientFactory httpFactory)
@@ -29,27 +33,17 @@ public class TrafficService
                 client.Timeout = TimeSpan.FromSeconds(8);
                 var bbox = highwayId switch
                 {
-                    "I20-TX" => "32.72,-97.15,32.80,-96.95",
-                    "I35-TX" => "31.05,-97.38,31.60,-97.08",
-                    _        => "29.70,-95.80,29.90,-95.30"
+                    "I20-TX"  => "32.72,-97.15,32.80,-96.95",
+                    "I35-TX"  => "31.05,-97.38,31.60,-97.08",
+                    _         => "29.70,-95.80,29.90,-95.30"
                 };
                 var url = $"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key={tomTomKey}&bbox={bbox}";
                 var response = await client.GetAsync(url);
-                if (response.IsSuccessStatusCode)
-                {
-                    var json = await response.Content.ReadAsStringAsync();
-                    var parsed = JsonSerializer.Deserialize<object>(json);
-                    segments = new { source = "tomtom", data = parsed };
-                }
-                else
-                {
-                    segments = BuildSimulated(highwayId);
-                }
+                segments = response.IsSuccessStatusCode
+                    ? new { source = "tomtom", data = JsonSerializer.Deserialize<object>(await response.Content.ReadAsStringAsync()) }
+                    : BuildSimulated(highwayId);
             }
-            catch
-            {
-                segments = BuildSimulated(highwayId);
-            }
+            catch { segments = BuildSimulated(highwayId); }
         }
         else
         {
@@ -60,17 +54,16 @@ public class TrafficService
         return segments;
     }
 
-    private static readonly Random _rng = new();
-
+    // A1 FIX: Random.Shared — thread-safe, no lock required
     public static object BuildSimulated(string highwayId)
     {
+        var rng   = Random.Shared;
         var names = highwayId switch
         {
-            "I20-TX" => new[] { "Dallas West", "Grand Prairie", "Arlington", "Fort Worth East", "Mesquite", "Duncanville", "DeSoto", "Lancaster" },
-            "I35-TX" => new[] { "Waco North", "Temple", "Georgetown", "Round Rock", "Austin North", "San Marcos", "New Braunfels", "San Antonio" },
-            _        => new[] { "Houston West", "Katy", "Sugar Land", "Houston East", "Beaumont", "Orange", "Baytown", "Pasadena" }
+            "I20-TX"  => new[] { "Dallas West","Grand Prairie","Arlington","Fort Worth East","Mesquite","Duncanville","DeSoto","Lancaster" },
+            "I35-TX"  => new[] { "Waco North","Temple","Georgetown","Round Rock","Austin North","San Marcos","New Braunfels","San Antonio" },
+            _         => new[] { "Houston West","Katy","Sugar Land","Houston East","Beaumont","Orange","Baytown","Pasadena" }
         };
-
         return new
         {
             source      = "simulated",
@@ -78,12 +71,12 @@ public class TrafficService
             generatedAt = DateTime.UtcNow,
             segments    = names.Select((name, i) => new
             {
-                id                 = $"SEG-{i + 1:D3}",
+                id                = $"SEG-{i+1:D3}",
                 name,
-                speedMph           = _rng.Next(15, 75),
-                freeFlowSpeedMph   = 70,
-                congestion         = _rng.Next(0, 5) switch { 4 => "heavy", 3 => "moderate", _ => "free" },
-                travelTimeSeconds  = _rng.Next(60, 600)
+                speedMph          = rng.Next(15, 75),
+                freeFlowSpeedMph  = 70,
+                congestion        = rng.Next(0, 5) switch { 4 => "heavy", 3 => "moderate", _ => "free" },
+                travelTimeSeconds = rng.Next(60, 600)
             }).ToList()
         };
     }

@@ -6,14 +6,16 @@
         ("satellite", "Satellite / GPS",  "text-success"),
         ("telecom",   "Telecom / V2X",    "text-warning"),
         ("tracker",   "Tag Trackers",     "text-purple"),
+    ("airflycar", "AirFlyCar",        "text-warning"),
     };
     var allConfigs   = Model.PhysicalConfigs.Concat(Model.SatelliteConfigs).Concat(Model.TelecomConfigs).Concat(Model.TrackerConfigs).ToList();
     var commonFields = new[]{"vehicle_id","timestamp","speed_mph","latitude","longitude","direction","lane","vehicle_type","event_type","zone_id","highway_id","signal_strength","altitude_ft","heading"};
     var shown = Model.ActiveTab switch {
-        "satellite" => Model.SatelliteConfigs,
-        "telecom"   => Model.TelecomConfigs,
-        "tracker"   => Model.TrackerConfigs,
-        _           => Model.PhysicalConfigs
+        "satellite"  => Model.SatelliteConfigs,
+        "telecom"    => Model.TelecomConfigs,
+        "tracker"    => Model.TrackerConfigs,
+        "airflycar"  => Model.AirFlyCarConfigs,
+        _            => Model.PhysicalConfigs
     };
     var isSimTab = Model.ActiveTab == "simulation";
 }
@@ -85,6 +87,7 @@
                             <option value="satellite">Satellite / GPS</option>
                             <option value="telecom">Telecom / V2X</option>
                             <option value="tracker">Tag Tracker</option>
+                            <option value="airflycar">🛸 AirFlyCar / eVTOL</option>
                         </select>
                     </div>
 
@@ -147,6 +150,47 @@
                 </div>
             </div>
         </div>
+
+        <!-- Phase 7: Classification result panel — revealed after each SimulationPost -->
+        <div class="col-12 mt-2" id="classResultWrap" style="display:none">
+            <div class="mss-card">
+                <div class="mss-card-header d-flex align-items-center gap-2">
+                    <i class="bi bi-cpu-fill"></i>
+                    Last Record — Vehicle Classification
+                    <span id="crDomain" class="badge ms-auto"></span>
+                </div>
+                <div class="mss-card-body">
+                    <div class="row g-2 align-items-center">
+                        <div class="col-auto" style="font-size:2.4rem" id="crIcon">🚗</div>
+                        <div class="col">
+                            <div class="fw-bold text-uppercase" id="crCategory">sedan</div>
+                            <div class="text-muted small" id="crShape"></div>
+                        </div>
+                        <div class="col-5">
+                            <label class="form-label small mb-1">Confidence Score</label>
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="progress flex-grow-1" style="height:8px">
+                                    <div id="crConfBar" class="progress-bar" style="width:0%"></div>
+                                </div>
+                                <small id="crConfPct">0%</small>
+                            </div>
+                            <div id="crLowConf" class="text-danger small mt-1" style="display:none">
+                                ⚠ Low confidence — check payload fields
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row g-2 mt-2 small text-muted">
+                        <div class="col-3">Speed: <b id="crSpeed">—</b></div>
+                        <div class="col-3">Altitude: <b id="crAlt">—</b></div>
+                        <div class="col-3">Source: <b id="crSrc">—</b></div>
+                        <div class="col-3">
+                            <span class="badge rounded-pill px-3 py-1" id="crColorBadge">—</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <!-- Hidden anti-forgery for simulation AJAX -->
@@ -392,7 +436,7 @@ function startSim() {
                   '&sourceType=' + encodeURIComponent(srcType) +
                   '&__RequestVerificationToken=' + encodeURIComponent(tok)
         })
-        .then(function(r){ return r.json(); })
+        .then(function(r){ return r.json(); }).then(function(d){ d.sourceType=type; return d; })
         .then(function(d){
             if (d.ok) {
                 simTotal++;
@@ -597,6 +641,49 @@ function duplicateConfig(id, targetTab) {
           } else { alert('Duplicate failed: ' + (d.error || 'Unknown error')); }
       }).catch(function(e){ console.error(e); });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 7: Classification result panel
+// Mirrors VehicleClassifier.cs algorithm client-side for instant UI feedback.
+// ─────────────────────────────────────────────────────────────────────────────
+var CAT_ICONS  = { sedan:'🚗', suv:'🚙', truck:'🛻', motorcycle:'🏍', van:'🚐', air_urban:'✈', air_express:'🛩', air_vertiport:'🛸' };
+var CAT_COLORS = { sedan:'#3b82f6', suv:'#22c55e', truck:'#f59e0b', motorcycle:'#a855f7', van:'#64748b', air_urban:'#00bcd4', air_express:'#ff6b35', air_vertiport:'#f0abfc' };
+
+function showClassResult(cl, srcType) {
+    if (!cl) return;
+    var wrap  = document.getElementById('classResultWrap');
+    wrap.style.display = '';
+    var cat   = cl.category || 'sedan';
+    var col   = CAT_COLORS[cat] || '#64748b';
+    var conf  = cl.confidence != null ? cl.confidence : 0;
+    var pct   = Math.round(conf * 100);
+    var isAir = cl.isAir || cl.domain === 'air';
+
+    document.getElementById('crIcon').textContent      = CAT_ICONS[cat] || '🚗';
+    document.getElementById('crCategory').textContent  = cat.toUpperCase();
+    document.getElementById('crShape').textContent     = cl.shape ? 'Shape: ' + cl.shape : '';
+    document.getElementById('crDomain').textContent    = isAir ? '✈ AIR' : '🚗 GROUND';
+    document.getElementById('crDomain').className      = 'badge ms-auto ' + (isAir ? 'bg-warning text-dark' : 'bg-primary');
+    document.getElementById('crConfBar').style.width   = pct + '%';
+    document.getElementById('crConfBar').className     = 'progress-bar bg-' + (conf < 0.4 ? 'danger' : conf < 0.65 ? 'warning' : 'success');
+    document.getElementById('crConfPct').textContent   = pct + '%';
+    document.getElementById('crLowConf').style.display = conf < 0.4 ? '' : 'none';
+    document.getElementById('crSpeed').textContent     = cl.speedMph != null ? cl.speedMph.toFixed(1) + ' mph' : '—';
+    document.getElementById('crAlt').textContent       = cl.altitudeM != null ? cl.altitudeM.toFixed(1) + ' m' : 'ground';
+    // AirFlyCar-specific extras
+    var extraHtml = '';
+    if (cl.flightPhase) extraHtml += '<span class="badge bg-secondary ms-1">' + cl.flightPhase + '</span>';
+    if (cl.batterySoc != null) extraHtml += '<span class="badge ms-1" style="background:#22c55e">' + cl.batterySoc.toFixed(0) + '% SOC</span>';
+    if (cl.conflictFlag) extraHtml += '<span class="badge bg-danger ms-1">⚠ CONFLICT</span>';
+    var extEl = document.getElementById('crExtra');
+    if (extEl) extEl.innerHTML = extraHtml;
+    document.getElementById('crSrc').textContent       = srcType || '—';
+    var badge              = document.getElementById('crColorBadge');
+    badge.textContent      = cat;
+    badge.style.background = col;
+    badge.style.color      = (cat === 'truck' || cat === 'air_urban' || cat === 'air_vertiport') ? '#000' : '#fff';
+}
+
 </script>
 }
 }

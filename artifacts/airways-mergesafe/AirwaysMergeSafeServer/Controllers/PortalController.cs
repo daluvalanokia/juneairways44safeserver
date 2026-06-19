@@ -5,30 +5,28 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
+/// <summary>
+/// C1 FIX: Plain-text password fallback removed. BCrypt-only. Transparent work-factor upgrade.
+/// </summary>
 public class PortalController : Controller
 {
-    private const int LockoutThreshold  = 5;
+    private const int    LockoutThreshold = 5;
     private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
 
-    private readonly AppDbContext _db;
+    private readonly AppDbContext              _db;
     private readonly ILogger<PortalController> _logger;
 
     public PortalController(AppDbContext db, ILogger<PortalController> logger)
-    {
-        _db     = db;
-        _logger = logger;
-    }
+    { _db = db; _logger = logger; }
 
     public async Task<IActionResult> Index()
     {
         if (HttpContext.Session.GetString("HighwayId") != null)
             return RedirectToAction("Index", "Dashboard");
-
-        var vm = new PortalViewModel
+        return View(new PortalViewModel
         {
             Highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync()
-        };
-        return View(vm);
+        });
     }
 
     [HttpGet("Portal/Login")]
@@ -43,27 +41,24 @@ public class PortalController : Controller
         var user = await _db.UserProfiles
             .FirstOrDefaultAsync(u => u.UserId == userId && u.HighwayId == highwayId && u.IsActive);
 
-        if (user == null)
+        if (user is null)
         {
-            _logger.LogWarning("Security: Failed login — userId={UserId} highway={HighwayId} ip={Ip} reason=UserNotFound",
-                userId, highwayId, ip);
+            _logger.LogWarning("Security: Failed login — userId={UserId} highway={HighwayId} ip={Ip} reason=UserNotFound", userId, highwayId, ip);
             return InvalidCredentials(highways, highwayId, userId);
         }
 
         if (user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
         {
-            _logger.LogWarning("Security: Login blocked — account locked userId={UserId} highway={HighwayId} ip={Ip} lockedUntil={LockedUntil}",
-                userId, highwayId, ip, user.LockedUntil.Value);
+            _logger.LogWarning("Security: Login blocked — locked userId={UserId} highway={HighwayId} ip={Ip} until={Until}", userId, highwayId, ip, user.LockedUntil.Value);
             return View("Index", new PortalViewModel
             {
-                Highways          = highways,
-                SelectedHighwayId = highwayId,
-                UserId            = userId,
-                Error             = "Account is temporarily locked. Please try again later."
+                Highways = highways, SelectedHighwayId = highwayId, UserId = userId,
+                Error = "Account is temporarily locked. Please try again later."
             });
         }
 
-        bool passwordValid = VerifyPassword(password, user.Password);
+        // C1 FIX: BCrypt-only — no plaintext fallback
+        bool passwordValid = VerifyAndUpgradePassword(user, password);
 
         if (!passwordValid)
         {
@@ -71,13 +66,11 @@ public class PortalController : Controller
             if (user.FailedLoginAttempts >= LockoutThreshold)
             {
                 user.LockedUntil = DateTime.UtcNow.Add(LockoutDuration);
-                _logger.LogWarning("Security: Account locked — userId={UserId} highway={HighwayId} ip={Ip} attempts={Attempts}",
-                    userId, highwayId, ip, user.FailedLoginAttempts);
+                _logger.LogWarning("Security: Account locked — userId={UserId} highway={HighwayId} ip={Ip} attempts={Attempts}", userId, highwayId, ip, user.FailedLoginAttempts);
             }
             else
             {
-                _logger.LogWarning("Security: Failed login — userId={UserId} highway={HighwayId} ip={Ip} attempts={Attempts}",
-                    userId, highwayId, ip, user.FailedLoginAttempts);
+                _logger.LogWarning("Security: Failed login — userId={UserId} highway={HighwayId} ip={Ip} attempts={Attempts}", userId, highwayId, ip, user.FailedLoginAttempts);
             }
             await _db.SaveChangesAsync();
             return InvalidCredentials(highways, highwayId, userId);
@@ -85,12 +78,7 @@ public class PortalController : Controller
 
         user.FailedLoginAttempts = 0;
         user.LockedUntil         = null;
-
-        if (!string.IsNullOrEmpty(user.Password) && !user.Password.StartsWith("$2"))
-        {
-            user.Password = BCrypt.Net.BCrypt.HashPassword(password);
-        }
-        await _db.SaveChangesAsync();
+        await _db.SaveChangesAsync();  // persists any BCrypt work-factor upgrade
 
         HttpContext.Session.Clear();
         HttpContext.Session.SetString("HighwayId", highwayId);
@@ -98,9 +86,7 @@ public class PortalController : Controller
         HttpContext.Session.SetString("UserType",  user.UserType);
         HttpContext.Session.SetString("FullName",  user.FullName);
 
-        _logger.LogInformation("Security: Successful login — userId={UserId} highway={HighwayId} ip={Ip}",
-            userId, highwayId, ip);
-
+        _logger.LogInformation("Security: Successful login — userId={UserId} highway={HighwayId} ip={Ip}", userId, highwayId, ip);
         return RedirectToAction("Index", "Dashboard");
     }
 
@@ -114,25 +100,21 @@ public class PortalController : Controller
         return RedirectToAction("Index");
     }
 
-    private IActionResult InvalidCredentials(
-        List<AirwaysMergeSafeServer.Models.Highway> highways,
-        string highwayId,
-        string userId)
-        => View("Index", new PortalViewModel
-        {
-            Highways          = highways,
-            SelectedHighwayId = highwayId,
-            UserId            = userId,
-            Error             = "Invalid credentials."
-        });
+    private IActionResult InvalidCredentials(List<AirwaysMergeSafeServer.Models.Highway> highways, string highwayId, string userId)
+        => View("Index", new PortalViewModel { Highways = highways, SelectedHighwayId = highwayId, UserId = userId, Error = "Invalid credentials." });
 
-    private static bool VerifyPassword(string supplied, string? stored)
+    /// <summary>
+    /// BCrypt-only. Rejects any non-BCrypt stored value (C1).
+    /// Transparently upgrades work factor if below 12 rounds.
+    /// </summary>
+    private static bool VerifyAndUpgradePassword(AirwaysMergeSafeServer.Models.UserProfile user, string supplied)
     {
-        if (string.IsNullOrEmpty(stored)) return false;
+        if (string.IsNullOrEmpty(user.Password)) return false;
+        if (!user.Password.StartsWith("$2")) return false;   // reject plaintext — C1 closed
 
-        if (stored.StartsWith("$2"))
-            return BCrypt.Net.BCrypt.Verify(supplied, stored);
-
-        return supplied == stored;
+        bool valid = BCrypt.Net.BCrypt.Verify(supplied, user.Password);
+        if (valid && BCrypt.Net.BCrypt.PasswordNeedsRehash(user.Password, 12))
+            user.Password = BCrypt.Net.BCrypt.HashPassword(supplied, workFactor: 12);
+        return valid;
     }
 }

@@ -7,12 +7,15 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
+/// <summary>
+/// A8 FIX: highwayId from query-string validated against the session user's permitted HighwayId.
+///         An operator can only view their own highway; admins can view any.
+/// </summary>
 public class DashboardController : Controller
 {
     private readonly AppDbContext _db;
 
-    // ── EF Core compiled queries ──────────────────────────────────────────
-    private static readonly Func<AppDbContext, string, IAsyncEnumerable<MergeZone>> _zonesQuery =
+    private static readonly Func<AppDbContext, string, IAsyncEnumerable<MergeZone>>    _zonesQuery =
         EF.CompileAsyncQuery((AppDbContext db, string hwId) =>
             db.MergeZones.AsNoTracking().Where(z => z.HighwayId == hwId));
 
@@ -38,7 +41,18 @@ public class DashboardController : Controller
         var highways = await _db.Highways.AsNoTracking()
             .Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
 
-        highwayId ??= HttpContext.Session.GetString("HighwayId") ?? highways.FirstOrDefault()?.HighwayId;
+        // A8 FIX: validate requested highwayId against the user's permitted highway
+        var sessionHighwayId = HttpContext.Session.GetString("HighwayId");
+        var userType         = HttpContext.Session.GetString("UserType") ?? "viewer";
+        var isAdmin          = userType.Equals("admin", StringComparison.OrdinalIgnoreCase);
+
+        if (highwayId != null && !isAdmin && highwayId != sessionHighwayId)
+        {
+            // Non-admins cannot view other highways — silently clamp to their own
+            highwayId = sessionHighwayId;
+        }
+
+        highwayId ??= sessionHighwayId ?? highways.FirstOrDefault()?.HighwayId;
         if (highwayId != null) HttpContext.Session.SetString("HighwayId", highwayId);
 
         var zones   = new List<MergeZone>();
