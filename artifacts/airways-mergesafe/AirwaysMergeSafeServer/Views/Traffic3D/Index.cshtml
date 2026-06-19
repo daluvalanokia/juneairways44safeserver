@@ -560,7 +560,9 @@ if (typeof BroadcastChannel !== 'undefined') {
 
     _simBc.onmessage = function(e) {
         if (!e.data) return;
-        if (e.data.type === 'sim_vehicle' && e.data.payload) _simInject(e.data.payload, e.data.classification);
+        // airflycar events are handled exclusively by AirScene
+        if (e.data.type === 'sim_vehicle' && e.data.payload && e.data.srcType !== 'airflycar')
+            _simInject(e.data.payload, e.data.classification);
         if (e.data.type === 'sim_started') refreshScene();
     };
 }
