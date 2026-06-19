@@ -460,6 +460,13 @@ function startSim() {
                 setSimStatus('running', 'Running · ' + simTotal + ' posted · every ' + interval/1000 + 's');
                 appendSimLog(d.payload, d.label, srcType);
                 if (d.classification) showClassResult(d.classification, srcType);
+                try {
+                    var evParsed = JSON.parse(d.payload);
+                    if (airwaysBroadcast) airwaysBroadcast.postMessage({
+                        type: 'sim_vehicle', payload: evParsed,
+                        classification: d.classification || null, srcType: srcType
+                    });
+                } catch(ex) {}
             }
         })
         .catch(function(e){ console.error(e); });

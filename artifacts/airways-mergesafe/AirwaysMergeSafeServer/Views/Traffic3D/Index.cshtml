@@ -65,6 +65,10 @@
     <div id="labelA" class="badge bg-secondary position-absolute" style="top:6px;left:6px;display:none">Perspective</div>
     <div id="labelB" class="badge bg-info text-dark position-absolute"    style="top:6px;display:none">Side ↕</div>
     <div id="labelC" class="badge bg-warning text-dark position-absolute" style="top:6px;display:none">Top ⊞</div>
+    <div id="simLiveLabel" class="badge bg-success position-absolute"
+         style="top:6px;right:6px;font-size:.72rem;opacity:0;transition:opacity .5s ease;pointer-events:none;z-index:10">
+        🛰 Live Sim — Vehicle Added
+    </div>
 </div>
 
 <!-- ── Classification legend + inspector ─────────────────────────────── -->
@@ -423,9 +427,10 @@ document.getElementById('viewToggle').querySelectorAll('button').forEach(btn => 
 });
 
 // ── Animate loop ──────────────────────────────────────────────────────
-let tick = 0;
+let tick = 0, camTween = null;
 function animate() {
     requestAnimationFrame(animate); tick++;
+    if (camTween) camTween();
 
     // Orbit perspective cam
     camP.position.x = radius * Math.sin(theta) * Math.cos(phi);
@@ -480,4 +485,83 @@ function animate() {
 
 // Auto-refresh every 30 s
 setInterval(refreshScene, 30000);
+
+// ── Live simulation feed ───────────────────────────────────────────────
+if (typeof BroadcastChannel !== 'undefined') {
+    var _simBc = new BroadcastChannel('airways_sim');
+
+    function _simNorm(evObj, cl) {
+        var ev = Object.assign({}, evObj);
+        if (cl) {
+            ev.vehicleCategory  = cl.category;
+            ev.vehicleMode      = cl.domain;
+            ev.altitudeMeters   = (cl.altitudeM  != null) ? cl.altitudeM  : (evObj.altitude_m  ?? 0);
+            ev.speedMph         = (cl.speedMph   != null) ? cl.speedMph   : (evObj.speed_mph   ?? 0);
+            ev.vehicleClassJson = JSON.stringify(cl);
+        } else {
+            ev.altitudeMeters = evObj.altitude_m  ?? 0;
+            ev.speedMph       = evObj.speed_mph   ?? 0;
+        }
+        ev.latitude  = evObj.latitude  ?? evObj.lat  ?? 32.7767;
+        ev.longitude = evObj.longitude ?? evObj.lon  ?? -96.7970;
+        ev.vehicleId = evObj.vehicle_id || ('SIM-' + Math.random().toString(36).slice(2,6).toUpperCase());
+        ev.eventType = evObj.event_type || 'detection';
+        ev.zoneId    = evObj.zone_id    || '';
+        return ev;
+    }
+
+    function _simInject(evObj, cl) {
+        var ev = _simNorm(evObj, cl);
+        var vc = classifyLocal(ev);
+        if (domainFilter !== 'all' && vc.domain !== domainFilter) return;
+
+        var mesh = buildVehicleMesh(ev);
+        scene.add(mesh);
+        vehicleMeshes.push(mesh);
+
+        // Update stat counters
+        var gEl = document.getElementById('statGround');
+        var aEl = document.getElementById('statAir');
+        if (vc.domain === 'air') aEl.textContent = (+aEl.textContent||0) + 1;
+        else                     gEl.textContent = (+gEl.textContent||0) + 1;
+
+        // Flash overlay label
+        var lbl = document.getElementById('simLiveLabel');
+        if (lbl) { lbl.style.opacity = '1'; setTimeout(function(){ lbl.style.opacity = '0'; }, 2500); }
+
+        // ── Perspective close-up fly-in ───────────────────────────────
+        var startR = radius, startP = phi;
+        var targR  = Math.max(18, startR * 0.12);
+        var targP  = Math.max(0.15, Math.min(0.55, startP));
+        var frames = 0, phase = 'in';
+        var FIN = 55, FHOLD = 100, FOUT = 70;
+        camTween = function() {
+            var t, ease;
+            if (phase === 'in') {
+                frames++;
+                t = Math.min(1, frames / FIN);
+                ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
+                radius = startR + (targR - startR) * ease;
+                phi    = startP + (targP - startP) * ease;
+                if (frames >= FIN) { frames = 0; phase = 'hold'; }
+            } else if (phase === 'hold') {
+                frames++;
+                if (frames >= FHOLD) { frames = 0; phase = 'out'; }
+            } else {
+                frames++;
+                t = Math.min(1, frames / FOUT);
+                ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
+                radius = targR + (startR - targR) * ease;
+                phi    = targP + (startP - targP) * ease;
+                if (frames >= FOUT) { camTween = null; radius = startR; phi = startP; }
+            }
+        };
+    }
+
+    _simBc.onmessage = function(e) {
+        if (!e.data) return;
+        if (e.data.type === 'sim_vehicle' && e.data.payload) _simInject(e.data.payload, e.data.classification);
+        if (e.data.type === 'sim_started') refreshScene();
+    };
+}
 </script>
