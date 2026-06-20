@@ -1,49 +1,66 @@
-# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+# ── Build outputs ────────────────────────────────────────────────────────────
+bin/
+obj/
+out/
 
-# compiled output
-dist
-tmp
-out-tsc
-*.tsbuildinfo
-.expo
-.expo-shared
+# ── .NET / NuGet ─────────────────────────────────────────────────────────────
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+project.lock.json
+project.fragment.lock.json
+artifacts/
 
-# dependencies
-node_modules
+# ── SQLite dev database ───────────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
 
-# IDEs and editors
-/.idea
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
+# ── Secrets & keys — NEVER commit these ──────────────────────────────────────
+appsettings.Production.json
+tomtomkey.json
+secrets.json
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
 
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
+# ── Logs ─────────────────────────────────────────────────────────────────────
+logs/
+*.log
+*.log.*
 
-# misc
-/.sass-cache
-/connect.lock
-/coverage
-/libpeerconnection.log
-npm-debug.log
-yarn-error.log
-testem.log
-/typings
-
-# System Files
-.DS_Store
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.vs/
+.vscode/
+.idea/
+*.DS_Store
 Thumbs.db
+desktop.ini
 
-.cursor/rules/nx-rules.mdc
-.github/instructions/nx.instructions.md
+# ── Rider / JetBrains ────────────────────────────────────────────────────────
+.idea/
+*.sln.iml
 
-# Replit
-.cache/
-.local/
+# ── NuGet restore cache ───────────────────────────────────────────────────────
+packages/
+*.nupkg
+nuget.config.local
+
+# ── Publish output ────────────────────────────────────────────────────────────
+publish/
+wwwroot/dist/
+
+# ── Test results ─────────────────────────────────────────────────────────────
+TestResults/
+coverage/
+*.trx
+*.coverage
+
+# ── Copilot / AI tool residue — do not commit ────────────────────────────────
+.github/copilot/
+.copilot/
+.aicache/
