@@ -84,7 +84,8 @@ public class ApiController : ControllerBase
     [HttpGet("events/live")]
     public async Task<IActionResult> EventsLive(
         string? highwayId, int take = 50,
-        string? mode = null, string? category = null, string? zoneId = null)
+        string? mode = null, string? category = null,
+        string? zoneId = null, string? serverId = null)
     {
         if (!IsAuthorised()) return Unauthorized(new { error = "Authentication required." });
 
@@ -96,12 +97,25 @@ public class ApiController : ControllerBase
         if (!string.IsNullOrEmpty(category)) q = q.Where(e => e.VehicleCategory == category);
         if (!string.IsNullOrEmpty(zoneId))   q = q.Where(e => e.ZoneId          == zoneId);
 
+        // serverId filter: resolve the zone(s) that belong to this switch server,
+        // then filter events by those zones. SwitchServer.ZoneId is nullable.
+        if (!string.IsNullOrEmpty(serverId))
+        {
+            var serverZoneId = await _db.SwitchServers.AsNoTracking()
+                .Where(s => s.ServerId == serverId)
+                .Select(s => s.ZoneId)
+                .FirstOrDefaultAsync();
+            if (!string.IsNullOrEmpty(serverZoneId))
+                q = q.Where(e => e.ZoneId == serverZoneId);
+            else
+                return Ok(Array.Empty<object>()); // server exists but has no zone assigned
+        }
+
         var events = await q.OrderByDescending(e => e.CreatedDate).Take(take)
             .Select(e => new {
                 e.Id, e.EventType, e.ZoneId, e.HighwayId,
                 e.VehicleId, e.SpeedMph,
                 e.Latitude, e.Longitude, e.AltitudeMeters,
-                // Phase 6
                 e.VehicleMode, e.VehicleCategory, e.VehicleClassJson,
                 e.IsAirFlyCar, e.CreatedDate
             })
