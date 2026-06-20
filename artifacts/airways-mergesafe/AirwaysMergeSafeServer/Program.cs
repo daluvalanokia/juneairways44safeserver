@@ -114,18 +114,27 @@ try
         }
 
         // ── Step 2: Idempotent column guards ──────────────────────────────
-        // Safety net for pre-existing DBs created via EnsureCreated().
-        // Each statement is harmless if the column/table already exists.
-        // SQLite uses "ALTER TABLE … ADD COLUMN" (no IF NOT EXISTS — handled via try/catch).
-        // PostgreSQL uses "ADD COLUMN IF NOT EXISTS".
+        // Safety net for pre-existing DBs created before any migration was added.
+        // SQLite does NOT support "ADD COLUMN IF NOT EXISTS" — each statement is
+        // wrapped in try/catch; "duplicate column" errors are silently swallowed.
+        // PostgreSQL supports "ADD COLUMN IF NOT EXISTS" natively.
+        // ─── COMPLETE COLUMN INVENTORY (all migrations, all providers) ────────
+        //   20260520000000 Initial                    — base schema
+        //   20260522000000 AddAccountLockout          — FailedLoginAttempts, LockedUntil
+        //   20260619000000 AddAirFlyCarSourceType      — InputFormatConfigs seed only (no columns)
+        //   20260620000000 AddAltitudeFields           — AltitudeMeters ×3, AltMin/Max/Width
+        //   20260620000001 AddAuditLog                 — AuditLogs table
+        //   20260620000002 AddVehicleClassification    — VehicleMode, VehicleCategory, VehicleClassJson
+        //   20260620000003 AddSwitchServerGpsLocation  — GpsLocation on SwitchServers
+        //   20260621000000 AddIsAirFlyCar              — IsAirFlyCar on VehicleEvents  ← THIS FIX
+
         var sqliteGuards = isPostgres ? Array.Empty<string>() : new[]
         {
-            // AddAccountLockout (20260522000000) — THE FIX for the reported exception
+            // 20260522000000 AddAccountLockout
             "ALTER TABLE UserProfiles ADD COLUMN FailedLoginAttempts INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE UserProfiles ADD COLUMN LockedUntil TEXT",
 
-            // AddAltitudeFields (20260620000000)
-            "ALTER TABLE SwitchServers ADD COLUMN GpsLocation TEXT",
+            // 20260620000000 AddAltitudeFields
             "ALTER TABLE SwitchServers ADD COLUMN AltitudeMinMeters REAL",
             "ALTER TABLE SwitchServers ADD COLUMN AltitudeMaxMeters REAL",
             "ALTER TABLE SwitchServers ADD COLUMN AltitudeWidthMeters REAL",
@@ -133,12 +142,7 @@ try
             "ALTER TABLE SensorDevices ADD COLUMN AltitudeMeters REAL DEFAULT 0",
             "ALTER TABLE MergeZones    ADD COLUMN AltitudeMeters REAL DEFAULT 0",
 
-            // AddVehicleClassification (20260620000002)
-            "ALTER TABLE VehicleEvents ADD COLUMN VehicleMode     TEXT NOT NULL DEFAULT 'ground'",
-            "ALTER TABLE VehicleEvents ADD COLUMN VehicleCategory  TEXT NOT NULL DEFAULT 'sedan'",
-            "ALTER TABLE VehicleEvents ADD COLUMN VehicleClassJson TEXT",
-
-            // AddAuditLog (20260620000001) — table only if missing
+            // 20260620000001 AddAuditLog
             @"CREATE TABLE IF NOT EXISTS AuditLogs (
                 Id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 UserId      TEXT    NOT NULL DEFAULT '',
@@ -152,21 +156,31 @@ try
                 IpAddress   TEXT,
                 CreatedDate TEXT    NOT NULL DEFAULT (datetime('now'))
             )",
-            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_UserId              ON AuditLogs (UserId)",
-            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_CreatedDate         ON AuditLogs (CreatedDate)",
+            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_UserId                ON AuditLogs (UserId)",
+            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_CreatedDate           ON AuditLogs (CreatedDate)",
             "CREATE INDEX IF NOT EXISTS IX_AuditLogs_HighwayId_CreatedDate ON AuditLogs (HighwayId, CreatedDate)",
+
+            // 20260620000002 AddVehicleClassification
+            "ALTER TABLE VehicleEvents ADD COLUMN VehicleMode     TEXT NOT NULL DEFAULT 'ground'",
+            "ALTER TABLE VehicleEvents ADD COLUMN VehicleCategory  TEXT NOT NULL DEFAULT 'sedan'",
+            "ALTER TABLE VehicleEvents ADD COLUMN VehicleClassJson TEXT",
             "CREATE INDEX IF NOT EXISTS IX_VehicleEvents_VehicleMode     ON VehicleEvents (VehicleMode)",
             "CREATE INDEX IF NOT EXISTS IX_VehicleEvents_VehicleCategory  ON VehicleEvents (VehicleCategory)",
+
+            // 20260620000003 AddSwitchServerGpsLocation
+            "ALTER TABLE SwitchServers ADD COLUMN GpsLocation TEXT",
+
+            // 20260621000000 AddIsAirFlyCar  ← THE FIX for the current exception
+            "ALTER TABLE VehicleEvents ADD COLUMN IsAirFlyCar TEXT NOT NULL DEFAULT 'N'",
         };
 
         var pgGuards = !isPostgres ? Array.Empty<string>() : new[]
         {
-            // AddAccountLockout
+            // 20260522000000 AddAccountLockout
             @"ALTER TABLE ""UserProfiles"" ADD COLUMN IF NOT EXISTS ""FailedLoginAttempts"" INTEGER NOT NULL DEFAULT 0",
             @"ALTER TABLE ""UserProfiles"" ADD COLUMN IF NOT EXISTS ""LockedUntil"" TIMESTAMPTZ",
 
-            // AddAltitudeFields
-            @"ALTER TABLE ""SwitchServers"" ADD COLUMN IF NOT EXISTS ""GpsLocation"" VARCHAR(60)",
+            // 20260620000000 AddAltitudeFields
             @"ALTER TABLE ""SwitchServers"" ADD COLUMN IF NOT EXISTS ""AltitudeMinMeters"" DOUBLE PRECISION",
             @"ALTER TABLE ""SwitchServers"" ADD COLUMN IF NOT EXISTS ""AltitudeMaxMeters"" DOUBLE PRECISION",
             @"ALTER TABLE ""SwitchServers"" ADD COLUMN IF NOT EXISTS ""AltitudeWidthMeters"" DOUBLE PRECISION",
@@ -174,12 +188,7 @@ try
             @"ALTER TABLE ""SensorDevices"" ADD COLUMN IF NOT EXISTS ""AltitudeMeters"" DOUBLE PRECISION DEFAULT 0",
             @"ALTER TABLE ""MergeZones""    ADD COLUMN IF NOT EXISTS ""AltitudeMeters"" DOUBLE PRECISION DEFAULT 0",
 
-            // AddVehicleClassification
-            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""VehicleMode""      VARCHAR(10)  NOT NULL DEFAULT 'ground'",
-            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""VehicleCategory""  VARCHAR(20)  NOT NULL DEFAULT 'sedan'",
-            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""VehicleClassJson"" VARCHAR(800)",
-
-            // AuditLogs
+            // 20260620000001 AddAuditLog
             @"CREATE TABLE IF NOT EXISTS ""AuditLogs"" (
                 ""Id""          BIGSERIAL PRIMARY KEY,
                 ""UserId""      VARCHAR(50)  NOT NULL DEFAULT '',
@@ -196,19 +205,31 @@ try
             @"CREATE INDEX IF NOT EXISTS ""IX_AuditLogs_UserId""                ON ""AuditLogs"" (""UserId"")",
             @"CREATE INDEX IF NOT EXISTS ""IX_AuditLogs_CreatedDate""           ON ""AuditLogs"" (""CreatedDate"")",
             @"CREATE INDEX IF NOT EXISTS ""IX_AuditLogs_HighwayId_CreatedDate"" ON ""AuditLogs"" (""HighwayId"", ""CreatedDate"")",
-            @"CREATE INDEX IF NOT EXISTS ""IX_VehicleEvents_VehicleMode""       ON ""VehicleEvents"" (""VehicleMode"")",
-            @"CREATE INDEX IF NOT EXISTS ""IX_VehicleEvents_VehicleCategory""   ON ""VehicleEvents"" (""VehicleCategory"")",
 
-            // Mark migrations as applied in history table
-            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260522000000_AddAccountLockout',           '8.0.0') ON CONFLICT DO NOTHING",
-            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260619000000_AddAirFlyCarSourceType',       '8.0.0') ON CONFLICT DO NOTHING",
-            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000000_AddAltitudeFields',            '8.0.0') ON CONFLICT DO NOTHING",
-            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000001_AddAuditLog',                  '8.0.0') ON CONFLICT DO NOTHING",
-            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000002_AddVehicleClassification',     '8.0.0') ON CONFLICT DO NOTHING",
+            // 20260620000002 AddVehicleClassification
+            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""VehicleMode""      VARCHAR(10)  NOT NULL DEFAULT 'ground'",
+            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""VehicleCategory""  VARCHAR(20)  NOT NULL DEFAULT 'sedan'",
+            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""VehicleClassJson"" VARCHAR(800)",
+            @"CREATE INDEX IF NOT EXISTS ""IX_VehicleEvents_VehicleMode""      ON ""VehicleEvents"" (""VehicleMode"")",
+            @"CREATE INDEX IF NOT EXISTS ""IX_VehicleEvents_VehicleCategory""  ON ""VehicleEvents"" (""VehicleCategory"")",
+
+            // 20260620000003 AddSwitchServerGpsLocation
+            @"ALTER TABLE ""SwitchServers"" ADD COLUMN IF NOT EXISTS ""GpsLocation"" VARCHAR(60)",
+
+            // 20260621000000 AddIsAirFlyCar  ← THE FIX for the current exception
+            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""IsAirFlyCar"" VARCHAR(1) NOT NULL DEFAULT 'N'",
+
+            // Mark ALL migrations as applied so MigrateAsync never double-runs them
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260522000000_AddAccountLockout',          '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260619000000_AddAirFlyCarSourceType',      '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000000_AddAltitudeFields',           '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000001_AddAuditLog',                 '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000002_AddVehicleClassification',    '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000003_AddSwitchServerGpsLocation',  '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260621000000_AddIsAirFlyCar',              '8.0.0') ON CONFLICT DO NOTHING",
         };
 
         var activeGuards = isPostgres ? pgGuards : sqliteGuards;
-        foreach (var sql in activeGuards)
         {
             try
             {
@@ -332,4 +353,5 @@ static string ParsePostgresUrl(string url)
     }
     catch { return url; }
 }
+
 
