@@ -107,6 +107,17 @@ public class DataInputFormatsController : Controller
             CreatedDate = now
         });
 
+        // Hoist savedVehicleId above try{} so it is in scope for the return Json() below.
+        string savedVehicleId;
+        {
+            using var _preDoc  = JsonDocument.Parse(payload);
+            var _preRoot       = _preDoc.RootElement;
+            var _rawVid        = _preRoot.TryGetProperty("vehicle_id", out var _vp)
+                                 && _vp.GetString() is { Length: > 0 } _vs ? _vs
+                                 : Guid.NewGuid().ToString("N")[..8];
+            savedVehicleId = $"SIM-{_rawVid}";
+        }
+
         // Write classified VehicleEvent
         try
         {
@@ -117,11 +128,8 @@ public class DataInputFormatsController : Controller
                                         v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
 
             var hw  = !string.IsNullOrEmpty(highwayId) ? highwayId : GetStr("highway_id");
-            // Always use the form zoneId (real DB zone) — never the random payload zone_id
+            // Always use the real form zoneId — never the random payload zone_id
             var zid = !string.IsNullOrEmpty(zoneId) ? zoneId : "";
-            // Build stable vehicle id: SIM-VEH-001 etc (pool of 20 from payload)
-            var rawVid = GetStr("vehicle_id") is { Length: > 0 } vp ? vp : Guid.NewGuid().ToString("N")[..8];
-            var savedVehicleId = $"SIM-{rawVid}";
             var et  = GetStr("event_type") is { Length: > 0 } e ? e : "detection";
 
             // Task 10: determine IsAirFlyCar — forced "Y" for airflycar source, or if payload field set
@@ -134,7 +142,7 @@ public class DataInputFormatsController : Controller
                 EventType        = et,
                 ZoneId           = zid,
                 HighwayId        = hw,
-                VehicleId        = savedVehicleId,
+                VehicleId        = savedVehicleId,   // from hoisted block above
                 SpeedMph         = GetDbl("speed_mph"),
                 Latitude         = GetDbl("latitude"),
                 Longitude        = GetDbl("longitude"),
