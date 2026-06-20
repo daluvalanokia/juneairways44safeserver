@@ -491,6 +491,7 @@ const vehicleObjects = [];  // { meshP, meshS, meshT, overlays, altY, topY, isAi
 const conflictRings  = [];
 const raycaster = new THREE.Raycaster(), mouse2 = new THREE.Vector2();
 let activeDomFilter = 'all';
+let selectedAirVehicle = null;
 
 function buildVehicle(ev) {
     const vc    = resolveClass(ev);
@@ -698,6 +699,8 @@ async function doRefresh() {
 const SPLIT = [0, 0.42, 0.71, 1.00]; // panel boundaries: 0–42%, 42–71%, 71–100%
 
 canvas.addEventListener('click', e => {
+    var panel = document.getElementById('vehicleDetailPanel');
+    if (panel && panel.contains(e.target)) return;
     const rect = canvas.getBoundingClientRect();
     const rx   = (e.clientX - rect.left) / rect.width;
     const ry   = (e.clientY - rect.top)  / rect.height;
@@ -711,7 +714,15 @@ canvas.addEventListener('click', e => {
     mouse2.y = -ry * 2 + 1;
     raycaster.setFromCamera(mouse2, cam);
     const hits = raycaster.intersectObjects(pickArr, false);
-    if (hits.length) showInspector(hits[0].object.userData);
+    if (!hits.length) { closeVehicleDetail(); return; }
+    const hitMesh = hits[0].object;
+    const vo = vehicleObjects.find(o => o.meshP === hitMesh || o.meshS === hitMesh || o.meshT === hitMesh);
+    if (!vo) { closeVehicleDetail(); return; }
+    if (selectedAirVehicle && selectedAirVehicle !== vo) clearAirHighlight(selectedAirVehicle);
+    selectedAirVehicle = vo;
+    applyAirHighlight(vo);
+    showVehicleDetail(hitMesh.userData, e.clientX, e.clientY);
+    showInspector(hitMesh.userData);
 });
 
 function showInspector({ ev, vc }) {
@@ -785,11 +796,198 @@ function showInspector({ ev, vc }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// Click-to-inspect helpers
+// ══════════════════════════════════════════════════════════════════════
+
+function clearAirHighlight(vo) {
+    if (!vo) return;
+    [vo.meshP, vo.meshS, vo.meshT].forEach(function(m) {
+        if (!m || !m.material || !m.material.emissive) return;
+        m.material.emissive.setHex(0x000000);
+        m.material.emissiveIntensity = 0;
+    });
+}
+
+function applyAirHighlight(vo) {
+    if (!vo) return;
+    [vo.meshP, vo.meshS, vo.meshT].forEach(function(m) {
+        if (!m || !m.material || !m.material.emissive) return;
+        m.material.emissive.setHex(0xf59e0b);
+        m.material.emissiveIntensity = 0.55;
+    });
+}
+
+function closeVehicleDetail() {
+    clearAirHighlight(selectedAirVehicle);
+    selectedAirVehicle = null;
+    var panel = document.getElementById('vehicleDetailPanel');
+    if (panel) panel.style.display = 'none';
+}
+
+function vdSwitchTab(tab) {
+    document.getElementById('vdBodyFmt').style.display = tab === 'fmt' ? '' : 'none';
+    document.getElementById('vdBodyRaw').style.display = tab === 'raw' ? '' : 'none';
+    document.getElementById('vdTabFmt').style.background = tab === 'fmt' ? 'rgba(59,130,246,.18)' : 'transparent';
+    document.getElementById('vdTabRaw').style.background = tab === 'raw' ? 'rgba(59,130,246,.18)' : 'transparent';
+    document.getElementById('vdTabFmt').style.color = tab === 'fmt' ? '#60a5fa' : '#64748b';
+    document.getElementById('vdTabRaw').style.color = tab === 'raw' ? '#60a5fa' : '#64748b';
+}
+
+function showVehicleDetail({ ev, vc }, cx, cy) {
+    var wrap  = document.getElementById('sceneWrap');
+    var panel = document.getElementById('vehicleDetailPanel');
+    if (!wrap || !panel) return;
+
+    var conf    = vc.confidence ?? 0;
+    var confPct = Math.round(conf * 100);
+    var confClr = conf < 0.4 ? '#ef4444' : conf < 0.65 ? '#f59e0b' : '#22c55e';
+    var isAir   = vc.domain === 'air';
+    var altM    = ev.altitudeMeters;
+    var band    = altM != null ? findBand(altM) : null;
+
+    var vc2 = {};
+    if (ev.vehicleClassJson) {
+        try { vc2 = typeof ev.vehicleClassJson === 'string'
+            ? JSON.parse(ev.vehicleClassJson) : ev.vehicleClassJson; } catch(e) {}
+    }
+    var ph  = vc.flightPhase    || vc2.flightPhase;
+    var soc = vc.batterySoc     ?? vc2.batterySoc;
+    var vr  = vc.verticalRateFpm ?? vc2.verticalRateFpm;
+    var cor = vc.corridorId     || vc2.corridorId;
+
+    var bandHtml;
+    if (band) {
+        var bc = bandHsl(band.idx);
+        bandHtml = '<span style="background:' + bc + ';color:#000;padding:1px 6px;border-radius:3px;font-size:.65rem">' + band.server.serverId + '</span>';
+    } else if (isAir && altM != null) {
+        bandHtml = '<span style="color:#f59e0b;font-size:.7rem">⚠ outside corridors</span>';
+    } else {
+        bandHtml = '<span style="color:#64748b;font-size:.7rem">ground level</span>';
+    }
+
+    var srcType  = (ev && ev.srcType) || '';
+    var srcBadge = srcType === 'sim'
+        ? '<span style="background:#f59e0b;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">SIM</span>'
+        : (ev && ev.vehicleId
+            ? '<span style="background:#22c55e;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">LIVE</span>'
+            : '<span style="background:#475569;color:#fff;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">AMBIENT</span>');
+
+    document.getElementById('vdTitle').innerHTML =
+        (isAir ? '✈' : '🚗') + ' ' + (vc.category || 'Vehicle') + srcBadge;
+
+    var confBar = '<div style="display:flex;align-items:center;gap:5px">'
+        + '<div style="flex:1;height:4px;background:rgba(255,255,255,.12);border-radius:2px">'
+        + '<div style="width:' + confPct + '%;height:4px;background:' + confClr + ';border-radius:2px"></div></div>'
+        + '<span style="font-size:.68rem;color:#cbd5e1">' + confPct + '%</span></div>';
+
+    var rows = [
+        ['Vehicle ID', (ev && ev.vehicleId) || '—'],
+        ['Domain',     '<span style="background:' + (isAir ? '#ff6b35' : '#3b82f6') + ';color:#fff;padding:1px 6px;border-radius:3px;font-size:.68rem">' + vc.domain + '</span>'],
+        ['Category',   '<span style="background:' + (vc.color || '#64748b') + ';color:#fff;padding:1px 6px;border-radius:3px;font-size:.68rem">' + vc.category + '</span>'],
+        ['Confidence', confPct > 0 ? confBar : '—'],
+        ['Altitude',   altM != null ? '<b>' + altM.toFixed(1) + ' m</b>' : 'ground level'],
+        ['Speed',      ev && ev.speedMph != null ? ev.speedMph.toFixed(1) + ' mph' : '—'],
+        ['Event',      (ev && ev.eventType) || '—'],
+        ['Zone',       (ev && ev.zoneId)    || '—'],
+        ['Corridor',   bandHtml],
+    ];
+    if (ph)         rows.push(['Flight phase', '<span style="background:#475569;color:#fff;padding:1px 5px;border-radius:3px;font-size:.65rem">' + ph + '</span>']);
+    if (soc != null) rows.push(['Battery SOC',  '<div style="display:flex;align-items:center;gap:5px"><div style="flex:1;height:4px;background:rgba(255,255,255,.12);border-radius:2px"><div style="width:' + soc + '%;height:4px;background:' + (soc<25?'#ef4444':soc<50?'#f59e0b':'#22c55e') + ';border-radius:2px"></div></div><span style="font-size:.68rem;color:#cbd5e1">' + soc.toFixed(0) + '%</span></div>']);
+    if (vr != null)  rows.push(['Vert rate',    (vr > 0 ? '↑ ' : '↓ ') + Math.abs(vr).toFixed(0) + ' fpm']);
+    if (cor)         rows.push(['Corridor ID',  '<code style="font-size:.65rem">' + cor + '</code>']);
+
+    document.getElementById('vdBodyFmt').innerHTML =
+        '<table style="width:100%;border-collapse:collapse;font-size:.72rem">' +
+        rows.map(function(r) {
+            return '<tr><td style="color:#64748b;padding:3px 0;width:42%;vertical-align:top">' + r[0] + '</td>'
+                 + '<td style="color:#e2e8f0;padding:3px 0 3px 8px">' + r[1] + '</td></tr>';
+        }).join('') + '</table>';
+
+    document.getElementById('vdRawPre').textContent = JSON.stringify({ ev: ev, vc: vc }, null, 2);
+    vdSwitchTab('fmt');
+
+    // Position container-relative — fixes Eyeways viewport-coord bug
+    var wrapRect = wrap.getBoundingClientRect();
+    var panW = 304, panH = 320;
+    var px = cx - wrapRect.left + 12;
+    var py = cy - wrapRect.top  + 12;
+    if (px + panW > wrapRect.width)  px = cx - wrapRect.left - panW - 4;
+    if (py + panH > wrapRect.height) py = cy - wrapRect.top  - panH - 4;
+    panel.style.left    = Math.max(0, px) + 'px';
+    panel.style.top     = Math.max(0, py) + 'px';
+    panel.style.display = '';
+}
+
+// Build floating detail panel inside canvas container (runs once at page load)
+(function() {
+    var wrap = document.getElementById('sceneWrap');
+    if (!wrap) return;
+    var p = document.createElement('div');
+    p.id = 'vehicleDetailPanel';
+    p.style.cssText =
+        'display:none;position:absolute;top:0;left:0;z-index:20;width:300px;' +
+        'background:rgba(8,12,24,.97);border:1px solid rgba(255,255,255,.14);' +
+        'border-radius:10px;backdrop-filter:blur(8px);' +
+        'box-shadow:0 8px 32px rgba(0,0,0,.6);overflow:hidden;';
+    p.innerHTML =
+        '<div style="padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.09);' +
+            'display:flex;justify-content:space-between;align-items:center">' +
+            '<span id="vdTitle" style="font-size:.8rem;font-weight:700;color:#e2e8f0;' +
+                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px"></span>' +
+            '<button onclick="closeVehicleDetail()" style="background:none;border:none;color:#94a3b8;' +
+                'font-size:1.1rem;cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0">&#215;</button>' +
+        '</div>' +
+        '<div style="display:flex;border-bottom:1px solid rgba(255,255,255,.07)">' +
+            '<button id="vdTabFmt" onclick="vdSwitchTab(\'fmt\')" ' +
+                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
+                'background:rgba(59,130,246,.18);border:none;color:#60a5fa;cursor:pointer">Formatted</button>' +
+            '<button id="vdTabRaw" onclick="vdSwitchTab(\'raw\')" ' +
+                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
+                'background:transparent;border:none;color:#64748b;cursor:pointer">Raw JSON</button>' +
+        '</div>' +
+        '<div id="vdBodyFmt" style="padding:10px 12px;max-height:280px;overflow-y:auto"></div>' +
+        '<div id="vdBodyRaw" style="display:none;padding:10px 12px;max-height:280px;overflow-y:auto">' +
+            '<pre id="vdRawPre" style="font-size:.6rem;color:#94a3b8;white-space:pre-wrap;' +
+                'word-break:break-all;margin:0;line-height:1.5"></pre>' +
+        '</div>';
+    p.addEventListener('click', function(e) { e.stopPropagation(); });
+    wrap.appendChild(p);
+
+    // Escape key dismiss
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeVehicleDetail();
+    });
+    // Outside-page dismiss (capture phase) — fixes aa04614 follow-up gap
+    document.addEventListener('click', function(e) {
+        var panel = document.getElementById('vehicleDetailPanel');
+        if (!panel || panel.style.display === 'none') return;
+        var cont = document.getElementById('sceneWrap');
+        if (cont && !cont.contains(e.target)) closeVehicleDetail();
+    }, true);
+})();
+
+// ══════════════════════════════════════════════════════════════════════
 // Orbit control (perspective panel only)
 // ══════════════════════════════════════════════════════════════════════
 let isDrag = false, prevM = {x:0,y:0}, theta = 0.6, phi = 0.5, radius = 310;
 let airCamTween = null;
 var lookTarget = { y: 15 };   // animate this to zoom toward vehicles at altitude
+
+// Hover: pointer cursor over vehicles
+canvas.addEventListener('mousemove', e => {
+    if (isDrag) return;
+    const rect = canvas.getBoundingClientRect();
+    const rx   = (e.clientX - rect.left) / rect.width;
+    const ry   = (e.clientY - rect.top)  / rect.height;
+    let cam, lx, pickArr;
+    if      (rx < SPLIT[1]) { cam = camP; lx = rx / SPLIT[1];                     pickArr = vehicleObjects.map(vo => vo.meshP); }
+    else if (rx < SPLIT[2]) { cam = camS; lx = (rx-SPLIT[1])/(SPLIT[2]-SPLIT[1]); pickArr = vehicleObjects.map(vo => vo.meshS); }
+    else                     { cam = camT; lx = (rx-SPLIT[2])/(SPLIT[3]-SPLIT[2]); pickArr = vehicleObjects.map(vo => vo.meshT); }
+    mouse2.x =  lx * 2 - 1;
+    mouse2.y = -ry * 2 + 1;
+    raycaster.setFromCamera(mouse2, cam);
+    canvas.style.cursor = raycaster.intersectObjects(pickArr, false).length ? 'pointer' : '';
+});
 
 canvas.addEventListener('mousedown', e => {
     const rect = canvas.getBoundingClientRect();
