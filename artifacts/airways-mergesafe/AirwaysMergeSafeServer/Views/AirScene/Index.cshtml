@@ -1065,24 +1065,37 @@ function _airNorm(evObj, cl) {
 }
 
 function _airInject(evObj, cl) {
-    if (!animationPaused) return;  // Live mode: ignore sim injections (only allowed in sim-only mode)
+    if (!animationPaused) return;  // Live mode: ignore sim injections
 
     var ev = _airNorm(evObj, cl);
-    var vc = resolveClass(ev);     // always returns air-domain in AirScene
 
-    var vo       = buildVehicle(ev);
-    var overlays = buildSpeedOverlay(ev, vo.p, vo.isAir, vo.altY);
-    vo.overlays  = overlays;
-    scene.add(vo.meshP); scene.add(vo.meshS); scene.add(vo.meshT);
-    overlays.forEach(function(m){ scene.add(m); });
-    vehicleObjects.push(vo);
+    // ── Save to DB first, then refresh scene from DB ──────────────────
+    fetch('/api/sim/event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            vehicleId:      ev.vehicleId,
+            highwayId:      HW || '',
+            zoneId:         ev.zoneId || selectedZoneId || '',
+            vehicleType:    ev.vehicleCategory || 'air_urban',
+            srcType:        evObj.isAirFlyCar === 'Y' ? 'airflycar' : 'airflycar',
+            isAirFlyCar:    ev.isAirFlyCar === 'Y' ? 'Y' : 'Y',  // AirScene only shows air
+            speedMph:       ev.speedMph,
+            latitude:       ev.latitude,
+            longitude:      ev.longitude,
+            altitudeMeters: ev.altitudeMeters ?? 0
+        })
+    }).then(function() {
+        doRefresh(); // pull updated list from DB
+    }).catch(function() {
+        // DB unavailable — inject directly for visual continuity
+        _airInjectDirect(ev, cl);
+    });
 
-    var aEl = document.getElementById('stAir');
-    aEl.textContent = (+aEl.textContent||0) + 1;
-    document.getElementById('stTime').textContent = 'Sim · ' + new Date().toLocaleTimeString();
-
+    // Flash label + camera tween immediately (before DB round-trip)
     var lbl = document.getElementById('airSimLiveLabel');
     if (lbl) { lbl.style.opacity = '1'; setTimeout(function(){ lbl.style.opacity = '0'; }, 2500); }
+    document.getElementById('stTime').textContent = 'Sim · ' + new Date().toLocaleTimeString();
 
     var startR = radius, startP = phi;
     var targR  = Math.max(25, startR * 0.13);
@@ -1110,6 +1123,18 @@ function _airInject(evObj, cl) {
             if (frames >= FOUT) { airCamTween = null; radius = startR; phi = startP; }
         }
     };
+}
+
+function _airInjectDirect(ev, cl) {
+    var vc = resolveClass(ev);
+    var vo = buildVehicle(ev);
+    var overlays = buildSpeedOverlay(ev, vo.p, vo.isAir, vo.altY);
+    vo.overlays = overlays;
+    scene.add(vo.meshP); scene.add(vo.meshS); scene.add(vo.meshT);
+    overlays.forEach(function(m){ scene.add(m); });
+    vehicleObjects.push(vo);
+    var aEl = document.getElementById('stAir');
+    if (aEl) aEl.textContent = (+aEl.textContent||0) + 1;
 }
 
 // Bug Fix 2: BroadcastChannel — only call onSimStateChange for lifecycle events.

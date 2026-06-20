@@ -84,7 +84,7 @@ public class ApiController : ControllerBase
     [HttpGet("events/live")]
     public async Task<IActionResult> EventsLive(
         string? highwayId, int take = 50,
-        string? mode = null, string? category = null)
+        string? mode = null, string? category = null, string? zoneId = null)
     {
         if (!IsAuthorised()) return Unauthorized(new { error = "Authentication required." });
 
@@ -94,6 +94,7 @@ public class ApiController : ControllerBase
         var q = _db.VehicleEvents.AsNoTracking().Where(e => e.HighwayId == highwayId);
         if (!string.IsNullOrEmpty(mode))     q = q.Where(e => e.VehicleMode     == mode);
         if (!string.IsNullOrEmpty(category)) q = q.Where(e => e.VehicleCategory == category);
+        if (!string.IsNullOrEmpty(zoneId))   q = q.Where(e => e.ZoneId          == zoneId);
 
         var events = await q.OrderByDescending(e => e.CreatedDate).Take(take)
             .Select(e => new {
@@ -188,6 +189,68 @@ public class ApiController : ControllerBase
         public string? DeviceId       { get; set; }
         public string? VehicleId      { get; set; }
         public string? VehicleType    { get; set; }  // Phase 6
+        public double? SpeedMph       { get; set; }
+        public double? Latitude       { get; set; }
+        public double? Longitude      { get; set; }
+        public double? AltitudeMeters { get; set; }
+    }
+
+    // ── Sim-event save — session-auth only, no DeviceApiKey required ──────
+    /// <summary>
+    /// Saves a raw simulation vehicle event to the database so 3D scenes can
+    /// refresh from DB instead of relying purely on BroadcastChannel injection.
+    /// Requires an active browser session (user must be logged in).
+    /// </summary>
+    [HttpPost("sim/event")]
+    public async Task<IActionResult> SaveSimEvent([FromBody] SimEventPayload payload)
+    {
+        if (HttpContext.Session.GetString("UserId") is not { Length: > 0 })
+            return Unauthorized(new { error = "Session required." });
+        if (payload is null) return BadRequest(new { error = "Payload required." });
+
+        var syntheticJson = JsonSerializer.Serialize(new {
+            altitude_m   = payload.AltitudeMeters,
+            speed_mph    = payload.SpeedMph,
+            vehicle_type = payload.VehicleType,
+            latitude     = payload.Latitude,
+            longitude    = payload.Longitude,
+            isAirFlyCar  = payload.IsAirFlyCar
+        });
+        var vc     = _classifier.Classify(syntheticJson, payload.SrcType ?? "physical");
+        var vcJson = JsonSerializer.Serialize(vc, new JsonSerializerOptions
+            { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        var ev = new VehicleEvent
+        {
+            EventType        = "detection",
+            ZoneId           = Truncate(payload.ZoneId,    50),
+            HighwayId        = Truncate(payload.HighwayId, 50) ?? "",
+            VehicleId        = Truncate(payload.VehicleId, 50),
+            SpeedMph         = payload.SpeedMph,
+            Latitude         = payload.Latitude,
+            Longitude        = payload.Longitude,
+            AltitudeMeters   = payload.AltitudeMeters,
+            VehicleMode      = vc.Domain,
+            VehicleCategory  = vc.Category,
+            VehicleClassJson = vcJson[..Math.Min(800, vcJson.Length)],
+            IsAirFlyCar      = payload.IsAirFlyCar ?? "N",
+            CreatedDate      = DateTime.UtcNow
+        };
+        _db.VehicleEvents.Add(ev);
+        await _db.SaveChangesAsync();
+
+        return Ok(new { ok = true, id = ev.Id,
+            classification = new { domain = vc.Domain, category = vc.Category, confidence = vc.Confidence } });
+    }
+
+    public sealed class SimEventPayload
+    {
+        public string? VehicleId      { get; set; }
+        public string? HighwayId      { get; set; }
+        public string? ZoneId         { get; set; }
+        public string? VehicleType    { get; set; }
+        public string? SrcType        { get; set; }
+        public string? IsAirFlyCar    { get; set; }
         public double? SpeedMph       { get; set; }
         public double? Latitude       { get; set; }
         public double? Longitude      { get; set; }

@@ -14,7 +14,17 @@
             lat = s.Latitude, lon = s.Longitude,
             altM = s.AltitudeMeters ?? 0
         }));
-    var hw = Model.SelectedHighwayId ?? "";
+    var serversJson = System.Text.Json.JsonSerializer.Serialize(
+        Model.SwitchServers.Select(s => new {
+            serverId   = s.ServerId,   serverName = s.ServerName,
+            zoneId     = s.ZoneId,     status     = s.Status,
+            ipAddress  = s.IpAddress,  port       = s.Port
+        }));
+    var hw          = Model.SelectedHighwayId ?? "";
+    var zoneCtrLat  = Model.Zones.Where(z => z.Latitude.HasValue).Select(z => z.Latitude!.Value).FirstOrDefault();
+    var zoneCtrLon  = Model.Zones.Where(z => z.Longitude.HasValue).Select(z => z.Longitude!.Value).FirstOrDefault();
+    if (zoneCtrLat == 0) zoneCtrLat = 32.7767;
+    if (zoneCtrLon == 0) zoneCtrLon = -96.7970;
 }
 
 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -23,7 +33,7 @@
         <small class="text-muted">Ground vehicles · Classification-aware rendering</small>
     </div>
     <div class="d-flex gap-2 align-items-center flex-wrap">
-        <select id="hwSel" class="form-select form-select-sm" style="width:210px"
+        <select id="hwSel" class="form-select form-select-sm" style="width:190px"
                 onchange="location.href='/Traffic3D?highwayId='+this.value">
             @foreach (var h in Model.Highways)
             {
@@ -31,6 +41,24 @@
                 { <option value="@h.HighwayId" selected>@h.Name</option> }
                 else
                 { <option value="@h.HighwayId">@h.Name</option> }
+            }
+        </select>
+        <!-- Zone dropdown -->
+        <select id="t3dZoneSel" class="form-select form-select-sm" style="width:150px"
+                onchange="t3dZoneChanged()">
+            <option value="">(All Zones)</option>
+            @foreach (var z in Model.Zones)
+            {
+                <option value="@z.ZoneId">@z.ZoneName</option>
+            }
+        </select>
+        <!-- Switch Server dropdown -->
+        <select id="t3dServerSel" class="form-select form-select-sm" style="width:160px"
+                onchange="t3dServerChanged()">
+            <option value="">(All Servers)</option>
+            @foreach (var s in Model.SwitchServers)
+            {
+                <option value="@s.ServerId" data-zone="@(s.ZoneId ?? "")">@s.ServerName</option>
             }
         </select>
         <!-- View-mode toggle -->
@@ -105,6 +133,68 @@ const ALT_SCALE = 0.05;
 const XZ_SCALE  = 800;
 const HW        = '@hw';
 
+// ── Zone / Server dropdown state ──────────────────────────────────────
+const T3D_SERVERS = @Html.Raw(serversJson);
+const T3D_ZONES   = @Html.Raw(zonesJson);
+var selectedZoneId   = '';
+var selectedServerId = '';
+
+function t3dZoneChanged() {
+    selectedZoneId = document.getElementById('t3dZoneSel').value;
+    var srvSel = document.getElementById('t3dServerSel');
+    srvSel.querySelectorAll('option').forEach(function(o) {
+        var show = !selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId;
+        o.style.display = show ? '' : 'none';
+        if (!show && srvSel.value === o.value) { srvSel.value = ''; selectedServerId = ''; }
+    });
+    var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+    if (z && z.lat && z.lon) _reloadMapTile(z.lat, z.lon);
+    refreshScene();
+}
+
+function t3dServerChanged() {
+    selectedServerId = document.getElementById('t3dServerSel').value;
+    var opt = document.querySelector('#t3dServerSel option[value="' + selectedServerId + '"]');
+    if (opt && opt.dataset.zone && !selectedZoneId) {
+        document.getElementById('t3dZoneSel').value = opt.dataset.zone;
+        selectedZoneId = opt.dataset.zone;
+    }
+    refreshScene();
+}
+
+// ── OSM tile helpers (navigation map background) ─────────────────────
+function _latLonToTile(lat, lon, z) {
+    var n = 1 << z;
+    var x = Math.floor((lon + 180) / 360 * n);
+    var sinLat = Math.sin(lat * Math.PI / 180);
+    var y = Math.floor((1 - Math.log((sinLat + 1) / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n);
+    return { x: x, y: y, z: z };
+}
+var _mapTileLat = @Html.Raw(zoneCtrLat.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture));
+var _mapTileLon = @Html.Raw(zoneCtrLon.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture));
+var _mapTileLoading = false;
+
+function _reloadMapTile(lat, lon) {
+    _mapTileLat = lat; _mapTileLon = lon; _mapTileLoading = false; _tryLoadMapTile();
+}
+
+function _tryLoadMapTile() {
+    if (_mapTileLoading) return;
+    _mapTileLoading = true;
+    var t = _latLonToTile(_mapTileLat, _mapTileLon, 14);
+    var url = 'https://tile.openstreetmap.org/' + t.z + '/' + t.x + '/' + t.y + '.png';
+    var loader = new THREE.TextureLoader();
+    loader.crossOrigin = 'anonymous';
+    loader.load(url, function(tex) {
+        tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+        if (window._t3dGround) {
+            window._t3dGround.material.map   = tex;
+            window._t3dGround.material.color.setHex(0xddeedd); // light tint over map
+            window._t3dGround.material.needsUpdate = true;
+        }
+    }, undefined, function() { /* CORS blocked — keep terrain fallback */ });
+}
+
 // ── Ground vehicle geometry + colour factory ──────────────────────────
 const CAT_SPEC = {
     sedan:       { color:'#3b82f6', geo:()=>new THREE.BoxGeometry(1.6,0.4,0.8) },
@@ -169,6 +259,7 @@ const groundMat = new THREE.MeshPhongMaterial({ color: 0x1e3a1e }); // green ter
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.rotation.x = -Math.PI / 2; ground.position.y = -0.1;
 scene.add(ground);
+window._t3dGround = ground; // exposed for OSM tile loader
 
 // ── Asphalt road surface (highway running along X axis) ───────────────
 const roadW = 72; // total road width (4 lanes × ~18 units each)
@@ -246,6 +337,7 @@ ZONES.forEach(z => {
 
 // ── Vehicle mesh management ───────────────────────────────────────────
 const vehicleMeshes = [], vehicleData = [];
+const vehicleMap    = new Map();   // vehicleId → mesh  (enables live upsert by vehicle)
 const raycaster = new THREE.Raycaster();
 const mouse2    = new THREE.Vector2();
 let selectedVehicleMesh = null;
@@ -263,7 +355,7 @@ function buildVehicleMesh(ev) {
     // Snap to a road lane centre; keep x from GPS if available
     const p = (ev.latitude && ev.longitude) ? norm(ev.latitude, ev.longitude)
               : { x: (Math.random()-0.5)*400, z: 0 };
-    const laneZ = LANE_Z[vehicleMeshes.length % LANE_Z.length];
+    const laneZ = LANE_Z[vehicleMap.size % LANE_Z.length];
     mesh.position.set(p.x, 0.35, laneZ);
 
     // Heading-based velocity: eastbound lanes (z<0) go +x, westbound (z>0) go -x
@@ -280,32 +372,61 @@ function buildVehicleMesh(ev) {
 }
 
 function loadEvents(events) {
-    vehicleMeshes.forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
-    vehicleMeshes.length = 0; vehicleData.length = 0;
-
-    let gCount = 0;
+    const seenIds = new Set();
     const lats = [], lons = [];
+
     events.forEach(ev => {
         const vc = classifyLocal(ev);
-        if (vc.domain !== 'ground') return;   // ground-only view
-        if (ev.latitude) lats.push(ev.latitude);
+        if (vc.domain !== 'ground') return;
+        const vid = ev.vehicleId || (ev.id != null ? 'db-' + ev.id : null);
+        if (!vid) return;
+
+        seenIds.add(vid);
+        if (ev.latitude)  lats.push(ev.latitude);
         if (ev.longitude) lons.push(ev.longitude);
-        const mesh = buildVehicleMesh(ev);
-        scene.add(mesh);
-        vehicleMeshes.push(mesh);
-        vehicleData.push({ ev, vc });
-        gCount++;
+
+        if (vehicleMap.has(vid)) {
+            // ── Update existing vehicle's speed/heading ───────────────
+            const mesh = vehicleMap.get(vid);
+            mesh.userData.ev = ev;
+            const headingDeg = ev.heading ?? (mesh.userData.laneZ < 0 ? 90 : 270);
+            const headingRad = headingDeg * Math.PI / 180;
+            const spd = ((ev.speedMph ?? 55) * 0.018);
+            mesh.userData.vx = Math.sin(headingRad) * spd;
+            mesh.userData.vz = -Math.cos(headingRad) * spd;
+            mesh.rotation.y  = headingRad;
+        } else {
+            // ── Add new vehicle mesh ──────────────────────────────────
+            const mesh = buildVehicleMesh(ev);
+            scene.add(mesh);
+            vehicleMeshes.push(mesh);
+            vehicleMap.set(vid, mesh);
+            vehicleData.push({ ev, vc });
+        }
     });
+
+    // Remove stale vehicles no longer in the live feed
+    vehicleMap.forEach((mesh, vid) => {
+        if (!seenIds.has(vid)) {
+            scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose();
+            vehicleMap.delete(vid);
+            const idx = vehicleMeshes.indexOf(mesh);
+            if (idx >= 0) vehicleMeshes.splice(idx, 1);
+        }
+    });
+
     if (lats.length) {
         midLat = lats.reduce((a,b)=>a+b,0)/lats.length;
         midLon = lons.reduce((a,b)=>a+b,0)/lons.length;
+        _tryLoadMapTile(); // re-centre map tile on actual vehicle cluster
     }
-    document.getElementById('statGround').textContent = gCount;
+    document.getElementById('statGround').textContent = vehicleMap.size;
 }
 
 async function refreshScene() {
     try {
-        const r = await fetch(`/api/events/live?highwayId=${HW}&take=100&mode=ground`);
+        const zq = selectedZoneId ? `&zoneId=${encodeURIComponent(selectedZoneId)}` : '';
+        const r = await fetch(`/api/events/live?highwayId=${HW}&take=100&mode=ground${zq}`);
         if (!r.ok) return;
         loadEvents(await r.json());
     } catch(e) { console.warn('Scene refresh error:', e); }
@@ -627,6 +748,7 @@ function animate() {
 // ── Boot — default to top-down traffic view ───────────────────────────
 (async () => {
     await refreshScene();
+    _tryLoadMapTile(); // load navigation map tile for zone centre
     animate();
     // Activate top-down as default (clearest road/traffic view)
     setViewport('top');
@@ -663,18 +785,39 @@ function _simNorm(evObj, cl) {
 }
 
 function _simInject(evObj, cl) {
-    if (!animationPaused) return;  // Live mode: ignore sim injections (only allowed in sim-only mode)
+    if (!animationPaused) return;  // blocked in live mode
     var ev = _simNorm(evObj, cl);
     var vc = classifyLocal(ev);
-    if (vc.domain !== 'ground') return;   // ground-only view
+    if (vc.domain !== 'ground') return;
 
-    var mesh = buildVehicleMesh(ev);
-    scene.add(mesh);
-    vehicleMeshes.push(mesh);
+    // ── Save to DB first, then refresh scene from DB ──────────────────
+    fetch('/api/sim/event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            vehicleId:     ev.vehicleId,
+            highwayId:     HW || '',
+            zoneId:        ev.zoneId || selectedZoneId || '',
+            vehicleType:   vc.category || null,
+            srcType:       'physical',
+            isAirFlyCar:   'N',
+            speedMph:      ev.speedMph,
+            latitude:      ev.latitude,
+            longitude:     ev.longitude,
+            altitudeMeters: ev.altitudeMeters ?? 0
+        })
+    }).then(function() {
+        refreshScene(); // pull updated list from DB
+    }).catch(function() {
+        // DB unavailable — inject directly so the scene still reacts
+        var mesh = buildVehicleMesh(ev);
+        scene.add(mesh);
+        vehicleMeshes.push(mesh);
+        vehicleMap.set(ev.vehicleId || ('fb-' + vehicleMeshes.length), mesh);
+        document.getElementById('statGround').textContent = vehicleMap.size;
+    });
 
-    var gEl = document.getElementById('statGround');
-    gEl.textContent = (+gEl.textContent||0) + 1;
-
+    // Flash label + camera tween immediately (before DB round-trip)
     var lbl = document.getElementById('simLiveLabel');
     if (lbl) { lbl.style.opacity = '1'; setTimeout(function(){ lbl.style.opacity = '0'; }, 2500); }
 
