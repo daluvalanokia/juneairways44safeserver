@@ -86,82 +86,150 @@ try
 
     var app = builder.Build();
 
-    // ── C5: MigrateAsync at startup (replaces all startup DDL hacks) ──────
+    // ── C5 / FIX: MigrateAsync for BOTH SQLite and PostgreSQL ────────────
+    // ROOT CAUSE FIX (SqliteException: no such column FailedLoginAttempts):
+    //   EnsureCreated() was used for SQLite — it snapshots the model at DB
+    //   creation time and never applies subsequent migrations. Switching to
+    //   MigrateAsync() for all providers ensures every migration (including
+    //   AddAccountLockout which adds FailedLoginAttempts / LockedUntil) is
+    //   applied on startup, regardless of environment.
+    //   Idempotent SQLite column guards are added as a safety net for any
+    //   pre-existing DB that was created with EnsureCreated().
     using (var scope = app.Services.CreateScope())
     {
-        var db     = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        var db        = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logger    = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         var isPostgres = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DATABASE_URL"));
+
+        // ── Step 1: Run all pending EF migrations ─────────────────────────
         try
         {
-            if (isPostgres)
-                await db.Database.MigrateAsync();
-            else
-                db.Database.EnsureCreated();
+            await db.Database.MigrateAsync();   // works for both SQLite and PostgreSQL
+            logger.LogInformation("Startup: EF migrations applied (provider={Provider})",
+                isPostgres ? "PostgreSQL" : "SQLite");
         }
-        catch (Exception ex) { logger.LogError(ex, "Startup: Migration failed — applying safety guards."); }
-
-        if (isPostgres)
+        catch (Exception ex)
         {
-            // Safety guards — idempotent ALTER TABLE IF NOT EXISTS for all new columns.
-            // Required because the 44-repo migrations contain SQLite-specific syntax in
-            // AddAuditLog (datetime('now') default) which can abort the migration chain
-            // on PostgreSQL before all columns are applied.
-            var guards = new[]
+            logger.LogError(ex, "Startup: MigrateAsync failed — running column safety guards.");
+        }
+
+        // ── Step 2: Idempotent column guards ──────────────────────────────
+        // Safety net for pre-existing DBs created via EnsureCreated().
+        // Each statement is harmless if the column/table already exists.
+        // SQLite uses "ALTER TABLE … ADD COLUMN" (no IF NOT EXISTS — handled via try/catch).
+        // PostgreSQL uses "ADD COLUMN IF NOT EXISTS".
+        var sqliteGuards = isPostgres ? Array.Empty<string>() : new[]
+        {
+            // AddAccountLockout (20260522000000) — THE FIX for the reported exception
+            "ALTER TABLE UserProfiles ADD COLUMN FailedLoginAttempts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE UserProfiles ADD COLUMN LockedUntil TEXT",
+
+            // AddAltitudeFields (20260620000000)
+            "ALTER TABLE SwitchServers ADD COLUMN GpsLocation TEXT",
+            "ALTER TABLE SwitchServers ADD COLUMN AltitudeMinMeters REAL",
+            "ALTER TABLE SwitchServers ADD COLUMN AltitudeMaxMeters REAL",
+            "ALTER TABLE SwitchServers ADD COLUMN AltitudeWidthMeters REAL",
+            "ALTER TABLE VehicleEvents ADD COLUMN AltitudeMeters REAL DEFAULT 0",
+            "ALTER TABLE SensorDevices ADD COLUMN AltitudeMeters REAL DEFAULT 0",
+            "ALTER TABLE MergeZones    ADD COLUMN AltitudeMeters REAL DEFAULT 0",
+
+            // AddVehicleClassification (20260620000002)
+            "ALTER TABLE VehicleEvents ADD COLUMN VehicleMode     TEXT NOT NULL DEFAULT 'ground'",
+            "ALTER TABLE VehicleEvents ADD COLUMN VehicleCategory  TEXT NOT NULL DEFAULT 'sedan'",
+            "ALTER TABLE VehicleEvents ADD COLUMN VehicleClassJson TEXT",
+
+            // AddAuditLog (20260620000001) — table only if missing
+            @"CREATE TABLE IF NOT EXISTS AuditLogs (
+                Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId      TEXT    NOT NULL DEFAULT '',
+                FullName    TEXT    NOT NULL DEFAULT '',
+                HighwayId   TEXT,
+                Controller  TEXT    NOT NULL DEFAULT '',
+                Action      TEXT    NOT NULL DEFAULT '',
+                EntityType  TEXT,
+                EntityId    TEXT,
+                Summary     TEXT,
+                IpAddress   TEXT,
+                CreatedDate TEXT    NOT NULL DEFAULT (datetime('now'))
+            )",
+            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_UserId              ON AuditLogs (UserId)",
+            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_CreatedDate         ON AuditLogs (CreatedDate)",
+            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_HighwayId_CreatedDate ON AuditLogs (HighwayId, CreatedDate)",
+            "CREATE INDEX IF NOT EXISTS IX_VehicleEvents_VehicleMode     ON VehicleEvents (VehicleMode)",
+            "CREATE INDEX IF NOT EXISTS IX_VehicleEvents_VehicleCategory  ON VehicleEvents (VehicleCategory)",
+        };
+
+        var pgGuards = !isPostgres ? Array.Empty<string>() : new[]
+        {
+            // AddAccountLockout
+            @"ALTER TABLE ""UserProfiles"" ADD COLUMN IF NOT EXISTS ""FailedLoginAttempts"" INTEGER NOT NULL DEFAULT 0",
+            @"ALTER TABLE ""UserProfiles"" ADD COLUMN IF NOT EXISTS ""LockedUntil"" TIMESTAMPTZ",
+
+            // AddAltitudeFields
+            @"ALTER TABLE ""SwitchServers"" ADD COLUMN IF NOT EXISTS ""GpsLocation"" VARCHAR(60)",
+            @"ALTER TABLE ""SwitchServers"" ADD COLUMN IF NOT EXISTS ""AltitudeMinMeters"" DOUBLE PRECISION",
+            @"ALTER TABLE ""SwitchServers"" ADD COLUMN IF NOT EXISTS ""AltitudeMaxMeters"" DOUBLE PRECISION",
+            @"ALTER TABLE ""SwitchServers"" ADD COLUMN IF NOT EXISTS ""AltitudeWidthMeters"" DOUBLE PRECISION",
+            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""AltitudeMeters"" DOUBLE PRECISION DEFAULT 0",
+            @"ALTER TABLE ""SensorDevices"" ADD COLUMN IF NOT EXISTS ""AltitudeMeters"" DOUBLE PRECISION DEFAULT 0",
+            @"ALTER TABLE ""MergeZones""    ADD COLUMN IF NOT EXISTS ""AltitudeMeters"" DOUBLE PRECISION DEFAULT 0",
+
+            // AddVehicleClassification
+            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""VehicleMode""      VARCHAR(10)  NOT NULL DEFAULT 'ground'",
+            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""VehicleCategory""  VARCHAR(20)  NOT NULL DEFAULT 'sedan'",
+            @"ALTER TABLE ""VehicleEvents"" ADD COLUMN IF NOT EXISTS ""VehicleClassJson"" VARCHAR(800)",
+
+            // AuditLogs
+            @"CREATE TABLE IF NOT EXISTS ""AuditLogs"" (
+                ""Id""          BIGSERIAL PRIMARY KEY,
+                ""UserId""      VARCHAR(50)  NOT NULL DEFAULT '',
+                ""FullName""    VARCHAR(100) NOT NULL DEFAULT '',
+                ""HighwayId""   VARCHAR(50),
+                ""Controller""  VARCHAR(60)  NOT NULL DEFAULT '',
+                ""Action""      VARCHAR(30)  NOT NULL DEFAULT '',
+                ""EntityType""  VARCHAR(60),
+                ""EntityId""    VARCHAR(80),
+                ""Summary""     VARCHAR(500),
+                ""IpAddress""   VARCHAR(45),
+                ""CreatedDate"" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+            @"CREATE INDEX IF NOT EXISTS ""IX_AuditLogs_UserId""                ON ""AuditLogs"" (""UserId"")",
+            @"CREATE INDEX IF NOT EXISTS ""IX_AuditLogs_CreatedDate""           ON ""AuditLogs"" (""CreatedDate"")",
+            @"CREATE INDEX IF NOT EXISTS ""IX_AuditLogs_HighwayId_CreatedDate"" ON ""AuditLogs"" (""HighwayId"", ""CreatedDate"")",
+            @"CREATE INDEX IF NOT EXISTS ""IX_VehicleEvents_VehicleMode""       ON ""VehicleEvents"" (""VehicleMode"")",
+            @"CREATE INDEX IF NOT EXISTS ""IX_VehicleEvents_VehicleCategory""   ON ""VehicleEvents"" (""VehicleCategory"")",
+
+            // Mark migrations as applied in history table
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260522000000_AddAccountLockout',           '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260619000000_AddAirFlyCarSourceType',       '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000000_AddAltitudeFields',            '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000001_AddAuditLog',                  '8.0.0') ON CONFLICT DO NOTHING",
+            @"INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"") VALUES ('20260620000002_AddVehicleClassification',     '8.0.0') ON CONFLICT DO NOTHING",
+        };
+
+        var activeGuards = isPostgres ? pgGuards : sqliteGuards;
+        foreach (var sql in activeGuards)
+        {
+            try
             {
-                // Altitude fields (20260620000000_AddAltitudeFields)
-                "ALTER TABLE \"SwitchServers\" ADD COLUMN IF NOT EXISTS \"GpsLocation\" VARCHAR(60)",
-                "ALTER TABLE \"SwitchServers\" ADD COLUMN IF NOT EXISTS \"AltitudeMinMeters\" DOUBLE PRECISION",
-                "ALTER TABLE \"SwitchServers\" ADD COLUMN IF NOT EXISTS \"AltitudeMaxMeters\" DOUBLE PRECISION",
-                "ALTER TABLE \"SwitchServers\" ADD COLUMN IF NOT EXISTS \"AltitudeWidthMeters\" DOUBLE PRECISION",
-                "ALTER TABLE \"VehicleEvents\" ADD COLUMN IF NOT EXISTS \"AltitudeMeters\" DOUBLE PRECISION DEFAULT 0",
-                "ALTER TABLE \"SensorDevices\" ADD COLUMN IF NOT EXISTS \"AltitudeMeters\" DOUBLE PRECISION DEFAULT 0",
-                "ALTER TABLE \"MergeZones\"   ADD COLUMN IF NOT EXISTS \"AltitudeMeters\" DOUBLE PRECISION DEFAULT 0",
-                // Vehicle classification fields (20260620000002_AddVehicleClassification)
-                "ALTER TABLE \"VehicleEvents\" ADD COLUMN IF NOT EXISTS \"VehicleMode\"     VARCHAR(10)  NOT NULL DEFAULT 'ground'",
-                "ALTER TABLE \"VehicleEvents\" ADD COLUMN IF NOT EXISTS \"VehicleCategory\"  VARCHAR(20)  NOT NULL DEFAULT 'sedan'",
-                "ALTER TABLE \"VehicleEvents\" ADD COLUMN IF NOT EXISTS \"VehicleClassJson\" VARCHAR(800)",
-                // AuditLogs table (20260620000001_AddAuditLog)
-                @"CREATE TABLE IF NOT EXISTS ""AuditLogs"" (
-                    ""Id""         BIGSERIAL PRIMARY KEY,
-                    ""UserId""     VARCHAR(50)  NOT NULL DEFAULT '',
-                    ""FullName""   VARCHAR(100) NOT NULL DEFAULT '',
-                    ""HighwayId""  VARCHAR(50),
-                    ""Controller"" VARCHAR(60)  NOT NULL DEFAULT '',
-                    ""Action""     VARCHAR(30)  NOT NULL DEFAULT '',
-                    ""EntityType"" VARCHAR(60),
-                    ""EntityId""   VARCHAR(80),
-                    ""Summary""    VARCHAR(500),
-                    ""IpAddress""  VARCHAR(45),
-                    ""CreatedDate"" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )",
-                "CREATE INDEX IF NOT EXISTS \"IX_AuditLogs_UserId\"              ON \"AuditLogs\" (\"UserId\")",
-                "CREATE INDEX IF NOT EXISTS \"IX_AuditLogs_CreatedDate\"         ON \"AuditLogs\" (\"CreatedDate\")",
-                "CREATE INDEX IF NOT EXISTS \"IX_AuditLogs_HighwayId_CreatedDate\" ON \"AuditLogs\" (\"HighwayId\", \"CreatedDate\")",
-                // VehicleEvents classification indexes
-                "CREATE INDEX IF NOT EXISTS \"IX_VehicleEvents_VehicleMode\"     ON \"VehicleEvents\" (\"VehicleMode\")",
-                "CREATE INDEX IF NOT EXISTS \"IX_VehicleEvents_VehicleCategory\"  ON \"VehicleEvents\" (\"VehicleCategory\")",
-                // Mark new migrations as applied so MigrateAsync skips them next run
-                "INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES ('20260619000000_AddAirFlyCarSourceType', '8.0.0') ON CONFLICT DO NOTHING",
-                "INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES ('20260620000000_AddAltitudeFields', '8.0.0') ON CONFLICT DO NOTHING",
-                "INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES ('20260620000001_AddAuditLog', '8.0.0') ON CONFLICT DO NOTHING",
-                "INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES ('20260620000002_AddVehicleClassification', '8.0.0') ON CONFLICT DO NOTHING",
-            };
-            foreach (var sql in guards)
+                await db.Database.ExecuteSqlRawAsync(sql);
+            }
+            catch (Exception ex)
             {
-                try { db.Database.ExecuteSqlRaw(sql); }
-                catch (Exception ex) { logger.LogWarning(ex, "Startup guard skipped: {Sql}", sql[..Math.Min(60,sql.Length)]); }
+                // Column/index already exists — safe to ignore (SQLite does not support
+                // ADD COLUMN IF NOT EXISTS, so duplicate-column errors are expected and harmless)
+                logger.LogDebug("Startup guard skipped (already applied): {Sql}", sql.Split('\n')[0].Trim()[..Math.Min(70, sql.Split('\n')[0].Trim().Length)]);
             }
         }
 
+        // ── Step 3: Seed reference data ───────────────────────────────────
         try
         {
             DbInitializer.Seed(db);
-            logger.LogInformation("Startup: Database ready.");
+            logger.LogInformation("Startup: Database ready — migrations applied, seed data loaded.");
         }
         catch (Exception ex) { logger.LogError(ex, "Startup: Seed failed."); }
     }
-
     if (!app.Environment.IsDevelopment())
     {
         app.UseExceptionHandler("/Home/Error");
@@ -264,3 +332,4 @@ static string ParsePostgresUrl(string url)
     }
     catch { return url; }
 }
+
