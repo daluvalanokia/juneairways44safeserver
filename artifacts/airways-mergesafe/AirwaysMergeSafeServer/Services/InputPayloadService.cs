@@ -71,7 +71,7 @@ public class InputPayloadService
         {
             obj[f] = f switch
             {
-                "vehicle_id"      => $"VEH-{rng.Next(1000, 9999)}",
+                "vehicle_id"      => $"VEH-{rng.Next(1, 21):D3}",
                 "timestamp"       => DateTime.UtcNow.ToString("o"),
                 "speed_mph"       => isAirVehicle ? rng.Next(80, 180) : rng.Next(20, 100),
                 "latitude"        => Math.Round(32.7767 + (rng.NextDouble() - 0.5) * 0.2, 6),
