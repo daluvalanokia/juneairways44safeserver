@@ -462,6 +462,13 @@ function startSim() {
                 if (d.classification) showClassResult(d.classification, srcType);
                 try {
                     var evParsed = JSON.parse(d.payload);
+                    // ── Inject stable vehicle_id, real zoneId, highwayId into payload ──
+                    // SimulationPost now returns d.vehicleId = "SIM-VEH-001" etc.
+                    // Overwrite the raw payload's vehicle_id so _simNorm in the
+                    // 3D scene always gets the SAME stable id for the same vehicle.
+                    if (d.vehicleId) evParsed.vehicle_id = d.vehicleId;
+                    evParsed.zone_id    = document.getElementById('simZone').value    || evParsed.zone_id    || '';
+                    evParsed.highway_id = document.getElementById('simHighway').value || evParsed.highway_id || '';
                     var _simMsg = { type: 'sim_vehicle', payload: evParsed,
                                     classification: d.classification || null, srcType: srcType };
                     if (airwaysBroadcast) airwaysBroadcast.postMessage(_simMsg);
