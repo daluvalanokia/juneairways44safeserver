@@ -188,24 +188,36 @@ var selectedServerId = '';
 
 function t3dZoneChanged() {
     selectedZoneId = document.getElementById('t3dZoneSel').value;
+    // When zone changes, reset server selection to avoid conflicting filters
+    selectedServerId = '';
+    document.getElementById('t3dServerSel').value = '';
+
+    // Show only servers that belong to the selected zone (or all if no zone)
     var srvSel = document.getElementById('t3dServerSel');
     srvSel.querySelectorAll('option').forEach(function(o) {
         var show = !selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId;
         o.style.display = show ? '' : 'none';
-        if (!show && srvSel.value === o.value) { srvSel.value = ''; selectedServerId = ''; }
     });
+
+    // Recenter map on zone centroid
     var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
     if (z && z.lat && z.lon) _reloadMapTile(z.lat, z.lon);
+
+    // Clear all existing meshes and reload — zone filter is a hard boundary
+    _clearScene();
     refreshScene();
 }
 
 function t3dServerChanged() {
     selectedServerId = document.getElementById('t3dServerSel').value;
+    // Auto-select the matching zone for this server
     var opt = document.querySelector('#t3dServerSel option[value="' + selectedServerId + '"]');
-    if (opt && opt.dataset.zone && !selectedZoneId) {
+    if (opt && opt.dataset.zone) {
         document.getElementById('t3dZoneSel').value = opt.dataset.zone;
         selectedZoneId = opt.dataset.zone;
     }
+    // Clear scene and reload with server filter active
+    _clearScene();
     refreshScene();
 }
 
@@ -369,6 +381,20 @@ for (let x = -650; x <= 650; x += 60) {
 // Zone rings removed per user request — zones are tracked in the dropdown only.
 // (TorusGeometry circles removed from 3D scene to reduce visual clutter)
 
+// ── Scene clear helper — removes all vehicle meshes (used on filter change) ──
+function _clearScene() {
+    vehicleMeshes.forEach(function(m) {
+        scene.remove(m);
+        if (m.geometry) m.geometry.dispose();
+        if (m.material) m.material.dispose();
+    });
+    vehicleMeshes.length = 0;
+    vehicleData.length   = 0;
+    vehicleMap.clear();
+    var sc = document.getElementById('statGround');
+    if (sc) sc.textContent = '0';
+}
+
 // ── Vehicle mesh management ───────────────────────────────────────────
 const vehicleMeshes = [], vehicleData = [];
 const vehicleMap    = new Map();   // vehicleId → mesh  (enables live upsert by vehicle)
@@ -476,8 +502,10 @@ function loadEvents(events) {
 async function refreshScene() {
     if (feedHeld) return;  // feed is on hold — skip DB poll
     try {
-        const zq = selectedZoneId ? `&zoneId=${encodeURIComponent(selectedZoneId)}` : '';
-        const r = await fetch(`/api/events/live?highwayId=${HW}&take=100&mode=ground${zq}`);
+        // Build filter params: zone and/or server narrow the live feed
+        const zq = selectedZoneId   ? `&zoneId=${encodeURIComponent(selectedZoneId)}`   : '';
+        const sq = selectedServerId ? `&serverId=${encodeURIComponent(selectedServerId)}` : '';
+        const r = await fetch(`/api/events/live?highwayId=${HW}&take=100&mode=ground${zq}${sq}`);
         if (!r.ok) return;
         loadEvents(await r.json());
     } catch(e) { console.warn('Scene refresh error:', e); }
@@ -944,6 +972,17 @@ function _simInject(evObj, cl) {
     var ev = _simNorm(evObj, cl);
     var vc = classifyLocal(ev);
     if (vc.domain !== 'ground') return;
+
+    // Zone filter: if a zone is selected, only accept events for that zone.
+    // ev.zoneId is set from evObj.zone_id (SimulationPost payload field).
+    if (selectedZoneId && ev.zoneId && ev.zoneId !== selectedZoneId) return;
+
+    // Server filter: if a server is selected, resolve its zone from T3D_SERVERS
+    // and only accept events whose zoneId matches.
+    if (selectedServerId) {
+        var _srv = T3D_SERVERS.find(function(s){ return s.serverId === selectedServerId; });
+        if (_srv && _srv.zoneId && ev.zoneId && ev.zoneId !== _srv.zoneId) return;
+    }
 
     _updateSimPanel(ev, '⏳ saving…');
 
