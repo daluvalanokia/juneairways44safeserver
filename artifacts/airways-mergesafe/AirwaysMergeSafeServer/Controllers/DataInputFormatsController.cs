@@ -117,7 +117,11 @@ public class DataInputFormatsController : Controller
                                         v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
 
             var hw  = !string.IsNullOrEmpty(highwayId) ? highwayId : GetStr("highway_id");
-            var zid = !string.IsNullOrEmpty(zoneId)    ? zoneId    : GetStr("zone_id");
+            // Always use the form zoneId (real DB zone) — never the random payload zone_id
+            var zid = !string.IsNullOrEmpty(zoneId) ? zoneId : "";
+            // Build stable vehicle id: SIM-VEH-001 etc (pool of 20 from payload)
+            var rawVid = GetStr("vehicle_id") is { Length: > 0 } vp ? vp : Guid.NewGuid().ToString("N")[..8];
+            var savedVehicleId = $"SIM-{rawVid}";
             var et  = GetStr("event_type") is { Length: > 0 } e ? e : "detection";
 
             // Task 10: determine IsAirFlyCar — forced "Y" for airflycar source, or if payload field set
@@ -130,7 +134,7 @@ public class DataInputFormatsController : Controller
                 EventType        = et,
                 ZoneId           = zid,
                 HighwayId        = hw,
-                VehicleId        = $"SIM-{(GetStr("vehicle_id") is { Length: > 0 } vid ? vid : Guid.NewGuid().ToString("N")[..8])}",
+                VehicleId        = savedVehicleId,
                 SpeedMph         = GetDbl("speed_mph"),
                 Latitude         = GetDbl("latitude"),
                 Longitude        = GetDbl("longitude"),
@@ -154,6 +158,8 @@ public class DataInputFormatsController : Controller
             ok    = true,
             label,
             payload,
+            // vehicleId returned so the 3D scene JS can match meshes by stable id
+            vehicleId = savedVehicleId,
             classification = new {
                 domain      = vc.Domain,
                 category    = vc.Category,
