@@ -1,27 +1,48 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
+
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>AirwaysMergeSafeServer</RootNamespace>
     <AssemblyName>AirwaysMergeSafeServer</AssemblyName>
+    <!-- Treat warnings as errors in CI — remove for local dev if needed -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <Optimize>false</Optimize>
   </PropertyGroup>
+
   <ItemGroup>
-    <!-- Core -->
-    <PackageReference Include="BCrypt.Net-Next"                          Version="4.0.3" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore"            Version="8.0.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite"     Version="8.0.0" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL"    Version="8.0.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design"     Version="8.0.0">
+    <!-- ── Core data & auth ────────────────────────────────────────────── -->
+    <!-- BCrypt — upgraded 4.0.3 → 4.2.1 (latest stable, .NET 8 compatible) -->
+    <PackageReference Include="BCrypt.Net-Next"
+                      Version="4.2.1" />
+
+    <!-- EF Core — upgraded 8.0.0 → 8.0.28 (latest .NET 8 LTS patch) -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore"
+                      Version="8.0.28" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite"
+                      Version="8.0.28" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL"
+                      Version="8.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design"
+                      Version="8.0.28">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
 
-    <!-- E6: Serilog structured logging -->
-    <PackageReference Include="Serilog.AspNetCore"          Version="8.0.0" />
-    <PackageReference Include="Serilog.Sinks.Console"       Version="5.0.0" />
-    <PackageReference Include="Serilog.Sinks.File"          Version="5.0.0" />
-    <PackageReference Include="Serilog.Sinks.Seq"           Version="6.0.0" />
-    <PackageReference Include="Serilog.Formatting.Compact"  Version="2.0.0" />
+    <!-- ── Serilog structured logging ─────────────────────────────────── -->
+    <!-- Serilog.AspNetCore — upgraded 8.0.0 → 8.0.3 (.NET 8 LTS patch)  -->
+    <PackageReference Include="Serilog.AspNetCore"
+                      Version="8.0.3" />
+    <!-- Sinks upgraded to latest stable (all support .NET 6+) -->
+    <PackageReference Include="Serilog.Sinks.Console"
+                      Version="6.1.1" />
+    <PackageReference Include="Serilog.Sinks.File"
+                      Version="7.0.0" />
+    <PackageReference Include="Serilog.Sinks.Seq"
+                      Version="9.1.0" />
+    <PackageReference Include="Serilog.Formatting.Compact"
+                      Version="3.0.0" />
   </ItemGroup>
+
 </Project>
