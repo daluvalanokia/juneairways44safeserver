@@ -47,7 +47,7 @@
 </div>
 
 <!-- ── Scene grid (split / single-panel modes) ────────────────────────── -->
-<div id="sceneWrap" style="position:relative;height:520px;background:#0a0a14;border-radius:8px;overflow:hidden">
+<div id="sceneWrap" style="position:relative;height:520px;background:#1a2f1a;border-radius:8px;overflow:hidden">
     <canvas id="mainCanvas" style="width:100%;height:100%"></canvas>
     <!-- Overlay labels for split mode -->
     <div id="labelA" class="badge bg-secondary position-absolute" style="top:6px;left:6px;display:none">Perspective</div>
@@ -155,32 +155,92 @@ function norm(lat, lon) {
 
 // ── Scene setup ───────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0a14);
-scene.add(new THREE.AmbientLight(0xffffff, 0.45));
-const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-dir.position.set(60, 200, 80); scene.add(dir);
-scene.add(new THREE.GridHelper(500, 50, 0x1a1a2e, 0x111133));
+scene.background = new THREE.Color(0x1a2f1a); // dark terrain green — ground environment
+scene.fog = new THREE.Fog(0x1a2f1a, 600, 1200);
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+dir.position.set(0, 300, 80); scene.add(dir);
+const sunLight = new THREE.DirectionalLight(0xfff4cc, 0.5);
+sunLight.position.set(-100, 200, -200); scene.add(sunLight);
 
-// Static zone markers
+// ── Ground terrain ────────────────────────────────────────────────────
+const groundGeo = new THREE.PlaneGeometry(1400, 1400);
+const groundMat = new THREE.MeshPhongMaterial({ color: 0x1e3a1e }); // green terrain
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2; ground.position.y = -0.1;
+scene.add(ground);
+
+// ── Asphalt road surface (highway running along X axis) ───────────────
+const roadW = 72; // total road width (4 lanes × ~18 units each)
+const roadGeo = new THREE.PlaneGeometry(1400, roadW);
+const roadMat = new THREE.MeshPhongMaterial({ color: 0x374151 }); // asphalt
+const road = new THREE.Mesh(roadGeo, roadMat);
+road.rotation.x = -Math.PI / 2; road.position.y = 0.0;
+scene.add(road);
+
+// Road shoulders (concrete-grey border strips)
+[-roadW/2 - 5, roadW/2 + 5].forEach(oz => {
+    const sg = new THREE.PlaneGeometry(1400, 10);
+    const sm = new THREE.MeshPhongMaterial({ color: 0x4b5563 });
+    const sh = new THREE.Mesh(sg, sm);
+    sh.rotation.x = -Math.PI / 2; sh.position.set(0, 0, oz);
+    scene.add(sh);
+});
+
+// Outer edge white lines
+[-roadW/2, roadW/2].forEach(oz => {
+    const eg = new THREE.PlaneGeometry(1400, 1.2);
+    const em = new THREE.MeshPhongMaterial({ color: 0xffffff });
+    const el = new THREE.Mesh(eg, em);
+    el.rotation.x = -Math.PI / 2; el.position.set(0, 0.02, oz);
+    scene.add(el);
+});
+
+// Yellow center divider (double line)
+[-0.9, 0.9].forEach(oz => {
+    const cg = new THREE.PlaneGeometry(1400, 0.7);
+    const cm2 = new THREE.MeshPhongMaterial({ color: 0xfbbf24 });
+    const cl2 = new THREE.Mesh(cg, cm2);
+    cl2.rotation.x = -Math.PI / 2; cl2.position.set(0, 0.02, oz);
+    scene.add(cl2);
+});
+
+// Dashed white lane dividers between lanes
+const laneOffsets = [-18, 18]; // between inner and outer lanes each side
+laneOffsets.forEach(oz => {
+    for (let x = -680; x < 700; x += 28) {
+        const dg = new THREE.PlaneGeometry(14, 0.6);
+        const dm = new THREE.MeshPhongMaterial({ color: 0xffffff });
+        const dash = new THREE.Mesh(dg, dm);
+        dash.rotation.x = -Math.PI / 2; dash.position.set(x, 0.02, oz);
+        scene.add(dash);
+    }
+});
+
+// Roadside trees (simple green cylinders on terrain)
+for (let x = -650; x <= 650; x += 60) {
+    [-50, 50].forEach(oz => {
+        const tg = new THREE.CylinderGeometry(3, 4, 12, 8);
+        const tm = new THREE.MeshPhongMaterial({ color: 0x166534 });
+        const tree = new THREE.Mesh(tg, tm);
+        tree.position.set(x + (Math.random()-0.5)*10, 6, oz + (Math.random()-0.5)*5);
+        scene.add(tree);
+    });
+}
+
+// Static zone markers (road-surface rings only — no tall cylinders)
 const ZONES = @Html.Raw(zonesJson);
 ZONES.forEach(z => {
     if (!z.lat || !z.lon) return;
     const p  = norm(z.lat, z.lon);
     const r  = (z.radius / 20) || 15;
-    const cy = new THREE.CylinderGeometry(r, r, 0.2, 32);
-    const cm = new THREE.MeshPhongMaterial({
-        color: z.status === 'active' ? 0x22c55e : 0xf59e0b,
-        transparent: true, opacity: 0.18, depthWrite: false
-    });
-    const mesh = new THREE.Mesh(cy, cm);
-    mesh.position.set(p.x, 0.1, p.z);
-    scene.add(mesh);
     const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(r, 0.15, 8, 48),
-        new THREE.MeshPhongMaterial({ color: 0x22c55e, opacity: 0.5, transparent: true })
+        new THREE.TorusGeometry(r, 0.4, 8, 48),
+        new THREE.MeshPhongMaterial({ color: z.status === 'active' ? 0x22c55e : 0xf59e0b,
+                                      opacity: 0.8, transparent: true })
     );
     ring.rotation.x = Math.PI / 2;
-    ring.position.set(p.x, 0.2, p.z);
+    ring.position.set(p.x, 0.3, p.z);
     scene.add(ring);
 });
 
@@ -190,6 +250,9 @@ const raycaster = new THREE.Raycaster();
 const mouse2    = new THREE.Vector2();
 let selectedVehicleMesh = null;
 
+// Lane centre Z positions (4 lanes: 2 eastbound, 2 westbound)
+const LANE_Z = [-27, -9, 9, 27];
+
 function buildVehicleMesh(ev) {
     const vc   = classifyLocal(ev);
     const spec = getSpec(vc);
@@ -197,10 +260,22 @@ function buildVehicleMesh(ev) {
     const mat  = new THREE.MeshPhongMaterial({ color: new THREE.Color(vc.color || spec.color) });
     const mesh = new THREE.Mesh(geo, mat);
 
+    // Snap to a road lane centre; keep x from GPS if available
     const p = (ev.latitude && ev.longitude) ? norm(ev.latitude, ev.longitude)
-              : { x: (Math.random()-0.5)*180, z: (Math.random()-0.5)*180 };
-    mesh.position.set(p.x, 0.3, p.z);
-    mesh.userData = { ev, vc, baseY: 0.3, idx: vehicleMeshes.length };
+              : { x: (Math.random()-0.5)*400, z: 0 };
+    const laneZ = LANE_Z[vehicleMeshes.length % LANE_Z.length];
+    mesh.position.set(p.x, 0.35, laneZ);
+
+    // Heading-based velocity: eastbound lanes (z<0) go +x, westbound (z>0) go -x
+    const headingDeg = ev.heading ?? (laneZ < 0 ? 90 : 270);
+    const headingRad = headingDeg * Math.PI / 180;
+    // Speed in scene-units/frame at 60fps (mph → scene units)
+    const speedFactor = ((ev.speedMph ?? 55) * 0.018);
+    const vx =  Math.sin(headingRad) * speedFactor;
+    const vz = -Math.cos(headingRad) * speedFactor;
+
+    mesh.rotation.y = headingRad; // face the direction of travel
+    mesh.userData = { ev, vc, baseY: 0.35, idx: vehicleMeshes.length, vx, vz, laneZ };
     return mesh;
 }
 
@@ -242,15 +317,19 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(canvas.clientWidth, canvas.clientHeight);
 
-const camP = new THREE.PerspectiveCamera(58, canvas.clientWidth/canvas.clientHeight, 0.1, 3000);
-camP.position.set(100, 80, 180); camP.lookAt(0, 20, 0);
+// Perspective — looking down the highway at a shallow road-level angle
+const camP = new THREE.PerspectiveCamera(55, canvas.clientWidth/canvas.clientHeight, 0.1, 3000);
+camP.position.set(-220, 55, 120); camP.lookAt(60, 0, 0);
 
-const oW = 160, oH = 120;
+// Side elevation (road cross-section)
+const oW = 240, oH = 90;
 const camS = new THREE.OrthographicCamera(-oW, oW, oH, -oH, 0.1, 2000);
-camS.position.set(500, 0, 0); camS.lookAt(0, 0, 0);
+camS.position.set(0, 0, 500); camS.lookAt(0, 0, 0);
 
-const camT = new THREE.OrthographicCamera(-oW, oW, oH, -oH, 0.1, 2000);
-camT.position.set(0, 600, 0); camT.up.set(0, 0, -1); camT.lookAt(0, 0, 0);
+// Top-down (traffic-management bird's-eye view — DEFAULT)
+const oTW = 300, oTH = 120;
+const camT = new THREE.OrthographicCamera(-oTW, oTW, oTH, -oTH, 0.1, 2000);
+camT.position.set(0, 600, 0); camT.up.set(1, 0, 0); camT.lookAt(0, 0, 0);
 
 // ── View mode ─────────────────────────────────────────────────────────
 let currentView = 'perspective';
@@ -495,21 +574,29 @@ function onSimStateChange(isRunning) {
 }
 
 // ── Animate loop ──────────────────────────────────────────────────────
+const ROAD_HALF = 680; // wrap boundary along X axis
 let tick = 0, camTween = null;
 function animate() {
     requestAnimationFrame(animate); tick++;
     if (camTween) camTween();
 
-    camP.position.x = radius * Math.sin(theta) * Math.cos(phi);
-    camP.position.y = radius * Math.sin(phi);
-    camP.position.z = radius * Math.cos(theta) * Math.cos(phi);
-    camP.lookAt(0, 20, 0);
+    // Perspective orbit follows the road (x-axis)
+    camP.position.x = -220 + radius * 0.4 * Math.sin(theta * 0.3);
+    camP.position.y = Math.max(20, radius * Math.sin(phi));
+    camP.position.z = 120 + radius * 0.25 * Math.cos(theta * 0.3);
+    camP.lookAt(60, 0, 0);
 
-    // Bug Fix 3 (partial): vehicle bob is gated by animationPaused
+    // Vehicle forward motion along the road
     if (!animationPaused) {
-        vehicleMeshes.forEach((m, i) => {
-            const { baseY } = m.userData;
-            m.position.y = baseY + Math.sin(tick * 0.04 + i) * 0.05;
+        vehicleMeshes.forEach(m => {
+            const { vx, vz, laneZ, baseY } = m.userData;
+            m.position.x += vx;
+            // Keep vehicles locked to their lane's Z centre
+            m.position.z += (laneZ - m.position.z) * 0.06;
+            m.position.y  = baseY;
+            // Wrap around at road ends
+            if (m.position.x >  ROAD_HALF) m.position.x = -ROAD_HALF;
+            if (m.position.x < -ROAD_HALF) m.position.x =  ROAD_HALF;
         });
     }
 
@@ -537,11 +624,18 @@ function animate() {
     }
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────
+// ── Boot — default to top-down traffic view ───────────────────────────
 (async () => {
     await refreshScene();
     animate();
-    setViewport('perspective');
+    // Activate top-down as default (clearest road/traffic view)
+    setViewport('top');
+    document.querySelectorAll('#viewToggle button').forEach(b => {
+        b.classList.remove('active','btn-primary');
+        b.classList.add('btn-outline-primary');
+    });
+    const topBtn = document.querySelector('#viewToggle [data-view="top"]');
+    if (topBtn) { topBtn.classList.add('active','btn-primary'); topBtn.classList.remove('btn-outline-primary'); }
 })();
 
 // Bug Fix 3: Gate 30-second auto-refresh when animation is paused
