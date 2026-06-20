@@ -11,6 +11,9 @@ Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
     .CreateBootstrapLogger();
 
+// Initialise trace log before anything else — writes to /tmp/trace_{timestamp}.log
+TraceLogger.Initialise();
+
 try
 {
     var builder = WebApplication.CreateBuilder(args);
@@ -37,6 +40,7 @@ try
     builder.Services.AddControllersWithViews(opts =>
     {
         opts.Filters.Add<SessionAuthFilter>();
+        opts.Filters.Add<TraceActionFilter>(); // global entry/exit trace for all controllers
     });
 
     // ── Session (secure) ──────────────────────────────────────────────────

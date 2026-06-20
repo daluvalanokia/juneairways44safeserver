@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Services;
 
@@ -24,13 +25,25 @@ public class ConfigService
     // A4 FIX: env var takes priority — safe in read-only containers
     public string? GetTomTomKey()
     {
-        var envKey = Environment.GetEnvironmentVariable("TOMTOM_API_KEY");
-        if (!string.IsNullOrWhiteSpace(envKey)) return envKey;
-        return _cfgRoot?["TomTomApiKey"];
+        TraceLogger.Enter("ConfigService", nameof(GetTomTomKey));
+        try
+        {
+            var envKey = Environment.GetEnvironmentVariable("TOMTOM_API_KEY");
+            if (!string.IsNullOrWhiteSpace(envKey))
+            {
+                TraceLogger.Exit("ConfigService", nameof(GetTomTomKey), "env-var");
+                return envKey;
+            }
+            var result = _cfgRoot?["TomTomApiKey"];
+            TraceLogger.Exit("ConfigService", nameof(GetTomTomKey), result != null ? "config" : "null");
+            return result;
+        }
+        catch (Exception ex) { TraceLogger.Error("ConfigService", nameof(GetTomTomKey), ex); throw; }
     }
 
     public void SaveTomTomKey(string apiKey)
     {
+        TraceLogger.Enter("ConfigService", nameof(SaveTomTomKey));
         // A4 FIX: attempt file write; if running read-only, log and skip gracefully
         try
         {
@@ -38,36 +51,43 @@ public class ConfigService
             File.WriteAllText(_keyFilePath,
                 JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true }));
             _cfgRoot?.Reload();
+            TraceLogger.Exit("ConfigService", nameof(SaveTomTomKey), "saved");
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
+            TraceLogger.Error("ConfigService", nameof(SaveTomTomKey), ex);
             // In read-only container — caller should set TOMTOM_API_KEY env var
         }
-        catch (IOException)
+        catch (IOException ex)
         {
+            TraceLogger.Error("ConfigService", nameof(SaveTomTomKey), ex);
             // Non-fatal; env var is the authoritative source in production
         }
     }
 
     public void ClearTomTomKey()
     {
+        TraceLogger.Enter("ConfigService", nameof(ClearTomTomKey));
         try
         {
             if (File.Exists(_keyFilePath)) File.Delete(_keyFilePath);
             _cfgRoot?.Reload();
+            TraceLogger.Exit("ConfigService", nameof(ClearTomTomKey));
         }
-        catch { /* non-fatal in read-only environments */ }
+        catch (Exception ex) { TraceLogger.Error("ConfigService", nameof(ClearTomTomKey), ex); /* non-fatal in read-only environments */ }
     }
 
     public bool IsReadOnlyEnvironment()
     {
+        TraceLogger.Enter("ConfigService", nameof(IsReadOnlyEnvironment));
         try
         {
             var probe = Path.Combine(AppContext.BaseDirectory, ".writable_probe");
             File.WriteAllText(probe, "test");
             File.Delete(probe);
+            TraceLogger.Exit("ConfigService", nameof(IsReadOnlyEnvironment), "writable");
             return false;
         }
-        catch { return true; }
+        catch (Exception ex) { TraceLogger.Error("ConfigService", nameof(IsReadOnlyEnvironment), ex); return true; }
     }
 }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Services;
 
@@ -58,6 +59,7 @@ public class VehicleClassifier
 
     public VehicleClass Classify(string? payloadJson, string sourceType = "physical")
     {
+        TraceLogger.Enter("VehicleClassifier", nameof(Classify), $"sourceType={sourceType}");
         double? altM = null, speedMph = null, lat = null, lon = null;
         double? verticalRateFpm = null, battSoc = null, rotorRpm = null, corridorDevM = null;
         string? vehicleType = null, flightPhase = null, corridorId = null;
@@ -182,7 +184,7 @@ public class VehicleClassifier
         // Phase 8: override colour on conflict
         var color = conflictFlag ? "#ef4444" : spec.Color;
 
-        return new VehicleClass(
+        var _vc = new VehicleClass(
             Domain:           domain,
             Category:         category,
             Color:            color,
@@ -206,6 +208,9 @@ public class VehicleClassifier
             ConflictFlag:     conflictFlag,
             WingspanU:        domain == "air" ? spec.W : null
         );
+        TraceLogger.Exit("VehicleClassifier", nameof(Classify),
+            $"domain={_vc.Domain}, category={_vc.Category}, confidence={_vc.Confidence}");
+        return _vc;
     }
 
     private static bool TryGetDouble(JsonElement root, string key, out double value)

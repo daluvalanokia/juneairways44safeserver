@@ -1,4 +1,5 @@
 using AirwaysMergeSafeServer.Data;
+using AirwaysMergeSafeServer.Infrastructure;
 using AirwaysMergeSafeServer.Models;
 
 namespace AirwaysMergeSafeServer.Services;
@@ -35,6 +36,7 @@ public class AuditService
         string? entityId   = null,
         string? summary    = null)
     {
+        TraceLogger.Enter("AuditService", nameof(LogAsync), $"controller={controller}, action={action}");
         try
         {
             var ctx       = _http.HttpContext;
@@ -59,9 +61,11 @@ public class AuditService
 
             _db.AuditLogs.Add(entry);
             await _db.SaveChangesAsync();
+            TraceLogger.Exit("AuditService", nameof(LogAsync));
         }
         catch (Exception ex)
         {
+            TraceLogger.Error("AuditService", nameof(LogAsync), ex);
             // Audit failure must never break the primary operation
             _logger.LogError(ex,
                 "AuditService: Failed to write audit record for {Controller}.{Action}", controller, action);

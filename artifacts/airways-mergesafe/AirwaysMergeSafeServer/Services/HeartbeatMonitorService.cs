@@ -1,4 +1,5 @@
 using AirwaysMergeSafeServer.Data;
+using AirwaysMergeSafeServer.Infrastructure;
 using AirwaysMergeSafeServer.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -35,6 +36,7 @@ public class HeartbeatMonitorService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        TraceLogger.Enter("HeartbeatMonitorService", nameof(ExecuteAsync));
         var sensorTimeout = TimeSpan.FromMinutes(
             _cfg.GetValue<double>("HeartbeatMonitor:SensorTimeoutMinutes", 5));
         var serverTimeout = TimeSpan.FromMinutes(
@@ -52,15 +54,17 @@ public class HeartbeatMonitorService : BackgroundService
             {
                 await RunCheckAsync(sensorTimeout, serverTimeout, stoppingToken);
             }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException) { TraceLogger.Info("HeartbeatMonitorService", nameof(ExecuteAsync), "Cancelled — stopping loop"); break; }
             catch (Exception ex)
             {
+                TraceLogger.Error("HeartbeatMonitorService", nameof(ExecuteAsync), ex);
                 _logger.LogError(ex, "HeartbeatMonitor: unhandled error during check cycle");
             }
 
             await Task.Delay(pollInterval, stoppingToken);
         }
 
+        TraceLogger.Exit("HeartbeatMonitorService", nameof(ExecuteAsync), "stopped");
         _logger.LogInformation("HeartbeatMonitor stopped.");
     }
 
@@ -69,6 +73,9 @@ public class HeartbeatMonitorService : BackgroundService
         TimeSpan serverTimeout,
         CancellationToken ct)
     {
+        TraceLogger.Enter("HeartbeatMonitorService", nameof(RunCheckAsync));
+        try
+        {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db  = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var now = DateTime.UtcNow;
@@ -113,5 +120,9 @@ public class HeartbeatMonitorService : BackgroundService
             _logger.LogInformation(
                 "HeartbeatMonitor: cycle complete — {SC} sensor(s), {SV} server(s) marked offline",
                 staleSensors.Count, staleServers.Count);
+        TraceLogger.Exit("HeartbeatMonitorService", nameof(RunCheckAsync),
+            $"sensors={staleSensors.Count}, servers={staleServers.Count}");
+        }
+        catch (Exception ex) { TraceLogger.Error("HeartbeatMonitorService", nameof(RunCheckAsync), ex); throw; }
     }
 }

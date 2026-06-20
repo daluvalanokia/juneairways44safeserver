@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AirwaysMergeSafeServer.Data;
+using AirwaysMergeSafeServer.Infrastructure;
 using AirwaysMergeSafeServer.Models;
 
 namespace AirwaysMergeSafeServer.Services;
@@ -41,12 +42,19 @@ public class InputPayloadService
         IEnumerable<string>  enabledFields,
         IEnumerable<string>? customFields = null)
     {
+        TraceLogger.Enter("InputPayloadService", nameof(Generate), $"sourceType={sourceType}");
+        try
+        {
         var rng    = Random.Shared;
         var obj    = new Dictionary<string, object?>();
         var fields = enabledFields.Concat(customFields ?? Enumerable.Empty<string>()).Distinct();
 
         if (string.Equals(sourceType, "airflycar", StringComparison.OrdinalIgnoreCase))
-            return GenerateAirFlyCar(rng, fields);
+        {
+            var _afc = GenerateAirFlyCar(rng, fields);
+            TraceLogger.Exit("InputPayloadService", nameof(Generate), "airflycar");
+            return _afc;
+        }
 
         // ── Existing source types (preserved) ────────────────────────────
         bool isAirSource  = sourceType is "satellite" or "tracker";
@@ -89,7 +97,11 @@ public class InputPayloadService
             };
         }
 
-        return JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+        var _json = JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+        TraceLogger.Exit("InputPayloadService", nameof(Generate), $"sourceType={sourceType}");
+        return _json;
+        }
+        catch (Exception ex) { TraceLogger.Error("InputPayloadService", nameof(Generate), ex); throw; }
     }
 
     /// <summary>
@@ -222,7 +234,12 @@ public class InputPayloadService
     /// </summary>
     public static double? ParseAltitude(string payloadJson)
     {
-        if (string.IsNullOrWhiteSpace(payloadJson)) return null;
+        TraceLogger.Enter("InputPayloadService", nameof(ParseAltitude));
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            TraceLogger.Exit("InputPayloadService", nameof(ParseAltitude), "null-input");
+            return null;
+        }
         try
         {
             using var doc  = JsonDocument.Parse(payloadJson);
@@ -230,30 +247,40 @@ public class InputPayloadService
             var candidates = new[] { "altitude_m", "alt_m", "alt", "altitude", "elevation" };
             foreach (var key in candidates)
                 if (root.TryGetProperty(key, out var val) && val.TryGetDouble(out double d))
+                {
+                    TraceLogger.Exit("InputPayloadService", nameof(ParseAltitude), $"{d}m via '{key}'");
                     return d;
+                }
         }
-        catch { }
+        catch (Exception ex) { TraceLogger.Error("InputPayloadService", nameof(ParseAltitude), ex); }
+        TraceLogger.Exit("InputPayloadService", nameof(ParseAltitude), "not-found");
         return null;
     }
 
     public async Task<SamplePayload> GenerateAndSaveAsync(int configId)
     {
-        var config = await _db.InputFormatConfigs.FindAsync(configId)
-            ?? throw new ArgumentException($"Config {configId} not found");
-        var fields  = config.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                      ?? Array.Empty<string>();
-        var payload = Generate(config.SourceType, fields);
-        var sample  = new SamplePayload
+        TraceLogger.Enter("InputPayloadService", nameof(GenerateAndSaveAsync), $"configId={configId}");
+        try
         {
-            ConfigId    = configId,
-            SourceType  = config.SourceType,
-            Label       = $"{config.FormatName} — {DateTime.UtcNow:HH:mm:ss}",
-            Payload     = payload,
-            IsValid     = true,
-            CreatedDate = DateTime.UtcNow
-        };
-        _db.SamplePayloads.Add(sample);
-        await _db.SaveChangesAsync();
-        return sample;
+            var config = await _db.InputFormatConfigs.FindAsync(configId)
+                ?? throw new ArgumentException($"Config {configId} not found");
+            var fields  = config.EnabledFieldsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                          ?? Array.Empty<string>();
+            var payload = Generate(config.SourceType, fields);
+            var sample  = new SamplePayload
+            {
+                ConfigId    = configId,
+                SourceType  = config.SourceType,
+                Label       = $"{config.FormatName} — {DateTime.UtcNow:HH:mm:ss}",
+                Payload     = payload,
+                IsValid     = true,
+                CreatedDate = DateTime.UtcNow
+            };
+            _db.SamplePayloads.Add(sample);
+            await _db.SaveChangesAsync();
+            TraceLogger.Exit("InputPayloadService", nameof(GenerateAndSaveAsync), $"sampleId={sample.Id}");
+            return sample;
+        }
+        catch (Exception ex) { TraceLogger.Error("InputPayloadService", nameof(GenerateAndSaveAsync), ex); throw; }
     }
 }
