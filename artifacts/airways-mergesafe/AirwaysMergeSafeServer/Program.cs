@@ -21,7 +21,14 @@ try
     // E6: Full Serilog logging with file + optional Seq sinks
     builder.AddSerilogLogging();
 
-    builder.WebHost.ConfigureKestrel(opts => { opts.AddServerHeader = false; });
+    // DEV FIX: Configure Kestrel from appsettings.Development.json "Kestrel" section.
+    // This makes `dotnet run` bind to http://localhost:5000 + https://localhost:5001
+    // as defined in appsettings.Development.json (and launchSettings.json).
+    builder.WebHost.ConfigureKestrel((ctx, opts) =>
+    {
+        opts.AddServerHeader = false;
+        opts.Configure(ctx.Configuration.GetSection("Kestrel"));
+    });
 
     // TomTom key file (optional external config — A4)
     var tomTomKeyFile = Path.Combine(AppContext.BaseDirectory, "tomtomkey.json");
@@ -44,13 +51,19 @@ try
     });
 
     // ── Session (secure) ──────────────────────────────────────────────────
+    // DEV FIX: CookieSecurePolicy.Always rejects cookies over plain HTTP (localhost:5000).
+    // In Development we use SameAsRequest so both http:5000 and https:5001 work.
+    // Production retains Always — HTTPS enforced by reverse-proxy / HSTS.
+    var isDevelopment = builder.Environment.IsDevelopment();
     builder.Services.AddSession(options =>
     {
         options.IdleTimeout         = TimeSpan.FromHours(2);
         options.Cookie.HttpOnly     = true;
         options.Cookie.IsEssential  = true;
-        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
-        options.Cookie.SameSite     = SameSiteMode.Strict;
+        options.Cookie.SecurePolicy = isDevelopment
+            ? CookieSecurePolicy.SameAsRequest   // allows http://localhost:5000
+            : CookieSecurePolicy.Always;          // HTTPS only in production
+        options.Cookie.SameSite     = SameSiteMode.Lax;   // Strict breaks some POST redirects on HTTP
         options.Cookie.Name         = "__mss";
     });
 
@@ -353,5 +366,6 @@ static string ParsePostgresUrl(string url)
     }
     catch { return url; }
 }
+
 
 
