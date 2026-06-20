@@ -174,6 +174,12 @@ const ALT_SCALE = 0.05;
 const XZ_SCALE  = 800;
 const HW        = '@hw';
 
+// FIX 4: Seed the 3D scene with the last 80 events already loaded by the controller.
+// This means vehicles appear instantly on page load — no waiting for the first poll.
+// The /api/events/live JSON shape matches: id, vehicleId, speedMph, latitude, longitude,
+// vehicleMode, vehicleCategory, vehicleClassJson, createdDate, etc.
+const _INITIAL_EVENTS = @Html.Raw(Model.RecentEventsJson ?? "[]");
+
 // ── Zone / Server dropdown state ──────────────────────────────────────
 const T3D_SERVERS = @Html.Raw(serversJson);
 const T3D_ZONES   = @Html.Raw(zonesJson);
@@ -430,7 +436,11 @@ function loadEvents(events) {
     events.forEach(ev => {
         const vc = classifyLocal(ev);
         if (vc.domain !== 'ground') return;
-        const vid = ev.vehicleId || (ev.id != null ? 'db-' + ev.id : null);
+        // FIX 5: stable vehicleId — prefer DB vehicleId, fallback to "db-{id}",
+        // last resort use "evt-" + hash of lat/lon/speed for anonymous events.
+        const vid = ev.vehicleId
+            || (ev.id   != null ? 'db-' + ev.id : null)
+            || (ev.latitude != null ? 'anon-' + Math.abs((ev.latitude*1000|0) * 37 + (ev.longitude*1000|0)) : null);
         if (!vid) return;
 
         seenIds.add(vid);
@@ -728,6 +738,12 @@ document.getElementById('viewToggle').querySelectorAll('button').forEach(btn => 
 //   animationPaused=false → live mode    (button "⏸ Pause",   30s polling ON,  sim injections blocked)
 //   animationPaused=true  → sim-only mode (button "▶ Resume", 30s polling OFF, sim injections allowed)
 // onSimStateChange: sim started → sim-only mode; sim stopped → live mode.
+// FIX 4 cont.: Seed the scene from initial server-rendered events (instant load)
+// then do a live API refresh to catch anything added since the page was rendered.
+if (Array.isArray(_INITIAL_EVENTS) && _INITIAL_EVENTS.length) {
+    loadEvents(_INITIAL_EVENTS);
+}
+
 // Page-load syncs from localStorage so navigating back from DataInputFormats works.
 let animationPaused = false;
 
@@ -773,19 +789,30 @@ function _updateSimPanel(ev, dbStatus) {
     if (badge) badge.style.display = '';
 }
 
+// FIX 1: simRunning is separate from animationPaused (user manual toggle).
+// animationPaused = user hit Pause button (stops vehicle forward motion + poll)
+// simRunning      = sim is broadcasting events (drives fast 3s poll)
+var simRunning     = false;
+var _fastPollTimer = null;
+
 function onSimStateChange(isRunning) {
-    animationPaused = isRunning;
-    var btn = document.getElementById('btnAnimToggle');
-    if (btn) btn.textContent = isRunning ? '▶ Resume' : '⏸ Pause';
-    var badge = document.getElementById('simFeedBadge');
-    if (badge) badge.style.display = isRunning ? '' : 'none';
-    if (!isRunning) {
+    simRunning = isRunning;
+    // Do NOT touch animationPaused — that belongs to the user's Pause button only.
+    var btn = document.getElementById('simFeedBadge');
+    if (btn) btn.style.display = isRunning ? '' : 'none';
+
+    // FIX 2: Real-time poll — 3 s while sim running, cleared when sim stops
+    if (_fastPollTimer) { clearInterval(_fastPollTimer); _fastPollTimer = null; }
+    if (isRunning) {
+        _fastPollTimer = setInterval(function() { refreshScene(); }, 3000);
+    } else {
+        // Sim stopped — revert to live mode visual feedback
         refreshScene();
-        if (_simPanelOpen) toggleSimPanel();
-        var el = document.getElementById('simFeedLine');
-        if (el) { el.style.color = '#475569'; el.textContent = 'Sim stopped — viewing live data.'; }
+        var _feedEl = document.getElementById('simFeedLine');
+        if (_feedEl) { _feedEl.style.color = '#475569'; _feedEl.textContent = 'Sim stopped — viewing live data.'; }
     }
 }
+
 
 // ── Animate loop ──────────────────────────────────────────────────────
 const ROAD_HALF = 680; // wrap boundary along X axis
@@ -861,7 +888,9 @@ function animate() {
 })();
 
 // Bug Fix 3: Gate 30-second auto-refresh when animation is paused
-setInterval(function() { if (!animationPaused) refreshScene(); }, 30000);
+// 30s background refresh — always runs regardless of sim/pause state
+// (fast poll above takes over during active sim sessions)
+setInterval(function() { refreshScene(); }, 30000);
 
 // ── Live simulation feed ───────────────────────────────────────────────
 function _simNorm(evObj, cl) {
@@ -891,8 +920,10 @@ function _simInject(evObj, cl) {
 
     _updateSimPanel(ev, '⏳ saving…');
 
-    // Immediate visual update by vehicleId — no DB round-trip needed for known vehicles
+    // FIX 3: Immediate visual update — update existing OR spawn new mesh right away
+    // (no DB round-trip needed; refreshScene() later keeps DB and scene in sync)
     if (ev.vehicleId && vehicleMap.has(ev.vehicleId)) {
+        // ── Update existing vehicle speed/heading ───────────────────────
         var _mesh = vehicleMap.get(ev.vehicleId);
         var _hDeg = ev.heading ?? (_mesh.userData.laneZ < 0 ? 90 : 270);
         var _hRad = _hDeg * Math.PI / 180;
@@ -901,6 +932,14 @@ function _simInject(evObj, cl) {
         _mesh.userData.targetVz  = -Math.cos(_hRad) * _spd;
         _mesh.userData.ev        = ev;
         _mesh.rotation.y         = _hRad;
+    } else if (ev.vehicleId) {
+        // ── Spawn new vehicle mesh immediately (don't wait for DB refresh) ─
+        var _newMesh = buildVehicleMesh(ev, ev.vehicleId);
+        scene.add(_newMesh);
+        vehicleMeshes.push(_newMesh);
+        vehicleMap.set(ev.vehicleId, _newMesh);
+        vehicleData.push({ ev: ev, vc: classifyLocal(ev) });
+        document.getElementById('statGround').textContent = vehicleMap.size;
     }
 
     // ── Always save to DB + refresh (works in both live and sim-only modes) ──
