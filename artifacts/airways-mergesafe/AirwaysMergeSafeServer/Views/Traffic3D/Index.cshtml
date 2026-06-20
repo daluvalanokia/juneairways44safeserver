@@ -69,7 +69,7 @@
             <button class="btn btn-outline-primary"   data-view="split"       title="All three panels">⊟ Split</button>
         </div>
         <a href="/AirScene" class="btn btn-sm btn-outline-warning">🛫 Air Scene</a>
-        <button id="btnAnimToggle" class="btn btn-sm btn-outline-warning" onclick="toggleAnimation()">⏸ Pause</button>
+        <button id="btnAnimToggle" class="btn btn-sm btn-outline-warning" onclick="toggleFeed()">⏸ Hold Feed</button>
         <button class="btn btn-sm btn-outline-success" onclick="refreshScene()">⟳ Live</button>
     </div>
 </div>
@@ -366,21 +366,8 @@ for (let x = -650; x <= 650; x += 60) {
     });
 }
 
-// Static zone markers (road-surface rings only — no tall cylinders)
-const ZONES = @Html.Raw(zonesJson);
-ZONES.forEach(z => {
-    if (!z.lat || !z.lon) return;
-    const p  = norm(z.lat, z.lon);
-    const r  = (z.radius / 20) || 15;
-    const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(r, 0.4, 8, 48),
-        new THREE.MeshPhongMaterial({ color: z.status === 'active' ? 0x22c55e : 0xf59e0b,
-                                      opacity: 0.8, transparent: true })
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.set(p.x, 0.3, p.z);
-    scene.add(ring);
-});
+// Zone rings removed per user request — zones are tracked in the dropdown only.
+// (TorusGeometry circles removed from 3D scene to reduce visual clutter)
 
 // ── Vehicle mesh management ───────────────────────────────────────────
 const vehicleMeshes = [], vehicleData = [];
@@ -487,6 +474,7 @@ function loadEvents(events) {
 }
 
 async function refreshScene() {
+    if (feedHeld) return;  // feed is on hold — skip DB poll
     try {
         const zq = selectedZoneId ? `&zoneId=${encodeURIComponent(selectedZoneId)}` : '';
         const r = await fetch(`/api/events/live?highwayId=${HW}&take=100&mode=ground${zq}`);
@@ -747,12 +735,38 @@ if (Array.isArray(_INITIAL_EVENTS) && _INITIAL_EVENTS.length) {
 // Page-load syncs from localStorage so navigating back from DataInputFormats works.
 let animationPaused = false;
 
-function toggleAnimation() {
-    animationPaused = !animationPaused;
+// feedHeld = user explicitly paused the data feed (polls + sim injections blocked)
+// Vehicles already on screen keep moving — only NEW data intake is suspended.
+var feedHeld = false;
+
+function toggleFeed() {
+    feedHeld = !feedHeld;
     var btn = document.getElementById('btnAnimToggle');
-    if (btn) btn.textContent = animationPaused ? '▶ Resume' : '⏸ Pause';
-    if (!animationPaused) refreshScene(); // returning to live mode → load fresh live data
+    if (btn) {
+        btn.textContent = feedHeld ? '▶ Resume Feed' : '⏸ Hold Feed';
+        btn.className   = feedHeld
+            ? 'btn btn-sm btn-warning'
+            : 'btn btn-sm btn-outline-warning';
+    }
+    // When resuming: immediately pull latest data
+    if (!feedHeld) {
+        refreshScene();
+        // Restart fast poll if sim is still running
+        if (simRunning && !_fastPollTimer) {
+            _fastPollTimer = setInterval(function() { if (!feedHeld) refreshScene(); }, 3000);
+        }
+    } else {
+        // Holding: clear fast poll (30s slow poll is also gated below)
+        if (_fastPollTimer) { clearInterval(_fastPollTimer); _fastPollTimer = null; }
+    }
 }
+
+// Keep animationPaused as alias so existing code paths still compile
+// (camera tween check at bottom of _simInject uses animationPaused)
+Object.defineProperty(window, 'animationPaused', {
+    get: function() { return feedHeld; },
+    set: function(v) { /* no-op — use toggleFeed() */ }
+});
 
 // ── Sim Data Feed Panel JS ─────────────────────────────────────────────
 var _simPanelOpen = false;
@@ -907,13 +921,26 @@ function _simNorm(evObj, cl) {
     }
     ev.latitude  = evObj.latitude  ?? evObj.lat  ?? 32.7767;
     ev.longitude = evObj.longitude ?? evObj.lon  ?? -96.7970;
-    ev.vehicleId = evObj.vehicle_id || ('SIM-' + Math.random().toString(36).slice(2,6).toUpperCase());
+    // Use vehicle_id from payload (set by SimulationPost as "SIM-{guid8}").
+    // If missing, build a DETERMINISTIC id from speed+lat+lon so the same
+    // physical vehicle maps to the same mesh across consecutive sim events.
+    if (evObj.vehicle_id) {
+        ev.vehicleId = evObj.vehicle_id;
+    } else {
+        var _h = Math.abs(
+            ((evObj.speed_mph ?? 0) * 1000 | 0) * 73856093 ^
+            ((evObj.latitude  ?? 0) * 10000 | 0) * 19349663 ^
+            ((evObj.longitude ?? 0) * 10000 | 0) * 83492791
+        ) % 99999;
+        ev.vehicleId = 'SIM-' + _h.toString(16).toUpperCase().padStart(5,'0');
+    }
     ev.eventType = evObj.event_type || 'detection';
     ev.zoneId    = evObj.zone_id    || '';
     return ev;
 }
 
 function _simInject(evObj, cl) {
+    if (feedHeld) return;  // feed on hold — discard sim events
     var ev = _simNorm(evObj, cl);
     var vc = classifyLocal(ev);
     if (vc.domain !== 'ground') return;
@@ -960,7 +987,13 @@ function _simInject(evObj, cl) {
         })
     }).then(function(r) {
         return r.json().then(function(j) {
-            if (r.ok) _updateSimPanel(ev, '✓ saved · id ' + j.id);
+            if (r.ok) {
+                // Show DB integer id alongside the vehicle id
+                _updateSimPanel(ev, '✓ db#' + j.id + ' · vid ' + (ev.vehicleId || '?'));
+                // Update vehicleId display element with the stable SIM id
+                var sfVid = document.getElementById('sfVehicleId');
+                if (sfVid && ev.vehicleId) sfVid.textContent = ev.vehicleId + ' [db#' + j.id + ']';
+            }
             else       _updateSimPanel(ev, '✗ ' + (j.error || r.status));
         });
     }).catch(function(err) {
