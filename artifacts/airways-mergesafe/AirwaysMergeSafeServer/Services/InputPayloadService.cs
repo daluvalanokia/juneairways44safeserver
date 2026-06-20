@@ -84,6 +84,7 @@ public class InputPayloadService
                 "rsrq"            => rng.Next(-15, -3),
                 "tag_id"          => $"TAG-{rng.Next(100000, 999999):X}",
                 "read_count"      => rng.Next(1, 10),
+                "isAirFlyCar"     => "N",   // always "N" for non-airflycar sources
                 _                 => $"val_{rng.Next(100, 999)}"
             };
         }
@@ -206,7 +207,7 @@ public class InputPayloadService
                 "zone_id"              => $"ZONE-{rng.Next(1, 10):D3}",
                 "highway_id"           => "I20-TX",
                 "event_type"           => eventType,
-                "aircar"               => rng.NextDouble() >= 0.5 ? "Y" : "N",
+                "isAirFlyCar"          => "Y",   // always "Y" — this IS an AirFlyCar source
                 _                      => $"val_{rng.Next(100, 999)}"
             };
         }
