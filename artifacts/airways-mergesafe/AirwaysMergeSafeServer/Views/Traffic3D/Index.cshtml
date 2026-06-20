@@ -255,14 +255,58 @@ function _tryLoadMapTile() {
 }
 
 // ── Ground vehicle geometry + colour factory ──────────────────────────
+// ── Vehicle shape specs — distinctive geometry per category ─────────
+// Each vehicle has: body box + cab box (roof section) for a car silhouette,
+// rendered as a THREE.Group so it looks like a real vehicle from top/side view.
+// Color-coded by category for instant visual classification.
 const CAT_SPEC = {
-    sedan:       { color:'#3b82f6', geo:()=>new THREE.BoxGeometry(1.6,0.4,0.8) },
-    suv:         { color:'#22c55e', geo:()=>new THREE.BoxGeometry(1.9,0.55,0.9) },
-    truck:       { color:'#f59e0b', geo:()=>new THREE.BoxGeometry(2.4,0.75,0.95) },
-    motorcycle:  { color:'#a855f7', geo:()=>new THREE.CylinderGeometry(0.15,0.15,0.5,8) },
-    van:         { color:'#64748b', geo:()=>new THREE.BoxGeometry(2.1,1.0,1.0) },
+    // Blue compact sedan  — low roof, short body
+    sedan:      { color:'#3b82f6',
+                  geo: () => _carGroup(1.8, 0.38, 0.85,  0.9, 0.28, 0.7,  '#2563eb') },
+    // Green SUV  — taller body, bigger footprint
+    suv:        { color:'#22c55e',
+                  geo: () => _carGroup(2.1, 0.52, 1.00,  1.1, 0.36, 0.85, '#16a34a') },
+    // Amber truck — long body, cab up front
+    truck:      { color:'#f59e0b',
+                  geo: () => _truckGroup() },
+    // Purple motorcycle — thin cylinder + small box
+    motorcycle: { color:'#a855f7',
+                  geo: () => _motoGroup() },
+    // Slate van — tall boxy shape, no separate cab
+    van:        { color:'#64748b',
+                  geo: () => _carGroup(2.4, 0.95, 1.05,  2.0, 0.70, 0.95, '#475569') },
 };
 const DEFAULT_SPEC = CAT_SPEC.sedan;
+
+// ── Shape helpers — return BufferGeometry (merged car silhouette) ────
+function _carGroup(bL,bH,bW, cL,cH,cW, roofColor) {
+    // Returns a custom BufferGeometry approximating a car body+cab top-view shape.
+    // Body = full length base; Cab = shorter roof section centered on top.
+    // We merge two boxes into one geometry using manual vertex copy.
+    const body = new THREE.BoxGeometry(bL, bH, bW);
+    const cab  = new THREE.BoxGeometry(cL, cH, cW);
+    // Shift cab up to sit on body top
+    const cabMatrix = new THREE.Matrix4().makeTranslation(0, (bH+cH)/2, 0);
+    cab.applyMatrix4(cabMatrix);
+    // Merge with BufferGeometryUtils if available, else return body only
+    if (THREE.BufferGeometryUtils && THREE.BufferGeometryUtils.mergeGeometries) {
+        return THREE.BufferGeometryUtils.mergeGeometries([body, cab]);
+    }
+    return body; // fallback: plain box
+}
+function _truckGroup() {
+    const body = new THREE.BoxGeometry(2.6, 0.55, 0.95);
+    const cab  = new THREE.BoxGeometry(0.9, 0.70, 0.90);
+    cab.applyMatrix4(new THREE.Matrix4().makeTranslation(0.8, 0.60, 0));
+    if (THREE.BufferGeometryUtils && THREE.BufferGeometryUtils.mergeGeometries)
+        return THREE.BufferGeometryUtils.mergeGeometries([body, cab]);
+    return body;
+}
+function _motoGroup() {
+    const body  = new THREE.CylinderGeometry(0.12, 0.14, 0.55, 8);
+    body.applyMatrix4(new THREE.Matrix4().makeRotationZ(Math.PI / 2));
+    return body;
+}
 
 function getSpec(vc) {
     if (!vc) return DEFAULT_SPEC;
@@ -385,8 +429,14 @@ for (let x = -650; x <= 650; x += 60) {
 function _clearScene() {
     vehicleMeshes.forEach(function(m) {
         scene.remove(m);
-        if (m.geometry) m.geometry.dispose();
-        if (m.material) m.material.dispose();
+        // Traverse group children (body mesh + label sprite)
+        m.traverse(function(ch) {
+            if (ch.geometry) ch.geometry.dispose();
+            if (ch.material) {
+                if (ch.material.map) ch.material.map.dispose();
+                ch.material.dispose();
+            }
+        });
     });
     vehicleMeshes.length = 0;
     vehicleData.length   = 0;
@@ -437,9 +487,42 @@ function buildVehicleMesh(ev, vid) {
     const phase = (Math.abs(_ph) % 100) / 100 * Math.PI * 2;
 
     mesh.rotation.y = headingRad; // face the direction of travel
-    mesh.userData = { ev, vc, baseY: 0.35, idx: vehicleMeshes.length,
-                      vx, vz, targetVx: vx, targetVz: vz, laneZ, headingRad, phase };
-    return mesh;
+
+    // ── Vehicle ID label — canvas texture sprite above the mesh ──────────
+    const _label = _makeVehicleLabel(vid, vc.category || 'sedan');
+    _label.position.set(0, 2.2, 0); // float above the vehicle body
+    const _group = new THREE.Group();
+    _group.add(mesh);
+    _group.add(_label);
+    _group.position.copy(mesh.position);
+    mesh.position.set(0, 0, 0);      // mesh is now relative to group
+    _group.userData = { ev, vc, baseY: 0.35, idx: vehicleMeshes.length,
+                        vx, vz, targetVx: vx, targetVz: vz, laneZ, headingRad, phase,
+                        vid, label: _label };
+    return _group;
+}
+
+// ── Canvas-texture label sprite for vehicle id ───────────────────────
+function _makeVehicleLabel(vid, category) {
+    const canvas  = document.createElement('canvas');
+    canvas.width  = 128; canvas.height = 32;
+    const ctx     = canvas.getContext('2d');
+    // Background pill
+    const catColors = { sedan:'#1d4ed8', suv:'#15803d', truck:'#b45309',
+                        motorcycle:'#7e22ce', van:'#334155' };
+    ctx.fillStyle   = catColors[category] || '#1e3a5f';
+    ctx.beginPath(); ctx.roundRect(2,2,124,28,8); ctx.fill();
+    // Vehicle id text
+    ctx.fillStyle   = '#ffffff';
+    ctx.font        = 'bold 13px monospace';
+    ctx.textAlign   = 'center';
+    ctx.textBaseline= 'middle';
+    ctx.fillText((vid || '?').slice(0,12), 64, 16);
+    const tex  = new THREE.CanvasTexture(canvas);
+    const mat  = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+    const spr  = new THREE.Sprite(mat);
+    spr.scale.set(5, 1.25, 1);
+    return spr;
 }
 
 function loadEvents(events) {
@@ -461,16 +544,19 @@ function loadEvents(events) {
         if (ev.longitude) lons.push(ev.longitude);
 
         if (vehicleMap.has(vid)) {
-            // ── Update existing vehicle's speed/heading ───────────────
-            const mesh = vehicleMap.get(vid);
-            mesh.userData.ev = ev;
-            const headingDeg = ev.heading ?? (mesh.userData.laneZ < 0 ? 90 : 270);
+            // ── Update existing vehicle group's speed/heading ─────────
+            const grp = vehicleMap.get(vid);
+            grp.userData.ev = ev;
+            const headingDeg = ev.heading ?? (grp.userData.laneZ < 0 ? 90 : 270);
             const headingRad = headingDeg * Math.PI / 180;
             const spd = ((ev.speedMph ?? 55) * 0.018);
-            mesh.userData.targetVx = Math.sin(headingRad) * spd;
-            mesh.userData.targetVz = -Math.cos(headingRad) * spd;
-            mesh.userData.speedMph = ev.speedMph ?? 55;
-            mesh.rotation.y        = headingRad;
+            grp.userData.targetVx    = Math.sin(headingRad) * spd;
+            grp.userData.targetVz    = -Math.cos(headingRad) * spd;
+            grp.userData.speedMph    = ev.speedMph ?? 55;
+            grp.userData._lastSeenMs = Date.now();
+            // Rotate the first child (body mesh) to face travel direction
+            const bodyMesh = grp.children[0];
+            if (bodyMesh) bodyMesh.rotation.y = headingRad;
         } else {
             // ── Add new vehicle mesh ──────────────────────────────────
             const mesh = buildVehicleMesh(ev, vid);
@@ -481,13 +567,31 @@ function loadEvents(events) {
         }
     });
 
-    // Remove stale vehicles no longer in the live feed
+    // Stale removal: only remove vehicles that haven't appeared in the feed
+    // for more than 60 seconds (gives pool vehicles time between refreshes).
+    // While sim is running we're lenient — vehicles persist until sim stops.
+    const now = Date.now();
     vehicleMap.forEach((mesh, vid) => {
         if (!seenIds.has(vid)) {
-            scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose();
-            vehicleMap.delete(vid);
-            const idx = vehicleMeshes.indexOf(mesh);
-            if (idx >= 0) vehicleMeshes.splice(idx, 1);
+            const lastSeen = mesh.userData._lastSeenMs || 0;
+            const staleMs  = simRunning ? 60000 : 30000; // 60s during sim, 30s live
+            if (now - lastSeen > staleMs) {
+                scene.remove(mesh);
+                // Dispose children (group contains mesh + sprite)
+                mesh.traverse(ch => {
+                    if (ch.geometry) ch.geometry.dispose();
+                    if (ch.material) {
+                        if (ch.material.map) ch.material.map.dispose();
+                        ch.material.dispose();
+                    }
+                });
+                vehicleMap.delete(vid);
+                const idx = vehicleMeshes.indexOf(mesh);
+                if (idx >= 0) vehicleMeshes.splice(idx, 1);
+            }
+        } else {
+            // Mark as seen this refresh
+            mesh.userData._lastSeenMs = now;
         }
     });
 
@@ -869,9 +973,10 @@ function animate() {
     camP.position.z = 120 + radius * 0.25 * Math.cos(theta * 0.3);
     camP.lookAt(60, 0, 0);
 
-    // Vehicle forward motion — always runs; animationPaused only gates the 30s DB poll
+    // Vehicle forward motion — vehicleMeshes contains THREE.Group objects
     vehicleMeshes.forEach(m => {
         const ud = m.userData;
+        if (!ud || ud.vx === undefined) return; // skip non-vehicle scene objects
         // Smooth velocity interpolation (gradual speed transitions between DB refreshes)
         ud.vx += (ud.targetVx - ud.vx) * 0.04;
         ud.vz += (ud.targetVz - ud.vz) * 0.04;
@@ -883,8 +988,9 @@ function animate() {
         // Suspension bounce: amplitude scales with speed (faster = bigger bumps)
         const spd = Math.abs(ud.vx) + 0.01;
         m.position.y = ud.baseY + Math.sin(tick * 0.22 + ud.phase) * spd * 0.14;
-        // Body roll: lean slightly into lane drift correction
+        // Body roll: lean slightly into lane drift correction — rotate the group
         m.rotation.z = (ud.laneZ - m.position.z) * 0.012;
+        // Label always faces camera (sprite handles this automatically)
         // Wrap at road ends
         if (m.position.x >  ROAD_HALF) m.position.x = -ROAD_HALF;
         if (m.position.x < -ROAD_HALF) m.position.x =  ROAD_HALF;
@@ -989,23 +1095,27 @@ function _simInject(evObj, cl) {
     // FIX 3: Immediate visual update — update existing OR spawn new mesh right away
     // (no DB round-trip needed; refreshScene() later keeps DB and scene in sync)
     if (ev.vehicleId && vehicleMap.has(ev.vehicleId)) {
-        // ── Update existing vehicle speed/heading ───────────────────────
-        var _mesh = vehicleMap.get(ev.vehicleId);
-        var _hDeg = ev.heading ?? (_mesh.userData.laneZ < 0 ? 90 : 270);
+        // ── Update existing vehicle group speed/heading ─────────────────
+        var _grp = vehicleMap.get(ev.vehicleId);
+        var _hDeg = ev.heading ?? (_grp.userData.laneZ < 0 ? 90 : 270);
         var _hRad = _hDeg * Math.PI / 180;
         var _spd  = (Math.max(0, ev.speedMph ?? 55)) * 0.018;
-        _mesh.userData.targetVx  = Math.sin(_hRad) * _spd;
-        _mesh.userData.targetVz  = -Math.cos(_hRad) * _spd;
-        _mesh.userData.ev        = ev;
-        _mesh.rotation.y         = _hRad;
+        _grp.userData.targetVx   = Math.sin(_hRad) * _spd;
+        _grp.userData.targetVz   = -Math.cos(_hRad) * _spd;
+        _grp.userData.ev         = ev;
+        _grp.userData._lastSeenMs= Date.now();
+        var _bodyMesh = _grp.children[0];
+        if (_bodyMesh) _bodyMesh.rotation.y = _hRad;
     } else if (ev.vehicleId) {
-        // ── Spawn new vehicle mesh immediately (don't wait for DB refresh) ─
-        var _newMesh = buildVehicleMesh(ev, ev.vehicleId);
-        scene.add(_newMesh);
-        vehicleMeshes.push(_newMesh);
-        vehicleMap.set(ev.vehicleId, _newMesh);
+        // ── Spawn new vehicle group immediately (no DB round-trip needed) ─
+        var _newGrp = buildVehicleMesh(ev, ev.vehicleId);
+        _newGrp.userData._lastSeenMs = Date.now();
+        scene.add(_newGrp);
+        vehicleMeshes.push(_newGrp);
+        vehicleMap.set(ev.vehicleId, _newGrp);
         vehicleData.push({ ev: ev, vc: classifyLocal(ev) });
-        document.getElementById('statGround').textContent = vehicleMap.size;
+        var _sc = document.getElementById('statGround');
+        if (_sc) _sc.textContent = vehicleMap.size;
     }
 
     // ── Always save to DB + refresh (works in both live and sim-only modes) ──
@@ -1037,9 +1147,11 @@ function _simInject(evObj, cl) {
         });
     }).catch(function(err) {
         _updateSimPanel(ev, '✗ ' + (err.message || 'network error'));
-    }).finally(function() {
-        refreshScene(); // always refresh — event may already be in DB from SimulationPost
     });
+    // NOTE: refreshScene() is intentionally NOT called here on every sim event.
+    // The 3s fast poll (started by onSimStateChange) handles DB→scene sync.
+    // Calling refreshScene() immediately after inject was removing freshly-spawned
+    // meshes before the DB write completed (race condition).
 
     var lbl = document.getElementById('simLiveLabel');
     if (lbl) { lbl.style.opacity = '1'; setTimeout(function(){ lbl.style.opacity = '0'; }, 2500); }
