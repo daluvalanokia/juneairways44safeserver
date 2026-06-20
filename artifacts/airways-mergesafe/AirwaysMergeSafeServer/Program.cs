@@ -243,16 +243,19 @@ try
         };
 
         var activeGuards = isPostgres ? pgGuards : sqliteGuards;
+        foreach (var sql in activeGuards)
         {
             try
             {
                 await db.Database.ExecuteSqlRawAsync(sql);
             }
-            catch (Exception ex)
+            catch
             {
-                // Column/index already exists — safe to ignore (SQLite does not support
-                // ADD COLUMN IF NOT EXISTS, so duplicate-column errors are expected and harmless)
-                logger.LogDebug("Startup guard skipped (already applied): {Sql}", sql.Split('\n')[0].Trim()[..Math.Min(70, sql.Split('\n')[0].Trim().Length)]);
+                // Column/index/table already exists — safe to ignore.
+                // SQLite does not support ADD COLUMN IF NOT EXISTS, so
+                // duplicate-column errors on re-start are expected and harmless.
+                logger.LogDebug("Startup guard skipped (already applied): {Preview}",
+                    sql.Split('\n')[0].Trim()[..Math.Min(70, sql.Split('\n')[0].Trim().Length)]);
             }
         }
 
@@ -366,6 +369,7 @@ static string ParsePostgresUrl(string url)
     }
     catch { return url; }
 }
+
 
 
 
