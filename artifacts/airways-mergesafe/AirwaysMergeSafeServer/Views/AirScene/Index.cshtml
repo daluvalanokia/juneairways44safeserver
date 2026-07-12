@@ -682,7 +682,9 @@ function loadEvents(evs) {
 
 async function doRefresh() {
     try {
-        const r = await fetch(`/api/events/live?highwayId=${HW}&take=140&mode=air`);
+        const zq  = selectedZoneId   ? `&zoneId=${encodeURIComponent(selectedZoneId)}`   : '';
+        const sq  = selectedServerId ? `&serverId=${encodeURIComponent(selectedServerId)}` : '';
+        const r   = await fetch(`/api/events/live?highwayId=${HW}&take=140&mode=air${zq}${sq}`);
         if (!r.ok) return;
         loadEvents(await r.json());
     } catch(e) { console.warn('AirScene refresh error:', e); }
@@ -1067,18 +1069,81 @@ function _updateAirSimPanel(ev, dbStatus) {
     if (badge) badge.style.display = '';
 }
 
+var simRunning     = false;   // true while sim is broadcasting; SEPARATE from animationPaused
+var _airFastTimer  = null;    // 3s fast poll timer during sim
+
 function onSimStateChange(isRunning) {
-    animationPaused = isRunning;
-    var btn = document.getElementById('btnAnimToggle');
-    if (btn) btn.textContent = isRunning ? '▶ Resume' : '⏸ Pause';
+    simRunning = isRunning;
+    // NOTE: do NOT touch animationPaused here — that belongs to the user's Pause button only.
+    // The old code set animationPaused = isRunning which PAUSED the animation when the sim started.
     var badge = document.getElementById('airSimFeedBadge');
     if (badge) badge.style.display = isRunning ? '' : 'none';
-    if (!isRunning) {
+
+    // Auto-select sim's zone/server when sim starts
+    if (isRunning) _airApplySimContext();
+
+    // Fast 3s poll while sim running (same pattern as Traffic3D)
+    if (_airFastTimer) { clearInterval(_airFastTimer); _airFastTimer = null; }
+    if (isRunning) {
+        _airFastTimer = setInterval(function() { doRefresh(); }, 3000);
+    } else {
         doRefresh();
-        if (_airSimPanelOpen) toggleAirSimPanel();
+        if (typeof _airSimPanelOpen !== 'undefined' && _airSimPanelOpen && typeof toggleAirSimPanel === 'function')
+            toggleAirSimPanel();
         var el = document.getElementById('airSimFeedLine');
         if (el) { el.style.color = '#475569'; el.textContent = 'Sim stopped — viewing live data.'; }
     }
+}
+
+// ── Auto-select sim's zone/server in the Air Scene ────────────────────────
+// Reads airways_sim_context (written by DIF every tick) and pre-selects
+// the airZoneSel/airServerSel dropdowns, then refreshes the scene.
+function _airApplySimContext() {
+    try {
+        var raw = localStorage.getItem('airways_sim_context');
+        if (!raw) return;
+        var ctx = JSON.parse(raw);
+        var changed = false;
+
+        // Apply zone
+        if (ctx.zoneId) {
+            var zSel = document.getElementById('airZoneSel');
+            if (zSel && zSel.value !== ctx.zoneId) {
+                var zOpt = zSel.querySelector('option[value="' + ctx.zoneId + '"]');
+                if (zOpt) {
+                    zSel.value     = ctx.zoneId;
+                    selectedZoneId = ctx.zoneId;
+                    // Filter server dropdown to match zone
+                    var srvSel = document.getElementById('airServerSel');
+                    if (srvSel) {
+                        var first = '';
+                        srvSel.querySelectorAll('option').forEach(function(o) {
+                            var match = !ctx.zoneId || o.dataset.zone === ctx.zoneId;
+                            o.style.display = match ? '' : 'none';
+                            if (match && !first) first = o.value;
+                        });
+                        if (!ctx.serverId) { srvSel.value = first; selectedServerId = first; }
+                    }
+                    changed = true;
+                }
+            }
+        }
+
+        // Apply server
+        if (ctx.serverId) {
+            var sSel = document.getElementById('airServerSel');
+            if (sSel) {
+                var sOpt = sSel.querySelector('option[value="' + ctx.serverId + '"]');
+                if (sOpt) {
+                    sSel.value       = ctx.serverId;
+                    selectedServerId = ctx.serverId;
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed) { airHighlightCorridors(); doRefresh(); }
+    } catch(e) {}
 }
 
 // ── Animate loop ──────────────────────────────────────────────────────
@@ -1297,6 +1362,8 @@ if (typeof BroadcastChannel !== 'undefined') {
 // airways_sim_last_event handles vehicle payloads only (no dead sim_started check).
 window.addEventListener('storage', function(e) {
     if (e.key === 'airways_sim_active') { onSimStateChange(e.newValue === 'true'); return; }
+    // When DIF changes zone/server, reapply to Air Scene dropdowns
+    if (e.key === 'airways_sim_context' && simRunning) { _airApplySimContext(); return; }
     if (e.key !== 'airways_sim_last_event' || !e.newValue) return;
     try {
         var msg = JSON.parse(e.newValue);
@@ -1304,5 +1371,12 @@ window.addEventListener('storage', function(e) {
             _airInject(msg.payload, msg.classification);
     } catch(ex) {}
 });
+// On page load: if sim already running, apply its context immediately
+(function() {
+    if (localStorage.getItem('airways_sim_active') === 'true') {
+        _airApplySimContext();
+        onSimStateChange(true);
+    }
+})();
 </script>
 }
