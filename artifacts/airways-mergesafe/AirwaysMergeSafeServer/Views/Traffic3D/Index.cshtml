@@ -947,6 +947,9 @@ function onSimStateChange(isRunning) {
     var btn = document.getElementById('simFeedBadge');
     if (btn) btn.style.display = isRunning ? '' : 'none';
 
+    // When sim starts, auto-apply the sim's highway/zone/server to the 3D dropdowns
+    if (isRunning) _t3dApplySimContext();
+
     // FIX 2: Real-time poll — 3 s while sim running, cleared when sim stops
     if (_fastPollTimer) { clearInterval(_fastPollTimer); _fastPollTimer = null; }
     if (isRunning) {
@@ -957,6 +960,67 @@ function onSimStateChange(isRunning) {
         var _feedEl = document.getElementById('simFeedLine');
         if (_feedEl) { _feedEl.style.color = '#475569'; _feedEl.textContent = 'Sim stopped — viewing live data.'; }
     }
+}
+
+// ── Auto-select sim's highway/zone/server in the 3D scene ─────────────────
+// Reads airways_sim_context (written by DIF on every tick) and pre-selects
+// the matching dropdowns, then clears+refreshes the scene so vehicles from
+// the sim's zone appear immediately without the user touching anything.
+function _t3dApplySimContext() {
+    try {
+        var raw = localStorage.getItem('airways_sim_context');
+        if (!raw) return;
+        var ctx = JSON.parse(raw);
+        var changed = false;
+
+        // Apply highway: navigate to the sim's highway page if different
+        var curHW = typeof HW !== 'undefined' ? HW : '';
+        if (ctx.hwId && ctx.hwId !== curHW) {
+            // Redirect to the same page with the sim's highway pre-selected
+            window.location.href = '/Traffic3D?highwayId=' + encodeURIComponent(ctx.hwId);
+            return;
+        }
+
+        // Apply zone dropdown
+        if (ctx.zoneId) {
+            var zSel = document.getElementById('t3dZoneSel');
+            if (zSel && zSel.value !== ctx.zoneId) {
+                // Find option (may be empty string if zone not in list)
+                var zOpt = zSel.querySelector('option[value="' + ctx.zoneId + '"]');
+                if (zOpt) {
+                    zSel.value      = ctx.zoneId;
+                    selectedZoneId  = ctx.zoneId;
+                    changed = true;
+                    // Show only servers for this zone
+                    var srvSel = document.getElementById('t3dServerSel');
+                    if (srvSel) {
+                        srvSel.querySelectorAll('option').forEach(function(o) {
+                            o.style.display = (!o.dataset.zone || o.dataset.zone === ctx.zoneId) ? '' : 'none';
+                        });
+                    }
+                }
+            }
+        }
+
+        // Apply server dropdown
+        if (ctx.serverId) {
+            var sSel = document.getElementById('t3dServerSel');
+            if (sSel && sSel.value !== ctx.serverId) {
+                var sOpt = sSel.querySelector('option[value="' + ctx.serverId + '"]');
+                if (sOpt) {
+                    sSel.value       = ctx.serverId;
+                    selectedServerId = ctx.serverId;
+                    changed = true;
+                }
+            }
+        }
+
+        // Refresh the scene with the newly applied filter
+        if (changed) {
+            _clearScene();
+            refreshScene();
+        }
+    } catch(e) {}
 }
 
 
@@ -1205,6 +1269,8 @@ if (typeof BroadcastChannel !== 'undefined') {
 // and airways_sim_last_event (vehicle payloads). Previously mixed → dead sim_started check.
 window.addEventListener('storage', function(e) {
     if (e.key === 'airways_sim_active') { onSimStateChange(e.newValue === 'true'); return; }
+    // When DIF updates the sim context (zone/server change), reapply to 3D dropdowns
+    if (e.key === 'airways_sim_context' && simRunning) { _t3dApplySimContext(); return; }
     if (e.key !== 'airways_sim_last_event' || !e.newValue) return;
     try {
         var msg = JSON.parse(e.newValue);
@@ -1213,5 +1279,11 @@ window.addEventListener('storage', function(e) {
     } catch(ex) {}
 });
 // Restore sim feed state from localStorage on page load (handles DataInputFormats navigation)
-(function() { if (localStorage.getItem('airways_sim_active') === 'true') onSimStateChange(true); })();
+(function() {
+    if (localStorage.getItem('airways_sim_active') === 'true') {
+        // Sim already running from another tab — apply its context first, then start feed
+        _t3dApplySimContext();
+        onSimStateChange(true);
+    }
+})();
 </script>
