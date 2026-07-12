@@ -68,15 +68,15 @@
 
                     <div class="row g-2 mb-3">
                         <div class="col-6">
-                            <label class="form-label small fw-semibold">Switch Server</label>
-                            <select class="form-select form-select-sm" id="simServer">
-                                <option value="">Any Server</option>
-                            </select>
-                        </div>
-                        <div class="col-6">
                             <label class="form-label small fw-semibold">Zone</label>
                             <select class="form-select form-select-sm" id="simZone" onchange="simFilterServers()">
                                 <option value="">Any Zone</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Switch Server</label>
+                            <select class="form-select form-select-sm" id="simServer">
+                                <option value="">Any Server</option>
                             </select>
                         </div>
                     </div>
@@ -389,9 +389,67 @@ var simTotal    = 0;
 var simLogItems = [];
 var airwaysBroadcast = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('airways_sim') : null;
 
+// ── Persistence: sim state survives navigation ─────────────────────────────
+// State is written to localStorage on every tick and on start/stop.
+// _simRestoreState() reads it back on page load and auto-resumes if needed.
+// The sim continues to post from whatever tab the DIF page is open in —
+// the user can switch to 3D Traffic / 3D Air and return; the sim will still
+// be running and the log + counters will be restored exactly.
+var _SIM_SK = 'airways_sim_state';    // full config blob
+var _SIM_CK = 'airways_sim_context'; // highway/zone/server for 3D auto-select
+
+function _simPersist(running) {
+    try {
+        var st = {
+            running:  !!running,
+            interval: parseInt((document.getElementById('simInterval')||{}).value||'30'),
+            delay:    parseInt((document.getElementById('simDelay')   ||{}).value||'0'),
+            hwId:     (document.getElementById('simHighway')||{}).value||'',
+            zoneId:   (document.getElementById('simZone')   ||{}).value||'',
+            serverId: (document.getElementById('simServer') ||{}).value||'',
+            srcType:  (document.getElementById('simType')   ||{}).value||'physical',
+            total:    simTotal,
+            at:       Date.now()
+        };
+        localStorage.setItem(_SIM_SK, JSON.stringify(st));
+        localStorage.setItem(_SIM_CK, JSON.stringify({ hwId: st.hwId, zoneId: st.zoneId, serverId: st.serverId }));
+        localStorage.setItem('airways_sim_active', running ? 'true' : 'false');
+    } catch(e) {}
+}
+
+function _simRestoreState() {
+    try {
+        var raw = localStorage.getItem(_SIM_SK);
+        if (!raw) return;
+        var st = JSON.parse(raw);
+        // Restore dropdown selections
+        if (st.hwId)     { var hw = document.getElementById('simHighway');  if (hw) { hw.value = st.hwId; simFilterDropdowns(); } }
+        if (st.zoneId)   { var zs = document.getElementById('simZone');     if (zs)   zs.value = st.zoneId; }
+        if (st.serverId) { var ss = document.getElementById('simServer');   if (ss)   ss.value = st.serverId; }
+        if (st.srcType)  { var ts = document.getElementById('simType');     if (ts)   ts.value = st.srcType; }
+        if (st.interval) { var is = document.getElementById('simInterval'); if (is)   is.value = st.interval; }
+        if (st.delay != null) { var ds = document.getElementById('simDelay'); if (ds) ds.value = st.delay; }
+        // Restore counter
+        simTotal = st.total || 0;
+        if (simTotal > 0) {
+            var b = document.getElementById('simTotalBadge');
+            if (b) b.textContent = simTotal + ' posted';
+        }
+        // Auto-resume if sim was running when user navigated away
+        if (st.running) {
+            document.getElementById('btnStartSim').style.display = 'none';
+            document.getElementById('btnStopSim').style.display  = '';
+            setSimStatus('pending', 'Resuming simulation…');
+            setTimeout(function() { startSim(); }, 400);
+        } else if (simTotal > 0) {
+            setSimStatus('stopped', 'Stopped · ' + simTotal + ' total posted');
+        }
+    } catch(e) {}
+}
+
 function simBroadcast(type) {
     if (airwaysBroadcast) airwaysBroadcast.postMessage({ type: type });
-    try { localStorage.setItem('airways_sim_active', type === 'sim_started' ? 'true' : 'false'); } catch(e) {}
+    _simPersist(type === 'sim_started');
 }
 
 function simFilterDropdowns() {
@@ -428,6 +486,7 @@ function rebuildOpts(selId, items, blank, mapper) {
 }
 
 simFilterDropdowns();
+_simRestoreState(); // restore from last session
 
 function startSim() {
     var delay    = parseInt(document.getElementById('simDelay').value)    * 1000;
@@ -458,6 +517,7 @@ function startSim() {
                 simTotal++;
                 document.getElementById('simTotalBadge').textContent = simTotal + ' posted';
                 setSimStatus('running', 'Running · ' + simTotal + ' posted · every ' + interval/1000 + 's');
+                _simPersist(true); // save running state + total on every tick
                 appendSimLog(d.payload, d.label, srcType);
                 if (d.classification) showClassResult(d.classification, srcType);
                 try {
@@ -496,6 +556,7 @@ function stopSim() {
     document.getElementById('btnStartSim').style.display = '';
     document.getElementById('btnStopSim').style.display  = 'none';
     setSimStatus('stopped', 'Stopped · ' + simTotal + ' total posted');
+    _simPersist(false); // mark stopped so restore does NOT auto-restart
     simBroadcast('sim_stopped');
 }
 
