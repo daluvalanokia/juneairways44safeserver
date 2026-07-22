@@ -228,7 +228,7 @@ public static class DbInitializer
                         VehicleMode     = isAir ? "air" : "ground",
                         VehicleCategory = vtype,
                         IsAirFlyCar     = vtype == "air_express" ? "Y" : "N",
-                        Payload         = $"{{"vehicle_type":"{vtype}","lane":{rng.Next(1,5)},"altitude_m":{altitude ?? 0}}}",
+                        Payload         = $"{{\"vehicle_type\":\"{vtype}\",\"lane\":{rng.Next(1,5)},\"altitude_m\":{altitude ?? 0}}}",
                         CreatedDate     = now.AddMinutes(-rng.Next(0, 1440)),
                     });
                 }
