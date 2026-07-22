@@ -260,12 +260,15 @@ try
         }
 
         // ── Step 3: Seed reference data ───────────────────────────────────
+        // Force-seed if Highways is empty — covers cases where the local DB file
+        // was created by a previous run before migrations were complete, or if
+        // mergesafe.db was deleted and EF just recreated it via MigrateAsync().
         try
         {
-            DbInitializer.Seed(db);
-            logger.LogInformation("Startup: Database ready — migrations applied, seed data loaded.");
+            await DbInitializer.SeedAsync(db, logger);
+            logger.LogInformation("Startup: Database ready — migrations applied, seed data verified.");
         }
-        catch (Exception ex) { logger.LogError(ex, "Startup: Seed failed."); }
+        catch (Exception ex) { logger.LogError(ex, "Startup: Seed failed — {Message}", ex.Message); }
     }
     if (!app.Environment.IsDevelopment())
     {
