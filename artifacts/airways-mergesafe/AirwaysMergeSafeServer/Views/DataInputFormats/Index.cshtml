@@ -448,7 +448,9 @@ function _simRestoreState() {
 }
 
 function simBroadcast(type) {
-    if (airwaysBroadcast) airwaysBroadcast.postMessage({ type: type });
+    // Carry interval (seconds) so 3D scene can match its poll exactly.
+    var _ivSec = parseInt((document.getElementById('simInterval')||{}).value||'30');
+    if (airwaysBroadcast) airwaysBroadcast.postMessage({ type: type, intervalSec: _ivSec });
     _simPersist(type === 'sim_started');
 }
 
@@ -529,8 +531,11 @@ function startSim() {
                     if (d.vehicleId) evParsed.vehicle_id = d.vehicleId;
                     evParsed.zone_id    = document.getElementById('simZone').value    || evParsed.zone_id    || '';
                     evParsed.highway_id = document.getElementById('simHighway').value || evParsed.highway_id || '';
+                    // Carry interval so T3D can adjust its poll on every tick
+                    var _ivSecV = parseInt((document.getElementById('simInterval')||{}).value||'30');
                     var _simMsg = { type: 'sim_vehicle', payload: evParsed,
-                                    classification: d.classification || null, srcType: srcType };
+                                    classification: d.classification || null,
+                                    srcType: srcType, intervalSec: _ivSecV };
                     if (airwaysBroadcast) airwaysBroadcast.postMessage(_simMsg);
                     // localStorage fallback: received by 3D scenes via 'storage' event
                     // (works even when DataInputFormats is navigated away from)
