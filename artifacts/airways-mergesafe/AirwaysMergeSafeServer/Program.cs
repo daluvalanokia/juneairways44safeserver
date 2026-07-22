@@ -309,8 +309,17 @@ try
     app.UseStaticFiles();
     app.UseRouting();
 
+    // Session MUST be before any middleware or controller that reads HttpContext.Session.
+    // Previously placed after MapControllerRoute — this prevented Portal/Index from
+    // reading the session, causing an exception before the Highways query result
+    // reached the view (empty dropdown on login page).
+    app.UseSession();
+
     // E3: Rate limiter middleware — must be after UseRouting
     app.UseRateLimiter();
+
+    app.UseOutputCache();
+    app.UseAuthorization();
 
     // E3: Apply rate-limit policies to specific routes
     app.MapControllerRoute(
@@ -328,10 +337,6 @@ try
     app.MapControllerRoute(
         name: "default",
         pattern: "{controller=Portal}/{action=Index}/{id?}");
-
-    app.UseSession();
-    app.UseOutputCache();
-    app.UseAuthorization();
 
     var port = Environment.GetEnvironmentVariable("PORT") ?? "5000";
     app.Urls.Add($"http://0.0.0.0:{port}");
