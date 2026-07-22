@@ -475,8 +475,10 @@ function buildVehicleMesh(ev, vid) {
     const laneZ = (vid != null) ? stableLane(vid) : LANE_Z[vehicleMap.size % LANE_Z.length];
     mesh.position.set(p.x, 0.35, laneZ);
 
-    // Heading-based velocity: eastbound lanes (z<0) go +x, westbound (z>0) go -x
-    const headingDeg = ev.heading ?? (laneZ < 0 ? 90 : 270);
+    // FIX C2: 'direction' field alias — the payload sends "direction" not "heading".
+    // Also accept directionDeg / headingDeg for maximum compatibility.
+    const headingDeg = ev.heading ?? ev.direction ?? ev.directionDeg ?? ev.headingDeg
+                       ?? (laneZ < 0 ? 90 : 270);
     const headingRad = headingDeg * Math.PI / 180;
     // Speed in scene-units/frame at 60fps (mph → scene units)
     const speedFactor = ((ev.speedMph ?? 55) * 0.018);
@@ -919,8 +921,13 @@ function _updateSimPanel(ev, dbStatus) {
     var line = t + '  ·  ' + (ev.vehicleId||'?') + '  ·  '
              + (ev.vehicleCategory || ev.vehicleMode || 'vehicle') + '  ·  ' + spd + ' mph';
     var el = document.getElementById('simFeedLine');
-    if (el) { el.style.color = '#d1fae5'; el.textContent = line;
-              setTimeout(function(){ el.style.color = '#86efac'; }, 800); }
+    if (el) {
+        // FIX A: Keep line bright green while sim is active — no fade-to-muted timeout.
+        // Previously faded to #86efac after 800ms on EVERY event, making it look frozen.
+        el.style.color   = '#4ade80';
+        el.textContent   = line;
+        el.style.opacity = '1';
+    }
     function setEl(id, val) { var x = document.getElementById(id); if (x) x.textContent = val || '–'; }
     setEl('sfVehicleId', ev.vehicleId);
     setEl('sfType',      ev.vehicleCategory || ev.vehicleMode || 'vehicle');
@@ -935,6 +942,10 @@ function _updateSimPanel(ev, dbStatus) {
     if (!_simPanelOpen) toggleSimPanel();
     var badge = document.getElementById('simFeedBadge');
     if (badge) badge.style.display = '';
+    // FIX E: increment event counter shown in the LIVE badge for clear liveness signal
+    if (!window._simEventCount) window._simEventCount = 0;
+    window._simEventCount++;
+    if (badge) badge.textContent = '● LIVE #' + window._simEventCount;
 }
 
 // FIX 1: simRunning is separate from animationPaused (user manual toggle).
@@ -960,7 +971,14 @@ function onSimStateChange(isRunning) {
         // Sim stopped — revert to live mode visual feedback
         refreshScene();
         var _feedEl = document.getElementById('simFeedLine');
-        if (_feedEl) { _feedEl.style.color = '#475569'; _feedEl.textContent = 'Sim stopped — viewing live data.'; }
+        if (_feedEl) {
+            _feedEl.style.color = '#475569';
+            _feedEl.textContent = 'Sim stopped — viewing live data.';
+        }
+        // Reset event counter and hide LIVE badge on sim stop
+        window._simEventCount = 0;
+        var _badge2 = document.getElementById('simFeedBadge');
+        if (_badge2) { _badge2.style.display = 'none'; _badge2.textContent = '● LIVE'; }
     }
 }
 
@@ -1141,6 +1159,21 @@ function _simNorm(evObj, cl) {
     }
     ev.eventType = evObj.event_type || 'detection';
     ev.zoneId    = evObj.zone_id    || '';
+
+    // FIX C: Map 'direction' field (SimulationPost payload key) to 'heading'
+    // The controller sends "direction" not "heading" — ev.heading was always undefined,
+    // causing all sim vehicles to use the laneZ-based default (90 or 270 deg).
+    ev.heading = evObj.heading ?? evObj.direction ?? evObj.headingDeg ?? evObj.directionDeg ?? null;
+
+    // FIX B+D: Update midLat/midLon from this event's coordinates immediately.
+    // Previously only loadEvents() updated midLat/midLon — sim-spawned vehicles used
+    // the stale page-load default (32.75, -97.0), then teleported when DB poll updated it.
+    // Now every sim event nudges the centre toward the actual vehicle cluster.
+    if (ev.latitude && ev.longitude) {
+        midLat = midLat * 0.85 + ev.latitude  * 0.15;
+        midLon = midLon * 0.85 + ev.longitude * 0.15;
+    }
+
     return ev;
 }
 
@@ -1171,7 +1204,9 @@ function _simInject(evObj, cl) {
     if (ev.vehicleId && vehicleMap.has(ev.vehicleId)) {
         // ── Update existing vehicle group speed/heading ─────────────────
         var _grp = vehicleMap.get(ev.vehicleId);
-        var _hDeg = ev.heading ?? (_grp.userData.laneZ < 0 ? 90 : 270);
+        // FIX C3: heading alias — payload sends 'direction' not 'heading'
+        var _hDeg = ev.heading ?? ev.direction ?? ev.directionDeg ?? ev.headingDeg
+                    ?? (_grp.userData.laneZ < 0 ? 90 : 270);
         var _hRad = _hDeg * Math.PI / 180;
         var _spd  = (Math.max(0, ev.speedMph ?? 55)) * 0.018;
         _grp.userData.targetVx   = Math.sin(_hRad) * _spd;
