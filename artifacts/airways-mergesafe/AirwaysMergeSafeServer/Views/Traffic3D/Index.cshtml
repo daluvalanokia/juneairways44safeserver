@@ -546,14 +546,16 @@ function loadEvents(events) {
         if (vehicleMap.has(vid)) {
             // ── Update existing vehicle group's speed/heading ─────────
             const grp = vehicleMap.get(vid);
-            grp.userData.ev = ev;
+            grp.userData.ev          = ev;
+            // FIX 3: Always refresh _lastSeenMs on update so vehicles from
+            // combined sim+DB refresh don't get pruned by the stale TTL check.
+            grp.userData._lastSeenMs = Date.now();
             const headingDeg = ev.heading ?? (grp.userData.laneZ < 0 ? 90 : 270);
             const headingRad = headingDeg * Math.PI / 180;
             const spd = ((ev.speedMph ?? 55) * 0.018);
             grp.userData.targetVx    = Math.sin(headingRad) * spd;
             grp.userData.targetVz    = -Math.cos(headingRad) * spd;
             grp.userData.speedMph    = ev.speedMph ?? 55;
-            grp.userData._lastSeenMs = Date.now();
             // Rotate the first child (body mesh) to face travel direction
             const bodyMesh = grp.children[0];
             if (bodyMesh) bodyMesh.rotation.y = headingRad;
@@ -1099,10 +1101,12 @@ function animate() {
     if (topBtn) { topBtn.classList.add('active','btn-primary'); topBtn.classList.remove('btn-outline-primary'); }
 })();
 
-// Bug Fix 3: Gate 30-second auto-refresh when animation is paused
-// 30s background refresh — always runs regardless of sim/pause state
-// (fast poll above takes over during active sim sessions)
-setInterval(function() { refreshScene(); }, 30000);
+// FIX 5: 30s slow poll — gated to run only when sim is NOT active and feed is NOT held.
+// When sim is running, the 3s fast poll (started by onSimStateChange) handles refreshes.
+// Running both concurrently causes double-fetches and mesh flicker.
+setInterval(function() {
+    if (!simRunning && !feedHeld) refreshScene();
+}, 30000);
 
 // ── Live simulation feed ───────────────────────────────────────────────
 function _simNorm(evObj, cl) {
@@ -1117,8 +1121,11 @@ function _simNorm(evObj, cl) {
         ev.altitudeMeters = evObj.altitude_m  ?? 0;
         ev.speedMph       = evObj.speed_mph   ?? 0;
     }
-    ev.latitude  = evObj.latitude  ?? evObj.lat  ?? 32.7767;
-    ev.longitude = evObj.longitude ?? evObj.lon  ?? -96.7970;
+    // FIX 4: Exhaustive field alias normalisation — sim payloads use varying field names.
+    // Priority: explicit latitude/longitude > lat/lon > lat_deg/lon_deg > default.
+    ev.latitude  = evObj.latitude  ?? evObj.lat      ?? evObj.lat_deg  ?? evObj.Latitude  ?? 32.7767;
+    ev.longitude = evObj.longitude ?? evObj.lon      ?? evObj.lon_deg  ?? evObj.Longitude ?? -96.7970;
+    ev.speedMph  = evObj.speedMph  ?? evObj.speed_mph ?? evObj.SpeedMph ?? evObj.speed ?? ev.speedMph ?? 0;
     // Use vehicle_id from payload (set by SimulationPost as "SIM-{guid8}").
     // If missing, build a DETERMINISTIC id from speed+lat+lon so the same
     // physical vehicle maps to the same mesh across consecutive sim events.
@@ -1143,15 +1150,18 @@ function _simInject(evObj, cl) {
     var vc = classifyLocal(ev);
     if (vc.domain !== 'ground') return;
 
-    // Zone filter: if a zone is selected, only accept events for that zone.
-    // ev.zoneId is set from evObj.zone_id (SimulationPost payload field).
-    if (selectedZoneId && ev.zoneId && ev.zoneId !== selectedZoneId) return;
+    // FIX 1: Zone/server filter for sim injections.
+    // Only filter when ev.zoneId is actually set by the sim payload (non-empty).
+    // If the sim doesn't send a zone_id, pass through — _t3dApplySimContext() already
+    // aligned the dropdowns to the sim's zone before events started flowing.
+    if (selectedZoneId && ev.zoneId) {
+        if (ev.zoneId !== selectedZoneId) return;
+    }
 
-    // Server filter: if a server is selected, resolve its zone from T3D_SERVERS
-    // and only accept events whose zoneId matches.
-    if (selectedServerId) {
+    // Server filter: only apply when both server and event zone are known
+    if (selectedServerId && ev.zoneId) {
         var _srv = T3D_SERVERS.find(function(s){ return s.serverId === selectedServerId; });
-        if (_srv && _srv.zoneId && ev.zoneId && ev.zoneId !== _srv.zoneId) return;
+        if (_srv && _srv.zoneId && ev.zoneId !== _srv.zoneId) return;
     }
 
     _updateSimPanel(ev, '⏳ saving…');
@@ -1201,21 +1211,21 @@ function _simInject(evObj, cl) {
     }).then(function(r) {
         return r.json().then(function(j) {
             if (r.ok) {
-                // Show DB integer id alongside the vehicle id
                 _updateSimPanel(ev, '✓ db#' + j.id + ' · vid ' + (ev.vehicleId || '?'));
-                // Update vehicleId display element with the stable SIM id
                 var sfVid = document.getElementById('sfVehicleId');
                 if (sfVid && ev.vehicleId) sfVid.textContent = ev.vehicleId + ' [db#' + j.id + ']';
+                // FIX 2: Trigger a scene refresh AFTER the DB write completes (not before).
+                // 500ms delay lets SQLite flush the row so /api/events/live returns it.
+                // This replaces relying solely on the 3s fast poll timer which could fire
+                // before the write committed (race condition → mesh spawned then removed).
+                if (!feedHeld) setTimeout(function() { refreshScene(); }, 500);
+            } else {
+                _updateSimPanel(ev, '✗ ' + (j.error || r.status));
             }
-            else       _updateSimPanel(ev, '✗ ' + (j.error || r.status));
         });
     }).catch(function(err) {
         _updateSimPanel(ev, '✗ ' + (err.message || 'network error'));
     });
-    // NOTE: refreshScene() is intentionally NOT called here on every sim event.
-    // The 3s fast poll (started by onSimStateChange) handles DB→scene sync.
-    // Calling refreshScene() immediately after inject was removing freshly-spawned
-    // meshes before the DB write completed (race condition).
 
     var lbl = document.getElementById('simLiveLabel');
     if (lbl) { lbl.style.opacity = '1'; setTimeout(function(){ lbl.style.opacity = '0'; }, 2500); }
