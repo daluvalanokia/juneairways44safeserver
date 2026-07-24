@@ -650,6 +650,37 @@ function showClassResult(cl, srcType) {
     badge.style.background = col;
     badge.style.color      = '#fff';
 }
+
+// ── Lifecycle cleanup: stop sim + clear state when the tab/window closes ──
+// Without this, airways_sim_active stays 'true' in localStorage and the sim
+// auto-restarts on next page load even though the browser tab was closed.
+window.addEventListener('beforeunload', function() {
+    if (simTimer || simDelayTmr) {
+        if (simTimer)    { clearInterval(simTimer);    simTimer = null; }
+        if (simDelayTmr) { clearTimeout(simDelayTmr);  simDelayTmr = null; }
+        try {
+            localStorage.setItem('airways_sim_active', 'false');
+            if (airwaysBroadcast) airwaysBroadcast.postMessage({ type: 'sim_stopped' });
+        } catch(e) {}
+    }
+});
+
+// On page load: if the sim state is > 5 minutes stale, treat it as abandoned
+(function _checkAbandonedSim() {
+    try {
+        var raw = localStorage.getItem(_SIM_SK);
+        if (!raw) return;
+        var st = JSON.parse(raw);
+        if (st.running && st.at) {
+            var ageMin = (Date.now() - st.at) / 60000;
+            if (ageMin > 5) {
+                localStorage.setItem('airways_sim_active', 'false');
+                st.running = false;
+                localStorage.setItem(_SIM_SK, JSON.stringify(st));
+            }
+        }
+    } catch(e) {}
+})();
 </script>
 }
 else
