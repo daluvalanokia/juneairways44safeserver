@@ -697,6 +697,11 @@ function clearScene() {
 }
 
 function loadEvents(evs) {
+    // ── Guard: no DB/live data enters the scene while simulation is active ──
+    // Catches async doRefresh() fetches that were in-flight when
+    // onSimStateChange(true) cleared the scene and set feedHeld.
+    if (simRunning) return;
+
     clearScene();
     const lats = evs.filter(e => e.latitude).map(e => e.latitude);
     const lons = evs.filter(e => e.longitude).map(e => e.longitude);
@@ -742,6 +747,8 @@ async function doRefresh() {
         const sq  = selectedServerId ? `&serverId=${encodeURIComponent(selectedServerId)}` : '';
         const r   = await fetch(`/api/events/live?highwayId=${HW}&take=140&mode=air${zq}${sq}`);
         if (!r.ok) return;
+        // Double-check: sim may have started while we were fetching
+        if (feedHeld || simRunning) return;
         loadEvents(await r.json());
     } catch(e) { console.warn('AirScene refresh error:', e); }
 }
