@@ -490,31 +490,73 @@ function _getAirState(ev, vid) {
 const raycaster = new THREE.Raycaster(), mouse2 = new THREE.Vector2();
 let selectedAirVehicle = null;
 
-// ── Canvas-texture label sprite for vehicle ID ───────────────────────
-// Same pattern as Traffic3D: a Sprite with a canvas texture showing the vehicle ID.
+// ── Brand badge lookup — mirrors VehicleRegistry brand colors + initials ──
+var BRAND_BADGES = {
+    'Toyota':         { initials: 'T',   color: '#EB0A1E' },
+    'Honda':          { initials: 'H',   color: '#CC0000' },
+    'Ford':           { initials: 'F',   color: '#003478' },
+    'Chevrolet':      { initials: 'C',   color: '#D9A40E' },
+    'BMW':            { initials: 'BMW', color: '#16588e' },
+    'Mercedes':       { initials: 'M',   color: '#00A19A' },
+    'Jeep':           { initials: 'J',   color: '#4A7C59' },
+    'Tesla':          { initials: 'T',   color: '#e82127' },
+    'Ram':            { initials: 'R',   color: '#A7A9AC' },
+    'Harley-Davidson':{ initials: 'HD',  color: '#FF6600' },
+    'Joby':           { initials: 'J',   color: '#00bcd4' },
+    'Archer':         { initials: 'A',   color: '#1e90ff' },
+    'Wisk':           { initials: 'W',   color: '#22c55e' }
+};
+
+// ── Canvas-texture label sprite for vehicle ID + brand badge ──────────
 // Rendered in all three panels (perspective, side, top) so the ID is always visible.
-function _makeAirLabel(vid, category) {
+function _makeAirLabel(vid, category, make) {
     const canvas  = document.createElement('canvas');
-    canvas.width  = 160; canvas.height = 40;
+    canvas.width  = 200; canvas.height = 42;
     const ctx     = canvas.getContext('2d');
-    // Background pill — blue for air vehicles, matches AirScene palette
     const catColors = {
         air_urban:'#0e7490', air_express:'#c2410c', air_vertiport:'#a21caf',
         airflycar:'#0e7490', sedan:'#1d4ed8', suv:'#15803d', truck:'#b45309',
         motorcycle:'#7e22ce', van:'#334155'
     };
+    var badge = make ? BRAND_BADGES[make] : null;
+
+    // Background pill (category color)
     ctx.fillStyle   = catColors[category] || '#1e3a5f';
-    ctx.beginPath(); ctx.roundRect(3, 3, 154, 34, 8); ctx.fill();
-    // Vehicle id text
-    ctx.fillStyle   = '#ffffff';
-    ctx.font        = 'bold 14px monospace';
-    ctx.textAlign   = 'center';
-    ctx.textBaseline= 'middle';
-    ctx.fillText((vid || '?').slice(0, 16), 80, 20);
+    ctx.beginPath(); ctx.roundRect(3, 3, 194, 36, 9); ctx.fill();
+
+    if (badge) {
+        // ── Brand badge circle on the left ──
+        var bx = 20, by = 21, br = 15;
+        ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2);
+        ctx.fillStyle   = badge.color;
+        ctx.fill();
+        ctx.strokeStyle  = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth    = 1.5; ctx.stroke();
+        // Brand initials inside circle
+        ctx.fillStyle   = '#ffffff';
+        ctx.font        = badge.initials.length > 2
+                        ? 'bold 10px Arial'
+                        : 'bold 13px Arial';
+        ctx.textAlign   = 'center';
+        ctx.textBaseline= 'middle';
+        ctx.fillText(badge.initials, bx, by + 1);
+        // Vehicle ID text (right of badge)
+        ctx.fillStyle   = '#ffffff';
+        ctx.font        = 'bold 13px monospace';
+        ctx.textAlign   = 'left';
+        ctx.fillText((vid || '?').slice(0, 16), 42, 21);
+    } else {
+        // No make available — fall back to ID-only (backward compatible)
+        ctx.fillStyle   = '#ffffff';
+        ctx.font        = 'bold 14px monospace';
+        ctx.textAlign   = 'center';
+        ctx.textBaseline= 'middle';
+        ctx.fillText((vid || '?').slice(0, 16), 100, 21);
+    }
     const tex  = new THREE.CanvasTexture(canvas);
     const mat  = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
     const spr  = new THREE.Sprite(mat);
-    spr.scale.set(7, 1.75, 1);
+    spr.scale.set(8, 1.68, 1);
     return spr;
 }
 
@@ -561,15 +603,15 @@ function buildVehicle(ev) {
     meshT.layers.set(3);
 
     // ── Vehicle ID label sprites (one per panel view) ──────────────────
-    const labelP = _makeAirLabel(vid, vc.category);
+    const labelP = _makeAirLabel(vid, vc.category, ev.vehicleMake);
     labelP.position.set(px, altY + 4, pz);   // float above the vehicle in perspective
     labelP.layers.set(1);
 
-    const labelS = _makeAirLabel(vid, vc.category);
+    const labelS = _makeAirLabel(vid, vc.category, ev.vehicleMake);
     labelS.position.set(px, altY + 4, pz);   // float above in side view
     labelS.layers.set(2);
 
-    const labelT = _makeAirLabel(vid, vc.category);
+    const labelT = _makeAirLabel(vid, vc.category, ev.vehicleMake);
     labelT.position.set(px, topY + 4, pz);   // float above in top view
     labelT.layers.set(3);
 
@@ -1368,6 +1410,8 @@ function _airNorm(evObj, cl) {
     ev.vehicleId = evObj.vehicle_id || ('SIM-' + Math.random().toString(36).slice(2,6).toUpperCase());
     ev.eventType = evObj.event_type || 'detection';
     ev.zoneId    = evObj.zone_id    || '';
+    // Extract vehicle_make for brand badge display
+    ev.vehicleMake = evObj.vehicle_make || evObj.vehicleMake || null;
     // EMA-update midLat/midLon so sim-spawned vehicles match DB-poll positions
     if (ev.latitude && ev.longitude) {
         midLat = midLat * 0.85 + ev.latitude  * 0.15;
