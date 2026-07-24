@@ -25,7 +25,7 @@
         <table class="table table-dark table-hover table-sm mb-0" id="vehicleTable">
             <thead style="position:sticky;top:0;z-index:1;background:#0f1624;border-bottom:1px solid rgba(255,255,255,0.08)">
                 <tr>
-                    <th class="ps-3 text-center" style="width:3.5rem">Icon</th>
+                    <th class="ps-3 text-center" style="width:5rem">Logo</th>
                     <th>Make</th>
                     <th>Model</th>
                     <th style="width:8rem">Type</th>
@@ -52,7 +52,14 @@
                         _        => "#94a3b8"
                     };
                     <tr class="vehicle-row" data-type="@v.Type">
-                        <td class="ps-3 text-center align-middle" style="font-size:1.55rem;line-height:1">@v.Icon</td>
+                        <td class="ps-3 text-center align-middle">
+                            <div class="d-flex flex-column align-items-center gap-1">
+                                <img src="@v.BrandLogo" alt="@v.Make" width="36" height="36"
+                                     style="border-radius:50%;flex-shrink:0"
+                                     title="@v.Make @v.Model" />
+                                <span style="font-size:1.1rem;line-height:1">@v.Icon</span>
+                            </div>
+                        </td>
                         <td class="fw-semibold align-middle">@v.Make</td>
                         <td class="align-middle">@v.Model</td>
                         <td class="align-middle">
