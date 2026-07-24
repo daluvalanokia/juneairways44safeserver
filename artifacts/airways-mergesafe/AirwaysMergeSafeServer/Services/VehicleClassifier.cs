@@ -93,6 +93,11 @@ public class VehicleClassifier
                 if (root.TryGetProperty("vehicle_type", out var vtEl))
                 { vehicleType = vtEl.GetString()?.ToLowerInvariant(); hasVehicleType = !string.IsNullOrEmpty(vehicleType); }
 
+                // Read vehicle_make for brand badge display in 3D scene
+                string? vehicleMake = null;
+                if (root.TryGetProperty("vehicle_make", out var vmEl))
+                    vehicleMake = vmEl.GetString();
+
                 if (root.TryGetProperty("flight_phase", out var fpEl))
                 { flightPhase = fpEl.GetString()?.ToLowerInvariant(); hasFlightPhase = !string.IsNullOrEmpty(flightPhase); }
 
@@ -206,7 +211,8 @@ public class VehicleClassifier
             CorridorId:       corridorId,
             CorridorDeviationM: corridorDevM,
             ConflictFlag:     conflictFlag,
-            WingspanU:        domain == "air" ? spec.W : null
+            WingspanU:        domain == "air" ? spec.W : null,
+            Make:             vehicleMake
         );
         TraceLogger.Exit("VehicleClassifier", nameof(Classify),
             $"domain={_vc.Domain}, category={_vc.Category}, confidence={_vc.Confidence}");
@@ -248,7 +254,8 @@ public sealed record VehicleClass(
     string? CorridorId        = null,
     double? CorridorDeviationM = null,
     bool    ConflictFlag      = false,
-    float?  WingspanU         = null
+    float?  WingspanU         = null,
+    string? Make             = null
 );
 
 internal sealed record VehicleRenderSpec(
