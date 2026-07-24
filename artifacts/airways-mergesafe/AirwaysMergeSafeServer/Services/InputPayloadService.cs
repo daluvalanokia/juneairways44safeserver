@@ -37,6 +37,18 @@ public class InputPayloadService
     private static readonly string[] DestPads         = { "PAD-DFW-01", "PAD-DFW-02", "PAD-AUS-01", "PAD-HOU-03", "PAD-SAT-01" };
     private static readonly string[] RotorHealthStates= { "nominal", "nominal", "nominal", "degraded", "warning" };
 
+    private static readonly Dictionary<string, string[]> MakesByType = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "sedan",       new[] { "Toyota", "Honda", "Ford", "Chevrolet", "BMW", "Mercedes" } },
+        { "suv",         new[] { "Ford", "Chevrolet", "Toyota", "Honda", "Jeep", "Tesla" } },
+        { "truck",       new[] { "Ford", "Chevrolet", "Ram" } },
+        { "motorcycle",  new[] { "Harley-Davidson", "Honda" } },
+        { "van",         new[] { "Ford", "Mercedes" } },
+        { "air_urban",   new[] { "Joby", "Wisk" } },
+        { "air_express", new[] { "Archer", "Joby" } },
+        { "air_vertiport", new[] { "Wisk" } },
+    };
+
     public string Generate(
         string               sourceType,
         IEnumerable<string>  enabledFields,
@@ -63,6 +75,10 @@ public class InputPayloadService
             ? AirTypes[rng.Next(AirTypes.Length)]
             : GroundTypes[rng.Next(GroundTypes.Length)];
 
+        string vehicleMake = MakesByType.TryGetValue(vehicleType, out var makes) && makes.Length > 0
+            ? makes[rng.Next(makes.Length)]
+            : "Unknown";
+
         double altitudeM = isAirVehicle
             ? (vehicleType == "air_urban" ? rng.Next(30, 150) : rng.Next(151, 801))
             : Math.Round(rng.NextDouble() * 5, 1);
@@ -79,6 +95,7 @@ public class InputPayloadService
                 "altitude_m"      => altitudeM,
                 "altitude_ft"     => Math.Round(altitudeM * 3.28084, 1),
                 "vehicle_type"    => vehicleType,
+                "vehicle_make"    => vehicleMake,
                 "direction"       => rng.Next(0, 360),
                 "lane"            => isAirVehicle ? rng.Next(10, 20) : rng.Next(1, 5),
                 "event_type"      => new[] { "detection","merge","speeding","conflict","fault" }[rng.Next(5)],
@@ -133,6 +150,10 @@ public class InputPayloadService
             altM        = isExpress ? rng.Next(151, 801) : rng.Next(30, 150);
             vehicleType = isExpress ? "air_express" : "air_urban";
         }
+
+        string vehicleMake = MakesByType.TryGetValue(vehicleType, out var makes) && makes.Length > 0
+            ? makes[rng.Next(makes.Length)]
+            : "Unknown";
 
         // Correlated kinematics
         double speedMph = isGrounded ? 0 : flightPhase switch
@@ -196,6 +217,7 @@ public class InputPayloadService
                 "speed_mph"            => Math.Round(speedMph, 1),
                 "heading"              => rng.Next(0, 360),
                 "vehicle_type"         => vehicleType,
+                "vehicle_make"         => vehicleMake,
                 "flight_phase"         => flightPhase,
                 "vertical_rate_fpm"    => vertRateFpm,
                 "battery_soc"          => battSoc,
