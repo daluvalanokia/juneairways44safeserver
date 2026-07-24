@@ -9,8 +9,8 @@
     ("airflycar", "AirFlyCar",        "text-warning"),
     };
     var allConfigs   = Model.PhysicalConfigs.Concat(Model.SatelliteConfigs).Concat(Model.TelecomConfigs).Concat(Model.TrackerConfigs).Concat(Model.AirFlyCarConfigs).ToList();
-    var commonFields     = new[]{"vehicle_id","timestamp","speed_mph","latitude","longitude","altitude_m","altitude_ft","direction","heading","lane","vehicle_type","event_type","zone_id","highway_id","signal_strength","satellite_count","hdop","rsrp","rsrq","tag_id","read_count","isAirFlyCar"};
-    var airflycarFields  = new[]{"flight_phase","vertical_rate_fpm","battery_soc","battery_temp_c","range_remaining_km","rotor_rpm","rotor_health","motor_temp_c","noise_db","corridor_id","corridor_deviation_m","conflict_flag","separation_m","passenger_count","destination_pad","pilot_id","icao_address","squawk","nic","nac_p"};
+    var commonFields     = new[]{"vehicle_id","timestamp","speed_mph","latitude","longitude","altitude_m","altitude_ft","direction","heading","lane","vehicle_type","vehicle_make","event_type","zone_id","highway_id","signal_strength","satellite_count","hdop","rsrp","rsrq","tag_id","read_count","isAirFlyCar"};
+    var airflycarFields  = new[]{"vehicle_make","flight_phase","vertical_rate_fpm","battery_soc","battery_temp_c","range_remaining_km","rotor_rpm","rotor_health","motor_temp_c","noise_db","corridor_id","corridor_deviation_m","conflict_flag","separation_m","passenger_count","destination_pad","pilot_id","icao_address","squawk","nic","nac_p"};
     var shown = Model.ActiveTab switch {
         "satellite"  => Model.SatelliteConfigs,
         "telecom"    => Model.TelecomConfigs,
@@ -645,6 +645,9 @@ function showClassResult(cl, srcType) {
     var extEl = document.getElementById('crExtra');
     if (extEl) extEl.innerHTML = extraHtml;
     document.getElementById('crSrc').textContent       = srcType || '—';
+    // Display vehicle make if available from classification
+    var makeEl = document.getElementById('crMake');
+    if (makeEl) makeEl.textContent = cl.make || '—';
     var badge              = document.getElementById('crColorBadge');
     badge.textContent      = cat;
     badge.style.background = col;
