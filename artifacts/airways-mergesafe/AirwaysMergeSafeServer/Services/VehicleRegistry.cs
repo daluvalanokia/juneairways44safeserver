@@ -2,23 +2,23 @@ using AirwaysMergeSafeServer.Models;
 
 namespace AirwaysMergeSafeServer.Services;
 
+/// <summary>
+/// VehicleSpec now carries a BrandLogo (inline SVG data URI) so each make
+/// is visually distinguishable in the registry table and 3D scene labels.
+/// </summary>
 public sealed record VehicleSpec(
     string   Type,
     string   Make,
     string   Model,
     string   Size,
     string   Icon,
+    string   BrandLogo,
     string[] Colors,
     float    LengthM,
     float    WidthM,
     float    HeightM
 );
 
-/// <summary>
-/// D5 FIX: VehicleRegistry now implements IVehicleRegistry so it can be
-///         registered as a singleton in DI and injected into VehiclesController,
-///         decoupling the controller from static state and enabling testing.
-/// </summary>
 public interface IVehicleRegistry
 {
     IReadOnlyList<VehicleSpec> All { get; }
@@ -26,58 +26,73 @@ public interface IVehicleRegistry
 
 public class VehicleRegistry : IVehicleRegistry
 {
-    // ── Singleton data — all known vehicle specs ───────────────────────────
     public IReadOnlyList<VehicleSpec> All { get; } = new[]
     {
-        // ── Sedans ──────────────────────────────────────────────────────────
         new VehicleSpec("sedan","Toyota","Camry","medium","🚗",
-            new[]{"#c0392b","#2c3e50","#bdc3c7","#e8d5b7","#16a085"},4.2f,1.80f,0.85f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNFQjBBMUUiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0VCMEExRSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNjYzAwMDAiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5UPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#c0392b", "#2c3e50", "#bdc3c7", "#e8d5b7", "#16a085"},4.2f,1.80f,0.85f),
         new VehicleSpec("sedan","Honda","Civic","small","🚗",
-            new[]{"#3498db","#e74c3c","#2ecc71","#ecf0f1","#9b59b6"},3.9f,1.70f,0.78f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNDQzAwMDAiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0NDMDAwMCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNhMDAwMDAiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5IPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#3498db", "#e74c3c", "#2ecc71", "#ecf0f1", "#9b59b6"},3.9f,1.70f,0.78f),
         new VehicleSpec("sedan","Ford","Fusion","medium","🚗",
-            new[]{"#2980b9","#7f8c8d","#c0392b","#f39c12","#1a1a2e"},4.3f,1.85f,0.87f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMwMDM0NzgiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzAwMzQ3OCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMwMDIyNTUiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5GPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#2980b9", "#7f8c8d", "#c0392b", "#f39c12", "#1a1a2e"},4.3f,1.85f,0.87f),
         new VehicleSpec("sedan","Chevrolet","Malibu","medium","🚗",
-            new[]{"#d35400","#8e44ad","#16a085","#bdc3c7","#2c2c54"},4.2f,1.82f,0.86f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNEOUE0MEUiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0Q5QTQwRSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNiODg2MGIiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFhMWEyZSIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjMWExYTJlIj5DPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#d35400", "#8e44ad", "#16a085", "#bdc3c7", "#2c2c54"},4.2f,1.82f,0.86f),
         new VehicleSpec("sedan","BMW","3 Series","medium","🚗",
-            new[]{"#2c2c2c","#f5f5f5","#a0522d","#4169e1","#708090"},4.1f,1.80f,0.82f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMxNjU4OGUiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzE2NTg4ZSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMwYTJhNGEiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjI5LjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjE2IiBmaWxsPSIjZmZmZmZmIj5CTVc8L3RleHQ+PC9zdmc+",
+            new[]{"#2c2c2c", "#f5f5f5", "#a0522d", "#4169e1", "#708090"},4.1f,1.80f,0.82f),
         new VehicleSpec("sedan","Mercedes","C-Class","medium","🚗",
-            new[]{"#1a1a2e","#c0c0c0","#000080","#8b0000","#f5f5f5"},4.2f,1.82f,0.83f),
-        // ── SUVs ────────────────────────────────────────────────────────────
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMwMEExOUEiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzAwQTE5QSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMwMDdhNzMiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFhMWEyZSIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjMWExYTJlIj5NPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#1a1a2e", "#c0c0c0", "#000080", "#8b0000", "#f5f5f5"},4.2f,1.82f,0.83f),
         new VehicleSpec("suv","Ford","Explorer","large","🚙",
-            new[]{"#1a1a2e","#4682b4","#8b4513","#696969","#006400"},4.9f,2.00f,1.25f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMwMDM0NzgiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzAwMzQ3OCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMwMDIyNTUiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5GPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#1a1a2e", "#4682b4", "#8b4513", "#696969", "#006400"},4.9f,2.00f,1.25f),
         new VehicleSpec("suv","Chevrolet","Tahoe","large","🚙",
-            new[]{"#1c1c1c","#f5f5dc","#556b2f","#8b0000","#4169e1"},5.1f,2.05f,1.35f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNEOUE0MEUiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0Q5QTQwRSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNiODg2MGIiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFhMWEyZSIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjMWExYTJlIj5DPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#1c1c1c", "#f5f5dc", "#556b2f", "#8b0000", "#4169e1"},5.1f,2.05f,1.35f),
         new VehicleSpec("suv","Toyota","RAV4","medium","🚙",
-            new[]{"#cc0000","#1a1a2e","#808080","#f0f0f0","#2e8b57"},4.4f,1.86f,1.22f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNFQjBBMUUiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0VCMEExRSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNjYzAwMDAiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5UPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#cc0000", "#1a1a2e", "#808080", "#f0f0f0", "#2e8b57"},4.4f,1.86f,1.22f),
         new VehicleSpec("suv","Honda","CR-V","medium","🚙",
-            new[]{"#b22222","#708090","#2f4f4f","#ffd700","#4682b4"},4.3f,1.84f,1.20f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNDQzAwMDAiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0NDMDAwMCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNhMDAwMDAiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5IPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#b22222", "#708090", "#2f4f4f", "#ffd700", "#4682b4"},4.3f,1.84f,1.20f),
         new VehicleSpec("suv","Jeep","Wrangler","medium","🚙",
-            new[]{"#ff4500","#2f4f4f","#f5f5f5","#ffd700","#1a1a2e"},4.0f,1.88f,1.40f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiM0QTdDNTkiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzRBN0M1OSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMyZDVhM2QiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5KPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#ff4500", "#2f4f4f", "#f5f5f5", "#ffd700", "#1a1a2e"},4.0f,1.88f,1.40f),
         new VehicleSpec("suv","Tesla","Model X","large","🚙",
-            new[]{"#f5f5f5","#cc0000","#1a1a2e","#808080","#000000"},5.0f,2.00f,1.28f),
-        // ── Trucks ──────────────────────────────────────────────────────────
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNlODIxMjciIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI2U4MjEyNyIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNjYzFhMjAiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5UPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#f5f5f5", "#cc0000", "#1a1a2e", "#808080", "#000000"},5.0f,2.00f,1.28f),
         new VehicleSpec("truck","Ford","F-150","large","🛻",
-            new[]{"#1a1a2e","#cc0000","#696969","#f5f5dc","#2e8b57"},5.9f,2.04f,1.90f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMwMDM0NzgiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzAwMzQ3OCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMwMDIyNTUiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5GPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#1a1a2e", "#cc0000", "#696969", "#f5f5dc", "#2e8b57"},5.9f,2.04f,1.90f),
         new VehicleSpec("truck","Chevrolet","Silverado","large","🛻",
-            new[]{"#c0392b","#1a1a2e","#808080","#f5f5dc","#4682b4"},5.9f,2.03f,1.88f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNEOUE0MEUiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0Q5QTQwRSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNiODg2MGIiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFhMWEyZSIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjMWExYTJlIj5DPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#c0392b", "#1a1a2e", "#808080", "#f5f5dc", "#4682b4"},5.9f,2.03f,1.88f),
         new VehicleSpec("truck","Ram","1500","large","🛻",
-            new[]{"#1a1a2e","#cc0000","#808080","#556b2f","#4682b4"},5.8f,2.02f,1.87f),
-        // ── Motorcycles ─────────────────────────────────────────────────────
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNBN0E5QUMiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0E3QTlBQyIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiM3NzciIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFhMWEyZSIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjMWExYTJlIj5SPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#1a1a2e", "#cc0000", "#808080", "#556b2f", "#4682b4"},5.8f,2.02f,1.87f),
         new VehicleSpec("motorcycle","Harley-Davidson","Sportster","small","🏍",
-            new[]{"#1a1a2e","#cc0000","#808080","#f5f5dc","#ff8c00"},2.4f,0.90f,1.10f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGRjY2MDAiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0ZGNjYwMCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNjYzUyMDAiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFhMWEyZSIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMxLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjIwIiBmaWxsPSIjMWExYTJlIj5IRDwvdGV4dD48L3N2Zz4=",
+            new[]{"#1a1a2e", "#cc0000", "#808080", "#f5f5dc", "#ff8c00"},2.4f,0.90f,1.10f),
         new VehicleSpec("motorcycle","Honda","CBR600","small","🏍",
-            new[]{"#cc0000","#1a1a2e","#0000cd","#f5f5f5","#ff8c00"},2.1f,0.72f,1.05f),
-        // ── Vans ────────────────────────────────────────────────────────────
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNDQzAwMDAiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0NDMDAwMCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiNhMDAwMDAiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5IPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#cc0000", "#1a1a2e", "#0000cd", "#f5f5f5", "#ff8c00"},2.1f,0.72f,1.05f),
         new VehicleSpec("van","Ford","Transit","large","🚐",
-            new[]{"#f5f5f5","#1a1a2e","#808080","#ffd700","#cc0000"},5.5f,2.47f,2.77f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMwMDM0NzgiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzAwMzQ3OCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMwMDIyNTUiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5GPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#f5f5f5", "#1a1a2e", "#808080", "#ffd700", "#cc0000"},5.5f,2.47f,2.77f),
         new VehicleSpec("van","Mercedes","Sprinter","large","🚐",
-            new[]{"#f5f5f5","#1a1a2e","#808080","#4682b4","#2e8b57"},5.9f,1.99f,2.59f),
-        // ── Air Vehicles (Phase 4) ───────────────────────────────────────────
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMwMEExOUEiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzAwQTE5QSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMwMDdhNzMiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFhMWEyZSIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjMWExYTJlIj5NPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#f5f5f5", "#1a1a2e", "#808080", "#4682b4", "#2e8b57"},5.9f,1.99f,2.59f),
         new VehicleSpec("air","Joby","S4","small","✈",
-            new[]{"#00bcd4","#1a1a2e","#f5f5f5","#3b82f6","#22c55e"},6.4f,10.70f,1.50f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMwMGJjZDQiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzAwYmNkNCIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMwMDgzOGYiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5KPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#00bcd4", "#1a1a2e", "#f5f5f5", "#3b82f6", "#22c55e"},6.4f,10.70f,1.50f),
         new VehicleSpec("air","Archer","Midnight","small","✈",
-            new[]{"#1e90ff","#f5f5f5","#1a1a2e","#22c55e","#f59e0b"},6.0f, 9.14f,1.45f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMxZTkwZmYiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzFlOTBmZiIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMwZDZlZmQiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5BPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#1e90ff", "#f5f5f5", "#1a1a2e", "#22c55e", "#f59e0b"},6.0f,9.14f,1.45f),
         new VehicleSpec("air","Wisk","Cora","small","✈",
-            new[]{"#22c55e","#f5f5f5","#1a1a2e","#00bcd4","#3b82f6"},6.1f, 8.50f,1.60f),
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48ZGVmcz48cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIzNSUiIGN5PSIzMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMyMmM1NWUiIHN0b3Atb3BhY2l0eT0iMC45NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzIyYzU1ZSIvPjwvcmFkaWFsR3JhZGllbnQ+PC9kZWZzPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjIyIiBmaWxsPSJ1cmwoI2cpIiBzdHJva2U9IiMxNmEzNGEiIHN0cm9rZS13aWR0aD0iMi41Ii8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjI1Ii8+PHRleHQgeD0iMjQiIHk9IjMzLjgiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iOTAwIiBmb250LXNpemU9IjI4IiBmaWxsPSIjZmZmZmZmIj5XPC90ZXh0Pjwvc3ZnPg==",
+            new[]{"#22c55e", "#f5f5f5", "#1a1a2e", "#00bcd4", "#3b82f6"},6.1f,8.50f,1.60f),
     };
 }
