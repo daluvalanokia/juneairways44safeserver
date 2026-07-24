@@ -1166,8 +1166,10 @@ function onSimStateChange(isRunning) {
     if (_airFastTimer) { clearInterval(_airFastTimer); _airFastTimer = null; }
 
     if (isRunning) {
-        // ── Sim started → auto-HOLD feed ──────────────────────────────────
-        // Stop DB polling, show only sim data. User can Resume manually.
+        // ── Sim started → clear existing vehicles + auto-HOLD feed ──────────
+        // Only sim-injected data should be visible — no pre-existing DB events.
+        clearScene();
+        vehicleObjects.length = 0;
         if (!feedHeld) {
             feedHeld = true;
             var btn = document.getElementById('btnAnimToggle');
@@ -1176,10 +1178,8 @@ function onSimStateChange(isRunning) {
                 btn.className   = 'btn btn-sm btn-warning';
             }
         }
-        // Fast poll at the sim's post interval so DB has a fresh row each time
-        _airFastTimer = setInterval(function() { if (!feedHeld) doRefresh(); }, _airIntervalMs);
-        // Refresh now to load any air events already in DB from the sim
-        doRefresh();
+        // No fast poll timer — sim events arrive via BroadcastChannel instantly.
+        // doRefresh() is gated by feedHeld so no DB fetch happens during sim.
     } else {
         // ── Sim stopped → auto-RESUME feed ─────────────────────────────────
         if (feedHeld) {
@@ -1370,6 +1370,8 @@ function _airNorm(evObj, cl) {
 }
 
 function _airInject(evObj, cl) {
+    // Sim events ALWAYS flow while sim is running — feedHeld blocks DB refresh only.
+    if (!simRunning) return;
     var ev = _airNorm(evObj, cl);
 
     _updateAirSimPanel(ev, '⏳ saving…');
@@ -1475,10 +1477,7 @@ if (typeof BroadcastChannel !== 'undefined') {
             var newMs = e.data.intervalSec * 1000;
             if (newMs !== _airIntervalMs) {
                 _airIntervalMs = newMs;
-                if (_airFastTimer) {
-                    clearInterval(_airFastTimer);
-                    _airFastTimer = setInterval(function() { if (!feedHeld) doRefresh(); }, _airIntervalMs);
-                }
+                // No fast poll timer during sim — sim injects directly via BroadcastChannel.
             }
         }
 
@@ -1504,10 +1503,7 @@ window.addEventListener('storage', function(e) {
             var newMs = msg.intervalSec * 1000;
             if (newMs !== _airIntervalMs) {
                 _airIntervalMs = newMs;
-                if (_airFastTimer) {
-                    clearInterval(_airFastTimer);
-                    _airFastTimer = setInterval(function() { if (!feedHeld) doRefresh(); }, _airIntervalMs);
-                }
+                // No fast poll timer during sim — sim injects directly.
             }
         }
         if (msg.type === 'sim_vehicle' && msg.payload && msg.srcType === 'airflycar')
