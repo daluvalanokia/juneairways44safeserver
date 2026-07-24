@@ -495,8 +495,8 @@ function buildVehicleMesh(ev, vid) {
 
     mesh.rotation.y = headingRad; // face the direction of travel
 
-    // ── Vehicle ID label — canvas texture sprite above the mesh ──────────
-    const _label = _makeVehicleLabel(vid, vc.category || 'sedan');
+    // ── Vehicle ID label — canvas texture sprite with brand badge ──────
+    const _label = _makeVehicleLabel(vid, vc.category || 'sedan', ev.vehicleMake);
     _label.position.set(0, 2.2, 0); // float above the vehicle body
     const _group = new THREE.Group();
     _group.add(mesh);
@@ -509,26 +509,69 @@ function buildVehicleMesh(ev, vid) {
     return _group;
 }
 
-// ── Canvas-texture label sprite for vehicle id ───────────────────────
-function _makeVehicleLabel(vid, category) {
+// ── Brand badge lookup — mirrors VehicleRegistry brand colors + initials ──
+var BRAND_BADGES = {
+    'Toyota':         { initials: 'T',   color: '#EB0A1E' },
+    'Honda':          { initials: 'H',   color: '#CC0000' },
+    'Ford':           { initials: 'F',   color: '#003478' },
+    'Chevrolet':      { initials: 'C',   color: '#D9A40E' },
+    'BMW':            { initials: 'BMW', color: '#16588e' },
+    'Mercedes':       { initials: 'M',   color: '#00A19A' },
+    'Jeep':           { initials: 'J',   color: '#4A7C59' },
+    'Tesla':          { initials: 'T',   color: '#e82127' },
+    'Ram':            { initials: 'R',   color: '#A7A9AC' },
+    'Harley-Davidson':{ initials: 'HD',  color: '#FF6600' },
+    'Joby':           { initials: 'J',   color: '#00bcd4' },
+    'Archer':         { initials: 'A',   color: '#1e90ff' },
+    'Wisk':           { initials: 'W',   color: '#22c55e' }
+};
+
+// ── Canvas-texture label sprite for vehicle id + brand badge ──────────
+function _makeVehicleLabel(vid, category, make) {
     const canvas  = document.createElement('canvas');
-    canvas.width  = 128; canvas.height = 32;
+    canvas.width  = 168; canvas.height = 36;
     const ctx     = canvas.getContext('2d');
-    // Background pill
     const catColors = { sedan:'#1d4ed8', suv:'#15803d', truck:'#b45309',
                         motorcycle:'#7e22ce', van:'#334155' };
+    var badge = make ? BRAND_BADGES[make] : null;
+
+    // Background pill (category color)
     ctx.fillStyle   = catColors[category] || '#1e3a5f';
-    ctx.beginPath(); ctx.roundRect(2,2,124,28,8); ctx.fill();
-    // Vehicle id text
-    ctx.fillStyle   = '#ffffff';
-    ctx.font        = 'bold 13px monospace';
-    ctx.textAlign   = 'center';
-    ctx.textBaseline= 'middle';
-    ctx.fillText((vid || '?').slice(0,12), 64, 16);
+    ctx.beginPath(); ctx.roundRect(2, 2, 164, 32, 8); ctx.fill();
+
+    if (badge) {
+        // ── Brand badge circle on the left ──
+        var bx = 18, by = 18, br = 14;
+        ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2);
+        ctx.fillStyle   = badge.color;
+        ctx.fill();
+        ctx.strokeStyle  = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth    = 1.5; ctx.stroke();
+        // Brand initials inside circle
+        ctx.fillStyle   = '#ffffff';
+        ctx.font        = badge.initials.length > 2
+                        ? 'bold 9px Arial'
+                        : 'bold 12px Arial';
+        ctx.textAlign   = 'center';
+        ctx.textBaseline= 'middle';
+        ctx.fillText(badge.initials, bx, by + 1);
+        // Vehicle ID text (right of badge)
+        ctx.fillStyle   = '#ffffff';
+        ctx.font        = 'bold 12px monospace';
+        ctx.textAlign   = 'left';
+        ctx.fillText((vid || '?').slice(0,14), 38, 18);
+    } else {
+        // No make available — fall back to ID-only (backward compatible)
+        ctx.fillStyle   = '#ffffff';
+        ctx.font        = 'bold 13px monospace';
+        ctx.textAlign   = 'center';
+        ctx.textBaseline= 'middle';
+        ctx.fillText((vid || '?').slice(0,12), 84, 18);
+    }
     const tex  = new THREE.CanvasTexture(canvas);
     const mat  = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
     const spr  = new THREE.Sprite(mat);
-    spr.scale.set(5, 1.25, 1);
+    spr.scale.set(6.5, 1.4, 1);
     return spr;
 }
 
@@ -1189,6 +1232,9 @@ function _simNorm(evObj, cl) {
     // FIX C: Map 'direction' field (SimulationPost payload key) to 'heading'
     // The controller sends "direction" not "heading" — ev.heading was always undefined,
     // causing all sim vehicles to use the laneZ-based default (90 or 270 deg).
+    // Extract vehicle_make for brand badge display
+    ev.vehicleMake = evObj.vehicle_make || evObj.vehicleMake || null;
+
     ev.heading = evObj.heading ?? evObj.direction ?? evObj.headingDeg ?? evObj.directionDeg ?? null;
 
     // FIX B+D: Update midLat/midLon from this event's coordinates immediately.
