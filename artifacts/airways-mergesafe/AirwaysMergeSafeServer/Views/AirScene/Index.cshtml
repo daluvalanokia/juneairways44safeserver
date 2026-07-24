@@ -82,7 +82,7 @@
         </select>
         <a href="/Traffic3D" class="btn btn-sm btn-outline-secondary">⬡ Traffic3D</a>
         <!-- Bug Fix 1: Pause/Resume button (ported from MergeSafeServer original) -->
-        <button id="btnAnimToggle" class="btn btn-sm btn-outline-warning" onclick="toggleAnimation()">⏸ Pause</button>
+        <button id="btnAnimToggle" class="btn btn-sm btn-outline-warning" onclick="toggleFeed()">⏸ Hold Feed</button>
         <button class="btn btn-sm btn-outline-success" onclick="doRefresh()">⟳ Live</button>
     </div>
 </div>
@@ -681,6 +681,7 @@ function loadEvents(evs) {
 }
 
 async function doRefresh() {
+    if (feedHeld) return;  // feed on hold — skip DB poll
     try {
         const zq  = selectedZoneId   ? `&zoneId=${encodeURIComponent(selectedZoneId)}`   : '';
         const sq  = selectedServerId ? `&serverId=${encodeURIComponent(selectedServerId)}` : '';
@@ -1021,17 +1022,34 @@ function renderAltAxis() {
 // onSimStateChange handles both sim-started and sim-stopped lifecycle events.
 // Initial state is synced from localStorage on page load.
 let tick = 0;
+// feedHeld = user explicitly paused the data feed (DB polling stopped)
+// When sim starts, feed auto-holds to show only sim data.
+// Vehicles already on screen keep their orbit animation — only NEW data intake is suspended.
 let animationPaused = false;
+var feedHeld = false;
 
-// State machine:
-//   animationPaused=false → live mode   (button "⏸ Pause",   30s polling ON,  sim injections blocked)
-//   animationPaused=true  → sim-only mode (button "▶ Resume", 30s polling OFF, sim injections allowed)
-function toggleAnimation() {
-    animationPaused = !animationPaused;
+function toggleFeed() {
+    feedHeld = !feedHeld;
     var btn = document.getElementById('btnAnimToggle');
-    if (btn) btn.textContent = animationPaused ? '▶ Resume' : '⏸ Pause';
-    if (!animationPaused) doRefresh(); // returning to live mode → load fresh live data
+    if (btn) {
+        btn.textContent = feedHeld ? '▶ Resume Feed' : '⏸ Hold Feed';
+        btn.className   = feedHeld ? 'btn btn-sm btn-warning' : 'btn btn-sm btn-outline-warning';
+    }
+    if (!feedHeld) {
+        doRefresh(); // resuming — pull latest data immediately
+        if (simRunning && !_airFastTimer) {
+            _airFastTimer = setInterval(function() { if (!feedHeld) doRefresh(); }, _airIntervalMs);
+        }
+    } else {
+        if (_airFastTimer) { clearInterval(_airFastTimer); _airFastTimer = null; }
+    }
 }
+
+// Keep animationPaused as alias (camera tween check uses it)
+Object.defineProperty(window, 'animationPaused', {
+    get: function() { return feedHeld; },
+    set: function(v) { /* no-op — use toggleFeed() */ }
+});
 
 // ── Air Sim Data Feed Panel JS ─────────────────────────────────────────
 var _airSimPanelOpen = false;
@@ -1051,8 +1069,11 @@ function _updateAirSimPanel(ev, dbStatus) {
     var line = t + '  ·  ' + (ev.vehicleId||'?') + '  ·  '
              + (ev.vehicleCategory || 'air') + '  ·  ' + alt + ' m · ' + spd + ' mph';
     var el = document.getElementById('airSimFeedLine');
-    if (el) { el.style.color = '#bfdbfe'; el.textContent = line;
-              setTimeout(function(){ el.style.color = '#93c5fd'; }, 800); }
+    if (el) {
+        el.style.color   = '#60a5fa';
+        el.textContent   = line;
+        el.style.opacity = '1';
+    }
     function setEl(id, val) { var x = document.getElementById(id); if (x) x.textContent = val || '–'; }
     setEl('asfVehicleId', ev.vehicleId);
     setEl('asfType',      ev.vehicleCategory || 'air');
@@ -1067,29 +1088,55 @@ function _updateAirSimPanel(ev, dbStatus) {
     if (!_airSimPanelOpen) toggleAirSimPanel();
     var badge = document.getElementById('airSimFeedBadge');
     if (badge) badge.style.display = '';
+    if (!window._airSimEventCount) window._airSimEventCount = 0;
+    window._airSimEventCount++;
+    if (badge) badge.textContent = '● LIVE #' + window._airSimEventCount;
 }
 
-var simRunning     = false;   // true while sim is broadcasting; SEPARATE from animationPaused
-var _airFastTimer  = null;    // 3s fast poll timer during sim
+var simRunning      = false;   // true while sim is broadcasting
+var _airFastTimer   = null;    // fast poll timer during sim
+var _airIntervalMs  = 30000;   // synced with DIF post interval on first message
 
 function onSimStateChange(isRunning) {
     simRunning = isRunning;
-    // NOTE: do NOT touch animationPaused here — that belongs to the user's Pause button only.
-    // The old code set animationPaused = isRunning which PAUSED the animation when the sim started.
     var badge = document.getElementById('airSimFeedBadge');
-    if (badge) badge.style.display = isRunning ? '' : 'none';
+    if (badge) {
+        badge.style.display = isRunning ? '' : 'none';
+        if (!isRunning) badge.textContent = '● LIVE';
+    }
 
     // Auto-select sim's zone/server when sim starts
     if (isRunning) _airApplySimContext();
 
-    // Fast 3s poll while sim running (same pattern as Traffic3D)
     if (_airFastTimer) { clearInterval(_airFastTimer); _airFastTimer = null; }
+
     if (isRunning) {
-        _airFastTimer = setInterval(function() { doRefresh(); }, 3000);
-    } else {
+        // ── Sim started → auto-HOLD feed ──────────────────────────────────
+        // Stop DB polling, show only sim data. User can Resume manually.
+        if (!feedHeld) {
+            feedHeld = true;
+            var btn = document.getElementById('btnAnimToggle');
+            if (btn) {
+                btn.textContent = '▶ Resume Feed';
+                btn.className   = 'btn btn-sm btn-warning';
+            }
+        }
+        // Fast poll at the sim's post interval so DB has a fresh row each time
+        _airFastTimer = setInterval(function() { if (!feedHeld) doRefresh(); }, _airIntervalMs);
+        // Refresh now to load any air events already in DB from the sim
         doRefresh();
-        if (typeof _airSimPanelOpen !== 'undefined' && _airSimPanelOpen && typeof toggleAirSimPanel === 'function')
-            toggleAirSimPanel();
+    } else {
+        // ── Sim stopped → auto-RESUME feed ─────────────────────────────────
+        if (feedHeld) {
+            feedHeld = false;
+            var btn2 = document.getElementById('btnAnimToggle');
+            if (btn2) {
+                btn2.textContent = '⏸ Hold Feed';
+                btn2.className   = 'btn btn-sm btn-outline-warning';
+            }
+        }
+        doRefresh();
+        window._airSimEventCount = 0;
         var el = document.getElementById('airSimFeedLine');
         if (el) { el.style.color = '#475569'; el.textContent = 'Sim stopped — viewing live data.'; }
     }
@@ -1225,8 +1272,8 @@ function animate() {
     animate();
 })();
 
-// Fix 3: Gate 30-second auto-refresh when animation is paused
-setInterval(function() { if (!animationPaused) doRefresh(); }, 30000);
+// 30s slow poll — gated: skip when sim running or feed held
+setInterval(function() { if (!simRunning && !feedHeld) doRefresh(); }, 30000);
 window.addEventListener('resize', renderAltAxis);
 // Restore sim feed state from localStorage on page load (handles DataInputFormats navigation)
 (function() { if (localStorage.getItem('airways_sim_active') === 'true') onSimStateChange(true); })();
@@ -1244,11 +1291,18 @@ function _airNorm(evObj, cl) {
         ev.altitudeMeters = evObj.altitude_m  ?? 0;
         ev.speedMph       = evObj.speed_mph   ?? 0;
     }
-    ev.latitude  = evObj.latitude  ?? evObj.lat  ?? 32.7767;
-    ev.longitude = evObj.longitude ?? evObj.lon  ?? -96.7970;
+    // FIX: exhaustive field alias normalisation (same fix as Traffic3D)
+    ev.latitude  = evObj.latitude  ?? evObj.lat      ?? evObj.lat_deg  ?? evObj.Latitude  ?? 32.7767;
+    ev.longitude = evObj.longitude ?? evObj.lon      ?? evObj.lon_deg  ?? evObj.Longitude ?? -96.7970;
+    ev.speedMph  = evObj.speedMph  ?? evObj.speed_mph ?? evObj.SpeedMph ?? evObj.speed ?? ev.speedMph ?? 0;
     ev.vehicleId = evObj.vehicle_id || ('SIM-' + Math.random().toString(36).slice(2,6).toUpperCase());
     ev.eventType = evObj.event_type || 'detection';
     ev.zoneId    = evObj.zone_id    || '';
+    // EMA-update midLat/midLon so sim-spawned vehicles match DB-poll positions
+    if (ev.latitude && ev.longitude) {
+        midLat = midLat * 0.85 + ev.latitude  * 0.15;
+        midLon = midLon * 0.85 + ev.longitude * 0.15;
+    }
     return ev;
 }
 
@@ -1292,8 +1346,9 @@ function _airInject(evObj, cl) {
     }).catch(function(err) {
         _updateAirSimPanel(ev, '✗ ' + (err.message || 'network error'));
         _airInjectDirect(ev, cl); // fallback: direct inject for visual continuity
-    }).finally(function() {
-        doRefresh(); // always refresh — event may already be in DB from SimulationPost
+    }).then(function() {
+        // Refresh 500ms after POST resolves — DB has the new row
+        if (!feedHeld) setTimeout(function() { doRefresh(); }, 500);
     });
 
     var lbl = document.getElementById('airSimLiveLabel');
@@ -1348,10 +1403,22 @@ if (typeof BroadcastChannel !== 'undefined') {
     var _airSimBc = new BroadcastChannel('airways_sim');
     _airSimBc.onmessage = function(e) {
         if (!e.data) return;
+
+        // Sync poll interval from DIF
+        if (e.data.intervalSec && e.data.intervalSec > 0) {
+            var newMs = e.data.intervalSec * 1000;
+            if (newMs !== _airIntervalMs) {
+                _airIntervalMs = newMs;
+                if (_airFastTimer) {
+                    clearInterval(_airFastTimer);
+                    _airFastTimer = setInterval(function() { if (!feedHeld) doRefresh(); }, _airIntervalMs);
+                }
+            }
+        }
+
         if (e.data.type === 'sim_vehicle' && e.data.payload && e.data.srcType === 'airflycar')
             _airInject(e.data.payload, e.data.classification);
         if (e.data.type === 'sim_started') {
-            if (!animationPaused) doRefresh();
             onSimStateChange(true);
         }
         if (e.data.type === 'sim_stopped') onSimStateChange(false);
@@ -1362,11 +1429,21 @@ if (typeof BroadcastChannel !== 'undefined') {
 // airways_sim_last_event handles vehicle payloads only (no dead sim_started check).
 window.addEventListener('storage', function(e) {
     if (e.key === 'airways_sim_active') { onSimStateChange(e.newValue === 'true'); return; }
-    // When DIF changes zone/server, reapply to Air Scene dropdowns
     if (e.key === 'airways_sim_context' && simRunning) { _airApplySimContext(); return; }
     if (e.key !== 'airways_sim_last_event' || !e.newValue) return;
     try {
         var msg = JSON.parse(e.newValue);
+        // Sync interval from localStorage fallback
+        if (msg.intervalSec && msg.intervalSec > 0) {
+            var newMs = msg.intervalSec * 1000;
+            if (newMs !== _airIntervalMs) {
+                _airIntervalMs = newMs;
+                if (_airFastTimer) {
+                    clearInterval(_airFastTimer);
+                    _airFastTimer = setInterval(function() { if (!feedHeld) doRefresh(); }, _airIntervalMs);
+                }
+            }
+        }
         if (msg.type === 'sim_vehicle' && msg.payload && msg.srcType === 'airflycar')
             _airInject(msg.payload, msg.classification);
     } catch(ex) {}
