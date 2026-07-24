@@ -889,16 +889,11 @@ function toggleFeed() {
             ? 'btn btn-sm btn-warning'
             : 'btn btn-sm btn-outline-warning';
     }
-    // When resuming: immediately pull latest data
+    // When resuming: immediately pull latest live data
     if (!feedHeld) {
         refreshScene();
-        // Restart fast poll if sim is still running
-        if (simRunning && !_fastPollTimer) {
-            _fastPollTimer = setInterval(function() { if (!feedHeld) refreshScene(); }, _simIntervalMs);
-        }
-    } else {
-        // Holding: clear fast poll (30s slow poll is also gated below)
-        if (_fastPollTimer) { clearInterval(_fastPollTimer); _fastPollTimer = null; }
+        // During sim, sim events flow via BroadcastChannel — no fast poll needed.
+        // refreshScene() is gated by feedHeld so it returns immediately while held.
     }
 }
 
@@ -962,27 +957,41 @@ var _simIntervalMs  = 30000;   // synced with DIF post interval on first message
 
 function onSimStateChange(isRunning) {
     simRunning = isRunning;
-    // Do NOT touch animationPaused — that belongs to the user's Pause button only.
     var btn = document.getElementById('simFeedBadge');
     if (btn) btn.style.display = isRunning ? '' : 'none';
 
     // When sim starts, auto-apply the sim's highway/zone/server to the 3D dropdowns
     if (isRunning) _t3dApplySimContext();
 
-    // Poll at exactly the sim's post interval so DB has a new row on every refresh.
-    // _simIntervalMs is updated when sim_started / sim_vehicle carries intervalSec.
     if (_fastPollTimer) { clearInterval(_fastPollTimer); _fastPollTimer = null; }
+
     if (isRunning) {
-        _fastPollTimer = setInterval(function() { refreshScene(); }, _simIntervalMs);
+        // ── Sim started → clear all existing live vehicles + hold DB feed ──
+        // Only sim-injected data should be visible — no pre-existing DB events.
+        _clearScene();
+        vehicleMap.clear();
+        feedHeld = true;
+        var _btn = document.getElementById('btnFeedToggle');
+        if (_btn) {
+            _btn.textContent = '▶ Resume Feed';
+            _btn.className   = 'btn btn-sm btn-warning';
+        }
+        // No fast poll timer — sim events arrive via BroadcastChannel instantly.
+        // refreshScene() is gated by feedHeld so no DB fetch happens during sim.
     } else {
-        // Sim stopped — revert to live mode visual feedback
+        // ── Sim stopped → resume live DB feed ──
+        feedHeld = false;
+        var _btn2 = document.getElementById('btnFeedToggle');
+        if (_btn2) {
+            _btn2.textContent = '⏸ Hold Feed';
+            _btn2.className   = 'btn btn-sm btn-outline-warning';
+        }
         refreshScene();
         var _feedEl = document.getElementById('simFeedLine');
         if (_feedEl) {
             _feedEl.style.color = '#475569';
             _feedEl.textContent = 'Sim stopped — viewing live data.';
         }
-        // Reset event counter and hide LIVE badge on sim stop
         window._simEventCount = 0;
         var _badge2 = document.getElementById('simFeedBadge');
         if (_badge2) { _badge2.style.display = 'none'; _badge2.textContent = '● LIVE'; }
@@ -1185,7 +1194,10 @@ function _simNorm(evObj, cl) {
 }
 
 function _simInject(evObj, cl) {
-    if (feedHeld) return;  // feed on hold — discard sim events
+    // Sim events ALWAYS flow while sim is running — feedHeld blocks DB refresh,
+    // NOT sim injects. The inverted check was blocking sim data when it should
+    // have been blocking live data.
+    if (!simRunning) return;
     var ev = _simNorm(evObj, cl);
     var vc = classifyLocal(ev);
     if (vc.domain !== 'ground') return;
@@ -1315,10 +1327,8 @@ if (typeof BroadcastChannel !== 'undefined') {
             if (newMs !== _simIntervalMs) {
                 _simIntervalMs = newMs;
                 // If poll is already running, restart it at the new interval immediately
-                if (_fastPollTimer) {
-                    clearInterval(_fastPollTimer);
-                    _fastPollTimer = setInterval(function() { refreshScene(); }, _simIntervalMs);
-                }
+                // No fast poll timer during sim — sim injects directly via BroadcastChannel.
+                // feedHeld gates refreshScene() so DB fetches don't happen.
             }
         }
 
@@ -1345,10 +1355,7 @@ window.addEventListener('storage', function(e) {
             var newMs = msg.intervalSec * 1000;
             if (newMs !== _simIntervalMs) {
                 _simIntervalMs = newMs;
-                if (_fastPollTimer) {
-                    clearInterval(_fastPollTimer);
-                    _fastPollTimer = setInterval(function() { refreshScene(); }, _simIntervalMs);
-                }
+                // No fast poll timer during sim — sim injects directly.
             }
         }
         if (msg.type === 'sim_vehicle' && msg.payload && msg.srcType !== 'airflycar')
