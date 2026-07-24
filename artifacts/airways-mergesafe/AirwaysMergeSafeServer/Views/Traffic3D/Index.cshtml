@@ -533,6 +533,12 @@ function _makeVehicleLabel(vid, category) {
 }
 
 function loadEvents(events) {
+    // ── Guard: no DB/live data enters the scene while simulation is active ──
+    // This catches async fetches that were in-flight when onSimStateChange(true)
+    // cleared the scene and set feedHeld. Without this, the fetch resolves AFTER
+    // the clear and dumps non-sim vehicles back in.
+    if (simRunning) return;
+
     const seenIds = new Set();
     const lats = [], lons = [];
 
@@ -615,11 +621,12 @@ function loadEvents(events) {
 async function refreshScene() {
     if (feedHeld) return;  // feed is on hold — skip DB poll
     try {
-        // Build filter params: zone and/or server narrow the live feed
         const zq = selectedZoneId   ? `&zoneId=${encodeURIComponent(selectedZoneId)}`   : '';
         const sq = selectedServerId ? `&serverId=${encodeURIComponent(selectedServerId)}` : '';
         const r = await fetch(`/api/events/live?highwayId=${HW}&take=100&mode=ground${zq}${sq}`);
         if (!r.ok) return;
+        // Double-check: sim may have started while we were fetching
+        if (feedHeld || simRunning) return;
         loadEvents(await r.json());
     } catch(e) { console.warn('Scene refresh error:', e); }
 }
@@ -869,7 +876,10 @@ document.getElementById('viewToggle').querySelectorAll('button').forEach(btn => 
 // onSimStateChange: sim started → sim-only mode; sim stopped → live mode.
 // FIX 4 cont.: Seed the scene from initial server-rendered events (instant load)
 // then do a live API refresh to catch anything added since the page was rendered.
-if (Array.isArray(_INITIAL_EVENTS) && _INITIAL_EVENTS.length) {
+// Only seed from initial server events if sim is NOT active — onSimStateChange(true)
+// will clear the scene anyway, but this avoids a flash of non-sim vehicles.
+if (Array.isArray(_INITIAL_EVENTS) && _INITIAL_EVENTS.length
+    && localStorage.getItem('airways_sim_active') !== 'true') {
     loadEvents(_INITIAL_EVENTS);
 }
 
