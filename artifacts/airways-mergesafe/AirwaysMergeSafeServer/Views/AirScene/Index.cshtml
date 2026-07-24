@@ -490,6 +490,34 @@ function _getAirState(ev, vid) {
 const raycaster = new THREE.Raycaster(), mouse2 = new THREE.Vector2();
 let selectedAirVehicle = null;
 
+// ── Canvas-texture label sprite for vehicle ID ───────────────────────
+// Same pattern as Traffic3D: a Sprite with a canvas texture showing the vehicle ID.
+// Rendered in all three panels (perspective, side, top) so the ID is always visible.
+function _makeAirLabel(vid, category) {
+    const canvas  = document.createElement('canvas');
+    canvas.width  = 160; canvas.height = 40;
+    const ctx     = canvas.getContext('2d');
+    // Background pill — blue for air vehicles, matches AirScene palette
+    const catColors = {
+        air_urban:'#0e7490', air_express:'#c2410c', air_vertiport:'#a21caf',
+        airflycar:'#0e7490', sedan:'#1d4ed8', suv:'#15803d', truck:'#b45309',
+        motorcycle:'#7e22ce', van:'#334155'
+    };
+    ctx.fillStyle   = catColors[category] || '#1e3a5f';
+    ctx.beginPath(); ctx.roundRect(3, 3, 154, 34, 8); ctx.fill();
+    // Vehicle id text
+    ctx.fillStyle   = '#ffffff';
+    ctx.font        = 'bold 14px monospace';
+    ctx.textAlign   = 'center';
+    ctx.textBaseline= 'middle';
+    ctx.fillText((vid || '?').slice(0, 16), 80, 20);
+    const tex  = new THREE.CanvasTexture(canvas);
+    const mat  = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+    const spr  = new THREE.Sprite(mat);
+    spr.scale.set(7, 1.75, 1);
+    return spr;
+}
+
 function buildVehicle(ev) {
     const vc    = resolveClass(ev);
     const sp    = getSpec(vc.category);
@@ -532,7 +560,21 @@ function buildVehicle(ev) {
     meshT.userData = { ev, vc, baseY: topY };
     meshT.layers.set(3);
 
-    return { meshP, meshS, meshT, p, isAir, altY, topY, ev, vc, st };
+    // ── Vehicle ID label sprites (one per panel view) ──────────────────
+    const labelP = _makeAirLabel(vid, vc.category);
+    labelP.position.set(px, altY + 4, pz);   // float above the vehicle in perspective
+    labelP.layers.set(1);
+
+    const labelS = _makeAirLabel(vid, vc.category);
+    labelS.position.set(px, altY + 4, pz);   // float above in side view
+    labelS.layers.set(2);
+
+    const labelT = _makeAirLabel(vid, vc.category);
+    labelT.position.set(px, topY + 4, pz);   // float above in top view
+    labelT.layers.set(3);
+
+    return { meshP, meshS, meshT, p, isAir, altY, topY, ev, vc, st,
+             labelP, labelS, labelT, vid };
 }
 
 function buildSpeedOverlay(ev, p, isAir, altY) {
@@ -633,6 +675,15 @@ function clearScene() {
         [vo.meshP, vo.meshS, vo.meshT].forEach(m => {
             scene.remove(m); m.geometry.dispose(); m.material.dispose();
         });
+        // Remove and dispose label sprites
+        [vo.labelP, vo.labelS, vo.labelT].forEach(function(spr) {
+            if (!spr) return;
+            scene.remove(spr);
+            if (spr.material) {
+                if (spr.material.map) spr.material.map.dispose();
+                spr.material.dispose();
+            }
+        });
         vo.overlays.forEach(m => {
             scene.remove(m); m.geometry.dispose();
             if (m.material && m.material.dispose) m.material.dispose();
@@ -666,6 +717,10 @@ function loadEvents(evs) {
         scene.add(vo.meshP);
         scene.add(vo.meshS);
         scene.add(vo.meshT);
+        // Add vehicle ID labels to all three panels
+        if (vo.labelP) scene.add(vo.labelP);
+        if (vo.labelS) scene.add(vo.labelS);
+        if (vo.labelT) scene.add(vo.labelT);
         overlays.forEach(m => scene.add(m));
         vehicleObjects.push(vo);
 
@@ -1219,6 +1274,10 @@ function animate() {
             vo.meshP.position.set(ox, curY, oz);
             vo.meshS.position.set(ox, curY, oz);
             vo.meshT.position.set(ox, tY,   oz);
+            // Labels follow the vehicle in all three panels
+            if (vo.labelP) vo.labelP.position.set(ox, curY + 4, oz);
+            if (vo.labelS) vo.labelS.position.set(ox, curY + 4, oz);
+            if (vo.labelT) vo.labelT.position.set(ox, tY + 4, oz);
             // Face direction of travel + bank into turn
             vo.meshP.rotation.y = vo.st.angle + Math.PI * 0.5;
             vo.meshP.rotation.z = -0.22;        // realistic bank angle
@@ -1232,6 +1291,10 @@ function animate() {
             vo.meshP.position.y = vo.altY + dy;
             vo.meshS.position.y = vo.altY + dy;
             vo.meshT.position.y = vo.topY + dy;
+            // Labels follow bob
+            if (vo.labelP) vo.labelP.position.y = vo.altY + dy + 4;
+            if (vo.labelS) vo.labelS.position.y = vo.altY + dy + 4;
+            if (vo.labelT) vo.labelT.position.y = vo.topY + dy + 4;
         }
     });
     conflictRings.forEach((r, i) => {
@@ -1390,6 +1453,9 @@ function _airInjectDirect(ev, cl) {
     var overlays = buildSpeedOverlay(ev, vo.p, vo.isAir, vo.altY);
     vo.overlays = overlays;
     scene.add(vo.meshP); scene.add(vo.meshS); scene.add(vo.meshT);
+    if (vo.labelP) scene.add(vo.labelP);
+    if (vo.labelS) scene.add(vo.labelS);
+    if (vo.labelT) scene.add(vo.labelT);
     overlays.forEach(function(m){ scene.add(m); });
     vehicleObjects.push(vo);
     var aEl = document.getElementById('stAir');
