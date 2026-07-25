@@ -289,7 +289,7 @@ try
             "script-src 'self' 'unsafe-inline' cdn.jsdelivr.net unpkg.com cdnjs.cloudflare.com; " +
             "style-src 'self' 'unsafe-inline' cdn.jsdelivr.net unpkg.com; " +
             "font-src 'self' cdn.jsdelivr.net; " +
-            "img-src 'self' data: *.openstreetmap.org; " +
+            "img-src 'self' data: *.openstreetmap.org cdn.jsdelivr.net; " +
             "connect-src 'self' cdn.jsdelivr.net; " +
             "frame-ancestors 'none'";
         ctx.Response.Headers.Remove("X-Powered-By");
