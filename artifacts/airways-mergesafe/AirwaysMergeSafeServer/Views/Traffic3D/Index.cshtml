@@ -1661,7 +1661,7 @@ function _initMiniMap(lat, lon) {
     // Prevent Leaflet from stealing mouse events — 3D canvas handles interaction
     _miniMap.getContainer().style.pointerEvents = 'none';
     _miniMapLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19, subdomains: 'a,b,c',
+        maxZoom: 19, subdomains: 'abc',
         attribution: '',
         maxRetries: 1,
         retryDelay: 500
@@ -1673,7 +1673,7 @@ function _initMiniMap(lat, lon) {
             var mapEl = document.getElementById('t3dMiniMap');
             if (mapEl) mapEl.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 100%)';
         }
-    }, 8000); // 8 seconds — tiles can take longer on first load over slow connections
+    }, 3000); // 3 seconds — fast fallback to dark gradient when DNS/tiles unreachable
     _miniMap.on('tileerror', function() {
         if (!_miniMap._cspFallback) {
             _miniMap._cspFallback = true;
