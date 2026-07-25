@@ -1,4 +1,5 @@
 using AirwaysMergeSafeServer.Data;
+using AirwaysMergeSafeServer.Models;
 using AirwaysMergeSafeServer.Filters;
 using AirwaysMergeSafeServer.Infrastructure;
 using AirwaysMergeSafeServer.Services;
