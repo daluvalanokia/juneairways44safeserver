@@ -1840,8 +1840,25 @@ if (typeof BroadcastChannel !== 'undefined') {
 
 // Bug Fix 4: Separate storage listener for airways_sim_active (sim lifecycle state)
 // and airways_sim_last_event (vehicle payloads). Previously mixed → dead sim_started check.
+// Heartbeat watchdog — if sim is running but no heartbeat in 35s, force stop
+var _hbWatchdog = null;
+function _startHbWatchdog() {
+    if (_hbWatchdog) clearInterval(_hbWatchdog);
+    _hbWatchdog = setInterval(function() {
+        if (simRunning) {
+            var hb = localStorage.getItem('airways_sim_heartbeat');
+            if (!hb || (Date.now() - parseInt(hb)) > 35000) {
+                // Heartbeat died — the DIF tab was closed or crashed
+                onSimStateChange(false);
+            }
+        }
+    }, 10000); // check every 10s
+}
+_startHbWatchdog();
+
 window.addEventListener('storage', function(e) {
     if (e.key === 'airways_sim_active') { onSimStateChange(e.newValue === 'true'); return; }
+    if (e.key === 'airways_sim_heartbeat' && e.newValue) return; // heartbeat tick — sim is alive
     if (e.key === 'airways_sim_context' && simRunning) { _t3dApplySimContext(); return; }
     if (e.key !== 'airways_sim_last_event' || !e.newValue) return;
     try {
@@ -1859,11 +1876,22 @@ window.addEventListener('storage', function(e) {
     } catch(ex) {}
 });
 // Restore sim feed state from localStorage on page load (handles DataInputFormats navigation)
+// BUT only enter sim mode if the heartbeat is fresh (< 30s old) — otherwise the
+// sim was interrupted by a page close/crash and is no longer actually running.
 (function() {
     if (localStorage.getItem('airways_sim_active') === 'true') {
-        // Sim already running from another tab — apply its context first, then start feed
-        _t3dApplySimContext();
-        onSimStateChange(true);
+        // Check heartbeat — sim must have posted a tick within the last 30 seconds
+        var hb = localStorage.getItem('airways_sim_heartbeat');
+        var isFresh = hb && (Date.now() - parseInt(hb)) < 30000;
+        if (isFresh) {
+            _t3dApplySimContext();
+            onSimStateChange(true);
+        } else {
+            // Heartbeat is stale or missing — sim is not actually running
+            // Clear the stale state so the 3D scene shows live data
+            localStorage.setItem('airways_sim_active', 'false');
+            localStorage.removeItem('airways_sim_heartbeat');
+        }
     }
 })();
 </script>
