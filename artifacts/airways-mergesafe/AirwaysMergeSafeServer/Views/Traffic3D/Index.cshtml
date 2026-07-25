@@ -269,7 +269,8 @@ const CAT_SPEC = {
 // ── Vehicle classification heuristic ─────────────────────────────────
 function classifyVehicle(ev) {
     var cat = 'sedan';
-    var raw = (ev.vehicleCategory || ev.VehicleCategory || ev.vehicleMode || ev.VehicleMode || '').toLowerCase();
+    var raw = (ev.vehicle_category || ev.vehicleCategory || ev.VehicleCategory ||
+               ev.vehicle_mode || ev.vehicleMode || ev.VehicleMode || '').toLowerCase();
     if (raw.includes('truck'))      cat = 'truck';
     else if (raw.includes('suv'))   cat = 'suv';
     else if (raw.includes('motor') || raw.includes('bike')) cat = 'motorcycle';
@@ -362,14 +363,14 @@ function _panMapTo(lat, lon) {
 var _leafletZoom = 15;
 
 function t3dZoomIn() {
-    _leafletZoom = Math.min(18, _leafletZoom + 1);
-    if (_map) { _map.setZoom(_leafletZoom, { animate: false });
-        setTimeout(function() { if (_map) _map.invalidateSize(true); }, 30); }
+    if (!_map) return;
+    _leafletZoom = Math.min(18, (_map.getZoom() || _leafletZoom) + 1);
+    _map.setZoom(_leafletZoom, { animate: false });
 }
 function t3dZoomOut() {
-    _leafletZoom = Math.max(10, _leafletZoom - 1);
-    if (_map) { _map.setZoom(_leafletZoom, { animate: false });
-        setTimeout(function() { if (_map) _map.invalidateSize(true); }, 30); }
+    if (!_map) return;
+    _leafletZoom = Math.max(10, (_map.getZoom() || _leafletZoom) - 1);
+    _map.setZoom(_leafletZoom, { animate: false });
 }
 
 // Mouse wheel: zoom in/out
@@ -380,40 +381,76 @@ document.getElementById('t3dMiniMap').addEventListener('wheel', function(e) {
 
 // ── Highway overlay: draw a semi-transparent road strip over the real road ──
 // Uses the selected zone's heading or defaults to North–South
+// Highway coordinates — the actual GPS line of the selected zone's road
+// Updated whenever zone/server changes via _setHighwayCoords()
+var _hwyLat1 = _mapCtrLat - 0.02, _hwyLon1 = _mapCtrLon;
+var _hwyLat2 = _mapCtrLat + 0.02, _hwyLon2 = _mapCtrLon;
+var _hwyHeading = 0;  // radians, 0 = North
+
+function _setHighwayCoords(lat, lon) {
+    // Draw a ~4km road segment centred on the zone, oriented N-S by default.
+    // In future, this could use the highway's actual heading from DB.
+    _hwyLat1 = lat - 0.02; _hwyLon1 = lon;
+    _hwyLat2 = lat + 0.02; _hwyLon2 = lon;
+    _hwyHeading = 0;
+}
+
 function _drawHighwayOverlay() {
     if (!_map || !_oc || !_octx || !_mapReady) return;
     var cw = _oc.parentElement.clientWidth;
     var ch = _oc.parentElement.clientHeight;
     if (_oc.width !== cw || _oc.height !== ch) { _oc.width = cw; _oc.height = ch; }
+
+    // Project the highway endpoints from GPS to pixel using Leaflet's own projection
+    var origin = _map.getPixelOrigin();
+    var z = _map.getZoom();
+    var p1 = _map.project([_hwyLat1, _hwyLon1], z);
+    var p2 = _map.project([_hwyLat2, _hwyLon2], z);
+    var x1 = p1.x - origin.x, y1 = p1.y - origin.y;
+    var x2 = p2.x - origin.x, y2 = p2.y - origin.y;
+
+    // Road width in pixels — scales with Leaflet zoom (tight coupling with map)
+    var zoomFactor = Math.pow(2, z - 15);
+    var roadPx = Math.max(24, Math.round(48 * zoomFactor));
+
+    // Draw road as a thick line from p1 to p2 (the "bridge" over the highway)
+    var dx = x2 - x1, dy = y2 - y1;
+    var len = Math.hypot(dx, dy);
+    if (len < 2) return;  // endpoints collapsed — nothing to draw
+
+    // Extend the line beyond the endpoints to fill the screen
+    var extLen = Math.max(cw, ch);
+    var ux = dx / len, uy = dy / len;  // unit vector along road
+    var sx = x1 - ux * extLen, sy = y1 - uy * extLen;
+    var ex = x2 + ux * extLen, ey = y2 + uy * extLen;
+
+    // Road surface (semi-transparent asphalt)
     _octx.clearRect(0, 0, cw, ch);
+    _octx.strokeStyle = 'rgba(80, 100, 120, 0.55)';
+    _octx.lineWidth = roadPx;
+    _octx.lineCap = 'butt';
+    _octx.beginPath();
+    _octx.moveTo(sx, sy); _octx.lineTo(ex, ey);
+    _octx.stroke();
 
-    // Draw highway strip: a wide semi-transparent road band centred on map
-    // Approximate the highway as a vertical band (N-S) at the map centre
-    // Width scales with zoom: ~30px at z15, wider when zoomed in
-    var zoomFactor = Math.pow(2, _leafletZoom - 15);
-    var roadPx     = Math.round(48 * zoomFactor);   // highway width in pixels
-    var cxPx       = cw / 2;  // map centre is always screen centre (no drag)
-
-    // Road surface
-    _octx.fillStyle = 'rgba(80, 100, 120, 0.55)';
-    _octx.fillRect(cxPx - roadPx / 2, 0, roadPx, ch);
-
-    // Yellow centre line
+    // Centre yellow line
     _octx.strokeStyle = 'rgba(253, 224, 71, 0.90)';
     _octx.lineWidth = Math.max(2, 3 * zoomFactor);
     _octx.setLineDash([]);
     _octx.beginPath();
-    _octx.moveTo(cxPx, 0); _octx.lineTo(cxPx, ch);
+    _octx.moveTo(sx, sy); _octx.lineTo(ex, ey);
     _octx.stroke();
 
-    // Lane dashes (left and right of centre)
+    // Lane dashes — perpendicular offset from centre
     _octx.strokeStyle = 'rgba(255,255,255,0.70)';
     _octx.lineWidth = Math.max(1, 1.5 * zoomFactor);
     _octx.setLineDash([20 * zoomFactor, 14 * zoomFactor]);
-    var laneW = roadPx / 4;
-    [-laneW, laneW].forEach(function(dx) {
+    var laneOff = roadPx / 4;
+    var px = -uy, py = ux;  // perpendicular unit vector
+    [-laneOff, laneOff].forEach(function(off) {
         _octx.beginPath();
-        _octx.moveTo(cxPx + dx, 0); _octx.lineTo(cxPx + dx, ch);
+        _octx.moveTo(sx + px * off, sy + py * off);
+        _octx.lineTo(ex + px * off, ey + py * off);
         _octx.stroke();
     });
     _octx.setLineDash([]);
@@ -421,9 +458,10 @@ function _drawHighwayOverlay() {
     // Edge kerb lines
     _octx.strokeStyle = 'rgba(255,255,255,0.55)';
     _octx.lineWidth = Math.max(2, 3 * zoomFactor);
-    [-roadPx/2, roadPx/2].forEach(function(dx) {
+    [-roadPx/2, roadPx/2].forEach(function(off) {
         _octx.beginPath();
-        _octx.moveTo(cxPx + dx, 0); _octx.lineTo(cxPx + dx, ch);
+        _octx.moveTo(sx + px * off, sy + py * off);
+        _octx.lineTo(ex + px * off, ey + py * off);
         _octx.stroke();
     });
 }
@@ -710,7 +748,7 @@ function t3dZoneChanged() {
         o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
     });
     var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-    if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); }
+    if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); _setHighwayCoords(z.lat, z.lon); }
     _clearVehicles(); refreshScene();
 }
 
@@ -723,7 +761,7 @@ function t3dServerChanged() {
     }
     if (selectedZoneId) {
         var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-        if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); }
+        if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); _setHighwayCoords(z.lat, z.lon); }
     }
     _clearVehicles(); refreshScene();
 }
@@ -735,14 +773,21 @@ function loadEvents(events) {
     if (!events || !events.length) return;
     var now = Date.now();
     events.forEach(function(ev) {
-        var vid = ev.vehicleId || ev.VehicleId || '';
+        // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
+        var vid = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '';
         if (!vid) return;
-        var lat = parseFloat(ev.latitude || ev.Latitude || 0);
+        var lat = parseFloat(ev.latitude  || ev.Latitude  || 0);
         var lon = parseFloat(ev.longitude || ev.Longitude || 0);
         if (!lat || !lon) return;
-        var spd = parseFloat(ev.speedMph || ev.SpeedMph || 0);
-        var make = ev.vehicleMake || ev.VehicleMake || ev.make || '';
+        var spd  = parseFloat(ev.speed_mph || ev.speedMph || ev.SpeedMph || 0);
+        var make = ev.vehicle_make || ev.vehicleMake || ev.VehicleMake || ev.make || '';
         var vc   = classifyVehicle(ev);
+        // Clamp to zone centre area if coordinates are wildly off (sim sometimes sends 0,0)
+        if (Math.abs(lat - _mapCtrLat) > 0.5 || Math.abs(lon - _mapCtrLon) > 0.5) {
+            // Vehicle is far from selected zone — nudge to zone centre with small random offset
+            lat = _mapCtrLat + (Math.random() - 0.5) * 0.004;
+            lon = _mapCtrLon + (Math.random() - 0.5) * 0.004;
+        }
         vehicleData.set(vid, { ev: ev, vc: vc, lat: lat, lon: lon, speedMph: spd, make: make, lastSeen: now });
     });
     // Prune stale (>90s old)
@@ -793,9 +838,9 @@ function _updateSimPanel(ev) {
     var badge = document.getElementById('simFeedBadge');
     var line  = document.getElementById('simFeedLine');
     var ts    = new Date().toLocaleTimeString();
-    var vid   = ev.vehicleId || ev.VehicleId || '?';
-    var cat   = (ev.vehicleCategory || ev.vehicleMode || '?').toLowerCase();
-    var spd   = parseFloat(ev.speedMph || ev.SpeedMph || 0).toFixed(1);
+    var vid   = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '?';
+    var cat   = (ev.vehicle_category || ev.vehicleCategory || ev.vehicle_mode || ev.vehicleMode || '?').toLowerCase();
+    var spd   = parseFloat(ev.speed_mph || ev.speedMph || ev.SpeedMph || 0).toFixed(1);
     if (badge) badge.style.display = '';
     if (line)  line.textContent = ts + ' · ' + vid + ' · ' + cat + ' · ' + spd + ' mph';
 
@@ -807,7 +852,7 @@ function _updateSimPanel(ev) {
     sf('sfVehicleId', vid + (ev.dbId ? ' [db#' + ev.dbId + ']' : ''));
     sf('sfType',  cat);
     sf('sfSpeed', spd + ' mph');
-    sf('sfZone',  ev.zoneId || '–');
+    sf('sfZone',  ev.zone_id || ev.zoneId || '–');
     var lat = parseFloat(ev.latitude || ev.Latitude || 0);
     var lon = parseFloat(ev.longitude || ev.Longitude || 0);
     sf('sfLatLon', lat.toFixed(4) + ', ' + lon.toFixed(4));
@@ -820,16 +865,29 @@ function _updateSimPanel(ev) {
 
 // ── Simulation BroadcastChannel listener ─────────────────────────────
 var _bc = null;
-try { _bc = new BroadcastChannel('airways_simulation'); } catch(e) {}
+try { _bc = new BroadcastChannel('airways_sim'); } catch(e) {}
 
 function _onSimMsg(data) {
     if (!data) return;
-    if (data.type === 'sim_event') {
+    if (data.type === 'sim_vehicle' || data.type === 'sim_event') {
         var ev = data.payload || data;
         simRunning = true; feedHeld = true;
-        _simHwId  = ev.highwayId  || _simHwId;
-        _simZoneId = ev.zoneId   || _simZoneId;
-        _simSrvId  = ev.serverId || _simSrvId;
+        // Accept both snake_case (sim payload) and camelCase
+        _simHwId   = ev.highway_id  || ev.highwayId  || _simHwId;
+        _simZoneId = ev.zone_id     || ev.zoneId     || _simZoneId;
+        _simSrvId  = ev.server_id   || ev.serverId    || _simSrvId;
+        // Auto-select the sim's zone so the map re-centres and highway aligns
+        if (_simZoneId && _simZoneId !== selectedZoneId) {
+            selectedZoneId = _simZoneId;
+            var z = T3D_ZONES.find(function(zz){ return zz.zoneId === _simZoneId; });
+            if (z && z.lat && z.lon) {
+                midLat = z.lat; midLon = z.lon;
+                _panMapTo(z.lat, z.lon);
+                _setHighwayCoords(z.lat, z.lon);
+            }
+            var zsel = document.getElementById('t3dZoneSel');
+            if (zsel) zsel.value = _simZoneId;
+        }
         _updateSimPanel(ev);
         loadEvents([ev]);
         // Update badge count
@@ -849,7 +907,7 @@ if (_bc) _bc.onmessage = function(e) { _onSimMsg(e.data); };
 
 // Also listen via localStorage (cross-tab)
 window.addEventListener('storage', function(e) {
-    if (e.key !== 'airways_last_sim_event') return;
+    if (e.key !== 'airways_sim_last_event') return;
     try { _onSimMsg(JSON.parse(e.newValue || '{}')); } catch(_) {}
 });
 
@@ -911,6 +969,7 @@ window.addEventListener('resize', function() {
 (async function boot() {
     // 1. Init Leaflet map centred on zone GPS
     _initMap();
+    _setHighwayCoords(_mapCtrLat, _mapCtrLon);
 
     // 2. Start 2D canvas render loop
     _renderLoop();
