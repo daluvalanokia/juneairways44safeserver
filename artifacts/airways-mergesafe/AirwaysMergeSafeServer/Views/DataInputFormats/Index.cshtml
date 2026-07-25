@@ -573,6 +573,7 @@ function startSim() {
                     // Overwrite the raw payload's vehicle_id so _simNorm in the
                     // 3D scene always gets the SAME stable id for the same vehicle.
                     if (d.vehicleId) evParsed.vehicle_id = d.vehicleId;
+                    if (d.dbId)      evParsed.dbId       = d.dbId;   // show "✓ db#N" in T3D panel
                     evParsed.zone_id    = document.getElementById('simZone').value    || evParsed.zone_id    || '';
                     evParsed.highway_id = document.getElementById('simHighway').value || evParsed.highway_id || '';
                     // Carry interval so T3D can adjust its poll on every tick
