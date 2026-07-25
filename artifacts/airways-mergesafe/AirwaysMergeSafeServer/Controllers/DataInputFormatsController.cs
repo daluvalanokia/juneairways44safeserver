@@ -158,7 +158,7 @@ public class DataInputFormatsController : Controller
             var isAirFlyCarVal = (string.Equals(type, "airflycar", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(iafRaw, "Y", StringComparison.OrdinalIgnoreCase)) ? "Y" : "N";
 
-            var _savedEvent = new VehicleEvent
+            _savedEvent = new VehicleEvent
             {
                 EventType        = et,
                 ZoneId           = zid,
