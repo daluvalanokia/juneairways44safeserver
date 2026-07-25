@@ -440,6 +440,7 @@ function _clearScene() {
                 ch.material.dispose();
             }
         });
+        if (_overlayCtx) _overlayCtx.clearRect(0, 0, _overlayCanvas.width, _overlayCanvas.height);
     });
     vehicleMeshes.length = 0;
     vehicleData.length   = 0;
@@ -463,6 +464,29 @@ function stableLane(vid) {
     var h = 0;
     for (var i = 0; i < (vid || '').length; i++) h = (h * 31 + vid.charCodeAt(i)) | 0;
     return LANE_Z[Math.abs(h) % LANE_Z.length];
+}
+
+// ── Top-down silhouette shapes per vehicle category ─────────────────
+// These flat PlaneGeometry shapes sit on the road surface and give
+// instant category recognition from the bird's-eye camera.
+function _topSilhouette(cat, color) {
+    var shapes = {
+        sedan:      { l:4.0, w:1.8, r:0.8 },   // compact rounded rectangle
+        suv:        { l:4.5, w:2.2, r:0.6 },   // wider, squarer
+        truck:      { l:5.8, w:2.2, r:0.4 },   // long, less rounded
+        motorcycle: { l:2.0, w:0.6, r:0.3 },   // very narrow
+        van:        { l:5.0, w:2.4, r:0.3 },   // tall wide box
+    };
+    var s = shapes[cat] || shapes.sedan;
+    // Use a CapsuleGeometry-like shape (stretched cylinder) for top-down
+    // Fallback: PlaneGeometry for simplicity and performance
+    var geo = new THREE.PlaneGeometry(s.l, s.w, 2, 1);
+    geo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));  // lay flat
+    var mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color), transparent: true, opacity: 0.95 });
+    var sil = new THREE.Mesh(geo, mat);
+    sil.position.y = 0.25;  // just above road surface
+    sil.renderOrder = 1;    // always on top of road
+    return sil;
 }
 
 function buildVehicleMesh(ev, vid) {
@@ -501,8 +525,11 @@ function buildVehicleMesh(ev, vid) {
     // ── Vehicle ID label — canvas texture sprite with brand badge ──────
     const _label = _makeVehicleLabel(vid, vc.category || 'sedan', ev.vehicleMake);
     _label.position.set(0, 4.5, 0); // float above the larger 2x vehicle body
+    // ── Top-down flat silhouette — visible from bird's-eye camera ──────
+    const _silhouette = _topSilhouette(vc.category || 'sedan', vc.color || spec.color);
     const _group = new THREE.Group();
     _group.add(mesh);
+    _group.add(_silhouette);  // flat top-view shape (visible from above)
     _group.add(_label);
     _group.position.copy(mesh.position);
     mesh.position.set(0, 0, 0);      // mesh is now relative to group
@@ -611,7 +638,7 @@ function _makeVehicleLabel(vid, category, make) {
     const tex  = new THREE.CanvasTexture(canvas);
     const mat  = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
     const spr  = new THREE.Sprite(mat);
-    spr.scale.set(10, 2.5, 1);  // larger sprite to match 2x vehicle scale
+    spr.scale.set(0.01, 0.01, 0.01);  // 3D sprite hidden — 2D overlay handles labels for all views
     return spr;
 }
 
@@ -654,7 +681,9 @@ function loadEvents(events) {
             grp.userData.speedMph    = ev.speedMph ?? 55;
             // Rotate the first child (body mesh) to face travel direction
             const bodyMesh = grp.children[0];
+            const silMesh  = grp.children[1];  // flat top silhouette (child index 1)
             if (bodyMesh) bodyMesh.rotation.y = headingRad;
+            if (silMesh && silMesh.isMesh)  silMesh.rotation.y = headingRad;
         } else {
             // ── Add new vehicle mesh ──────────────────────────────────
             const mesh = buildVehicleMesh(ev, vid);
@@ -730,9 +759,13 @@ const camS = new THREE.OrthographicCamera(-oW, oW, oH, -oH, 0.1, 2000);
 camS.position.set(0, 0, 500); camS.lookAt(0, 0, 0);
 
 // Top-down (traffic-management bird's-eye view — DEFAULT)
-const oTW = 300, oTH = 120;
+// Tighter frustum so vehicles fill a readable portion of the screen
+const oTW = 90, oTH = 55;   // ~180 scene-units wide — sedan is ~2% of width
 const camT = new THREE.OrthographicCamera(-oTW, oTW, oTH, -oTH, 0.1, 2000);
 camT.position.set(0, 600, 0); camT.up.set(1, 0, 0); camT.lookAt(0, 0, 0);
+// Pan support for top-down view
+let camTpanX = 0, camTpanZ = 0;
+let _isPanDrag = false, _panStart = {x:0,y:0};
 
 // ── View mode ─────────────────────────────────────────────────────────
 let currentView = 'perspective';
@@ -751,15 +784,42 @@ function setViewport(view) {
 
 // ── Orbit (perspective) ───────────────────────────────────────────────
 let isDrag = false, prevM = {x:0,y:0}, theta = 0.6, phi = 0.5, radius = 280;
-canvas.addEventListener('mousedown', e => { isDrag = true; prevM = {x:e.clientX, y:e.clientY}; });
-window.addEventListener('mouseup', () => isDrag = false);
-window.addEventListener('mousemove', e => {
-    if (!isDrag || currentView !== 'perspective') return;
-    theta -= (e.clientX - prevM.x) * 0.005;
-    phi    = Math.max(0.05, Math.min(1.4, phi - (e.clientY - prevM.y) * 0.005));
-    prevM  = { x: e.clientX, y: e.clientY };
+canvas.addEventListener('mousedown', e => {
+    isDrag = true; prevM = {x:e.clientX, y:e.clientY};
+    if (currentView === 'top') { _isPanDrag = true; _panStart = {x:e.clientX, y:e.clientY}; }
 });
-canvas.addEventListener('wheel', e => { radius = Math.max(60, Math.min(700, radius + e.deltaY * 0.25)); });
+window.addEventListener('mouseup', () => { isDrag = false; _isPanDrag = false; });
+window.addEventListener('mousemove', e => {
+    if (!isDrag) return;
+    if (currentView === 'perspective') {
+        theta -= (e.clientX - prevM.x) * 0.005;
+        phi    = Math.max(0.05, Math.min(1.4, phi - (e.clientY - prevM.y) * 0.005));
+        prevM  = { x: e.clientX, y: e.clientY };
+    } else if (currentView === 'top' && _isPanDrag) {
+        // Pan: drag moves camera in world X/Z
+        var dx = (e.clientX - prevM.x) * 0.4;
+        var dz = (e.clientY - prevM.y) * 0.4;
+        camTpanX -= dx; camTpanZ -= dz;
+        camTpanX = Math.max(-ROAD_HALF, Math.min(ROAD_HALF, camTpanX));
+        camTpanZ = Math.max(-70, Math.min(70, camTpanZ));
+        camT.position.set(camTpanX, 600, camTpanZ);
+        camT.lookAt(camTpanX, 0, camTpanZ);
+        prevM = {x:e.clientX, y:e.clientY};
+    }
+});
+// Zoom top-down view with wheel
+canvas.addEventListener('wheel', e => {
+    if (currentView === 'top') {
+        // Zoom by scaling frustum half-extents
+        var newW = Math.max(30, Math.min(250, camT.right + e.deltaY * 0.1));
+        var newH = newW * (oTH / oTW);
+        camT.left = -newW; camT.right = newW;
+        camT.top  =  newH; camT.bottom = -newH;
+        camT.updateProjectionMatrix();
+    } else {
+        radius = Math.max(60, Math.min(700, radius + e.deltaY * 0.25));
+    }
+});
 
 canvas.addEventListener('mousemove', e => {
     if (isDrag) return;
@@ -1156,6 +1216,105 @@ function _t3dApplySimContext() {
 // ── Animate loop ──────────────────────────────────────────────────────
 const ROAD_HALF = 680; // wrap boundary along X axis
 let tick = 0, camTween = null;
+// ── 2D label overlay — drawn on top of Three.js canvas ──────────────────
+// This gives sharp, readable labels at any zoom level without 3D sprite issues.
+const _overlayCanvas = document.getElementById('t3d-label-overlay');
+const _overlayCtx    = _overlayCanvas ? _overlayCanvas.getContext('2d') : null;
+const _catColors2D = { sedan:'#1d4ed8', suv:'#15803d', truck:'#b45309',
+                        motorcycle:'#7e22ce', van:'#334155' };
+
+function _drawLabelOverlay(camera, currentView) {
+    if (!_overlayCtx) return;
+    const oc = _overlayCanvas;
+    const w = oc.width, h = oc.height;
+    _overlayCtx.clearRect(0, 0, w, h);
+    if (!vehicleMeshes.length) return;
+
+    vehicleMeshes.forEach(function(grp) {
+        if (!grp.userData || grp.userData.vx === undefined) return;
+        const ud  = grp.userData;
+        const vid = ud.vid || '';
+        const cat = ud.vc ? (ud.vc.category || 'sedan') : 'sedan';
+        const make = ud.ev ? (ud.ev.vehicleMake || ud.ev.make || '') : '';
+
+        // Project 3D position to 2D screen coords using camera
+        const worldPos = new THREE.Vector3();
+        grp.getWorldPosition(worldPos);
+        const ndc = worldPos.clone().project(camera);
+        const sx  = (ndc.x * 0.5 + 0.5) * w;
+        const sy  = (1 - (ndc.y * 0.5 + 0.5)) * h;
+
+        // Only draw if on screen
+        if (sx < -60 || sx > w + 60 || sy < -30 || sy > h + 30) return;
+
+        // ── Draw label pill above vehicle ──
+        var logoImg = make ? BRAND_LOGO_IMAGES[make] : null;
+        var logoLoaded = logoImg && logoImg.complete && logoImg.naturalWidth > 0;
+        var badge   = make ? BRAND_BADGES[make] : null;
+        var pillW = 136, pillH = 30;
+        var pillX = sx - pillW / 2;
+        var pillY = sy - 44;  // float above vehicle
+
+        // Background pill
+        _overlayCtx.fillStyle = _catColors2D[cat] || '#1e3a5f';
+        _overlayCtx.beginPath();
+        _overlayCtx.roundRect(pillX, pillY, pillW, pillH, 6);
+        _overlayCtx.fill();
+        _overlayCtx.strokeStyle = 'rgba(0,0,0,0.5)';
+        _overlayCtx.lineWidth = 1.5;
+        _overlayCtx.stroke();
+
+        if (logoLoaded) {
+            // Draw actual SVG logo from registry (22x22)
+            _overlayCtx.drawImage(logoImg, pillX + 4, pillY + 4, 22, 22);
+            // Vehicle ID
+            _overlayCtx.fillStyle = '#ffffff';
+            _overlayCtx.font = 'bold 11px monospace';
+            _overlayCtx.textAlign = 'left';
+            _overlayCtx.textBaseline = 'middle';
+            _overlayCtx.fillText(vid.slice(0,12), pillX + 30, pillY + 10);
+            // Make name (smaller, below ID)
+            _overlayCtx.fillStyle = 'rgba(255,255,255,0.8)';
+            _overlayCtx.font = '9px Arial';
+            _overlayCtx.fillText(make.slice(0,12), pillX + 30, pillY + 22);
+        } else if (badge) {
+            // Fallback initials circle
+            _overlayCtx.beginPath();
+            _overlayCtx.arc(pillX + 14, pillY + pillH/2, 11, 0, Math.PI*2);
+            _overlayCtx.fillStyle = badge.color;
+            _overlayCtx.fill();
+            _overlayCtx.fillStyle = '#ffffff';
+            _overlayCtx.font = badge.initials.length > 2 ? 'bold 7px Arial' : 'bold 10px Arial';
+            _overlayCtx.textAlign = 'center';
+            _overlayCtx.textBaseline = 'middle';
+            _overlayCtx.fillText(badge.initials, pillX + 14, pillY + pillH/2);
+            // Vehicle ID
+            _overlayCtx.fillStyle = '#ffffff';
+            _overlayCtx.font = 'bold 11px monospace';
+            _overlayCtx.textAlign = 'left';
+            _overlayCtx.fillText(vid.slice(0,12), pillX + 29, pillY + 10);
+            _overlayCtx.fillStyle = 'rgba(255,255,255,0.8)';
+            _overlayCtx.font = '9px Arial';
+            _overlayCtx.fillText(make.slice(0,12), pillX + 29, pillY + 22);
+        } else {
+            // ID only
+            _overlayCtx.fillStyle = '#ffffff';
+            _overlayCtx.font = 'bold 12px monospace';
+            _overlayCtx.textAlign = 'center';
+            _overlayCtx.textBaseline = 'middle';
+            _overlayCtx.fillText(vid.slice(0,14), pillX + pillW/2, pillY + pillH/2);
+        }
+
+        // ── Connector line from pill to vehicle ──
+        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.4)';
+        _overlayCtx.lineWidth   = 1;
+        _overlayCtx.beginPath();
+        _overlayCtx.moveTo(sx, pillY + pillH);
+        _overlayCtx.lineTo(sx, sy);
+        _overlayCtx.stroke();
+    });
+}
+
 function animate() {
     requestAnimationFrame(animate); tick++;
     if (camTween) camTween();
@@ -1209,7 +1368,13 @@ function animate() {
         renderer.setViewport(0, 0, cw, ch);
         const cam = currentView === 'side' ? camS : currentView === 'top' ? camT : camP;
         if (cam.isPerspectiveCamera) { cam.aspect = cw/ch; cam.updateProjectionMatrix(); }
+        if (_overlayCanvas) { _overlayCanvas.width = cw; _overlayCanvas.height = ch; }
         renderer.render(scene, cam);
+        if (_overlayCanvas) {
+            _overlayCanvas.width  = renderer.domElement.clientWidth;
+            _overlayCanvas.height = renderer.domElement.clientHeight;
+        }
+        _drawLabelOverlay(cam, currentView);
     }
 }
 
@@ -1330,7 +1495,9 @@ function _simInject(evObj, cl) {
         _grp.userData.ev         = ev;
         _grp.userData._lastSeenMs= Date.now();
         var _bodyMesh = _grp.children[0];
+        var _silMesh  = _grp.children[1];
         if (_bodyMesh) _bodyMesh.rotation.y = _hRad;
+        if (_silMesh && _silMesh.isMesh) _silMesh.rotation.y = _hRad;
     } else if (ev.vehicleId) {
         // ── Spawn new vehicle group immediately (no DB round-trip needed) ─
         var _newGrp = buildVehicleMesh(ev, ev.vehicleId);
