@@ -86,7 +86,24 @@ public class DataInputFormatsController : Controller
                 "zone_id","highway_id","signal_strength","isAirFlyCar"
               };
 
-        var payload = _payloadSvc.Generate(type, fields);
+        // Look up the selected zone's GPS so IPS can place vehicles on the right highway
+        double? _zLat = null, _zLon = null;
+        if (!string.IsNullOrEmpty(zoneId))
+        {
+            var _zone = await _db.MergeZones.AsNoTracking()
+                .Where(z => z.ZoneId == zoneId).FirstOrDefaultAsync();
+            if (_zone?.Latitude.HasValue == true)  _zLat = _zone.Latitude!.Value;
+            if (_zone?.Longitude.HasValue == true) _zLon = _zone.Longitude!.Value;
+        }
+
+        var payload = _payloadSvc.Generate(
+            type, fields,
+            customFields:  null,
+            zoneLat:       _zLat,
+            zoneLon:       _zLon,
+            zoneRadiusDeg: 0.012,    // ~1.3 km — tight corridor spread on highway
+            zoneId:        zoneId,
+            highwayId:     highwayId);
         // Task 10: for non-airflycar sources, enforce isAirFlyCar="N" in payload BEFORE
         // classification, so the classifier never promotes them to air via the Y-field gate.
         if (!isAirFlyCarSrc)
@@ -122,6 +139,7 @@ public class DataInputFormatsController : Controller
         }
 
         // Write classified VehicleEvent
+        VehicleEvent? _savedEvent = null;
         try
         {
             using var doc  = JsonDocument.Parse(payload);
@@ -140,7 +158,7 @@ public class DataInputFormatsController : Controller
             var isAirFlyCarVal = (string.Equals(type, "airflycar", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(iafRaw, "Y", StringComparison.OrdinalIgnoreCase)) ? "Y" : "N";
 
-            _db.VehicleEvents.Add(new VehicleEvent
+            var _savedEvent = new VehicleEvent
             {
                 EventType        = et,
                 ZoneId           = zid,
@@ -158,9 +176,10 @@ public class DataInputFormatsController : Controller
                 IsAirFlyCar      = isAirFlyCarVal,
                 Payload          = payload.Length > 490 ? payload[..490] : payload,
                 CreatedDate      = now
-            });
+            };
+            _db.VehicleEvents.Add(_savedEvent);
         }
-        catch { /* non-fatal */ }
+        catch (Exception _evEx) { _logger.LogWarning("SimPost: VehicleEvent save failed: {Msg}", _evEx.Message); }
 
         // ── Update SimulationStatus in database ──────────────────────────────
         // Maintain a persistent server-side record so the app knows the sim
@@ -201,6 +220,8 @@ public class DataInputFormatsController : Controller
             payload,
             // vehicleId returned so the 3D scene JS can match meshes by stable id
             vehicleId = savedVehicleId,
+            // dbId returned so the JS sim panel can show "saved" status
+            dbId = _savedEvent?.Id,
             classification = new {
                 domain      = vc.Domain,
                 category    = vc.Category,
