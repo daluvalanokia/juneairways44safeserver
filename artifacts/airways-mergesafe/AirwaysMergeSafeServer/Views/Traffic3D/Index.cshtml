@@ -116,13 +116,17 @@
 </div>
 
 <!-- ── Scene grid (split / single-panel modes) ────────────────────────── -->
-<div id="sceneWrap" style="position:relative;height:520px;background:#1a2f1a;border-radius:8px;overflow:hidden">
-    <canvas id="mainCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
-    <canvas id="t3d-label-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:5;"></canvas>
+<div id="sceneWrap" style="position:relative;height:520px;border-radius:8px;overflow:hidden;background:#1a2f1a">
+    <!-- Leaflet map — fills entire scene as background -->
+    <div id="t3dMiniMap" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:0"></div>
+    <!-- Three.js 3D canvas — transparent, renders on top of map -->
+    <canvas id="mainCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1"></canvas>
+    <!-- 2D label overlay — on top of everything -->
+    <canvas id="t3d-label-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2"></canvas>
     <!-- Overlay labels for split mode -->
-    <div id="labelA" class="badge bg-secondary position-absolute" style="top:6px;left:6px;display:none">Perspective</div>
-    <div id="labelB" class="badge bg-info text-dark position-absolute"    style="top:6px;display:none">Side ↕</div>
-    <div id="labelC" class="badge bg-warning text-dark position-absolute" style="top:6px;display:none">Top ⊞</div>
+    <div id="labelA" class="badge bg-secondary position-absolute" style="top:6px;left:6px;display:none;z-index:3">Perspective</div>
+    <div id="labelB" class="badge bg-info text-dark position-absolute"    style="top:6px;display:none;z-index:3">Side ↕</div>
+    <div id="labelC" class="badge bg-warning text-dark position-absolute" style="top:6px;display:none;z-index:3">Top ⊞</div>
     <div id="simLiveLabel" class="badge bg-success position-absolute"
          style="top:6px;right:6px;font-size:.72rem;opacity:0;transition:opacity .5s ease;pointer-events:none;z-index:10">
         🛰 Live Sim — Vehicle Added
@@ -138,13 +142,6 @@
                        color:#fff;border:1px solid rgba(99,179,237,.5);font-size:1.4rem;font-weight:700;
                        cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.5);line-height:1">−</button>
     </div>
-    <!-- Leaflet mini-map (bottom-left) -->
-    <div id="t3dMiniMap" style="position:absolute;bottom:10px;left:10px;z-index:8;
-                                   width:200px;height:150px;border-radius:8px;overflow:hidden;
-                                   border:2px solid rgba(99,179,237,.6);box-shadow:0 4px 12px rgba(0,0,0,.6)"></div>
-    <div style="position:absolute;bottom:165px;left:10px;z-index:8;
-                background:rgba(15,23,42,.92);color:#93c5fd;font-size:.62rem;font-weight:700;
-                padding:2px 8px;border-radius:4px;letter-spacing:.04em;pointer-events:none">🗺 Zone Map</div>
 </div>
 
 <!-- ── Classification legend + inspector ─────────────────────────────── -->
@@ -380,8 +377,10 @@ function norm(lat, lon) {
 
 // ── Scene setup ───────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a2f1a); // dark terrain green — ground environment
-scene.fog = new THREE.Fog(0x2a3a2a, 400, 1000); // softer fog for depth
+// Scene background is transparent — Leaflet map shows through
+// scene.background = null; // transparent
+// Minimal fog — preserves map background visibility
+scene.fog = new THREE.Fog(0x2a3a2a, 800, 1400);
 // Hemisphere light — warm sky tone + cool ground bounce for natural ambient
 const hemiLight = new THREE.HemisphereLight(0xbfd4ea, 0x4a6b3a, 0.55);
 scene.add(hemiLight);
@@ -396,7 +395,8 @@ fillLight.position.set(200, 150, -100); scene.add(fillLight);
 
 // ── Ground terrain ────────────────────────────────────────────────────
 const groundGeo = new THREE.PlaneGeometry(1400, 1400);
-const groundMat = new THREE.MeshPhongMaterial({ color: 0x2d4a2d, shininess: 0 }); // richer green terrain
+// Ground plane is transparent — Leaflet map is the actual background
+const groundMat = new THREE.MeshPhongMaterial({ color: 0x2d4a2d, shininess: 0, transparent: true, opacity: 0.0 });
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.rotation.x = -Math.PI / 2; ground.position.y = -0.1;
 scene.add(ground);
@@ -405,7 +405,7 @@ window._t3dGround = ground; // exposed for OSM tile loader
 // ── Asphalt road surface (highway running along X axis) ───────────────
 const roadW = 72; // total road width (4 lanes × ~18 units each)
 const roadGeo = new THREE.PlaneGeometry(1400, roadW);
-const roadMat = new THREE.MeshPhongMaterial({ color: 0x374151 }); // asphalt
+const roadMat = new THREE.MeshPhongMaterial({ color: 0x374151, transparent: true, opacity: 0.85 }); // semi-transparent asphalt over map
 const road = new THREE.Mesh(roadGeo, roadMat);
 road.rotation.x = -Math.PI / 2; road.position.y = 0.0;
 scene.add(road);
@@ -814,7 +814,8 @@ async function refreshScene() {
 
 // ── Camera setup ──────────────────────────────────────────────────────
 const canvas = document.getElementById('mainCanvas');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setClearColor(0x000000, 0); // transparent — Leaflet map shows through
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(canvas.clientWidth, canvas.clientHeight);
 // Overlay canvas size is synced inside _drawLabelOverlay each frame
@@ -1431,20 +1432,38 @@ function _drawLabelOverlay(camera) {
             textX, pillY + pillH - 5
         );
 
-        // ── Connector line: pill bottom → vehicle position ────────────
-        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.5)';
-        _overlayCtx.lineWidth   = 1.2;
+        // ── Connector line: pill → vehicle position (clear identification) ─
         var lineFromX = pillX + pillW / 2;
         var lineFromY = (pillY < sy) ? pillY + pillH : pillY;
+        // Draw a thick semi-transparent line with a bright core
+        _overlayCtx.strokeStyle = 'rgba(0,0,0,0.6)';
+        _overlayCtx.lineWidth   = 3.5;
         _overlayCtx.beginPath();
         _overlayCtx.moveTo(lineFromX, lineFromY);
         _overlayCtx.lineTo(sx, sy);
         _overlayCtx.stroke();
-        // Dot at vehicle position
+        // Bright core line on top
+        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.85)';
+        _overlayCtx.lineWidth   = 1.5;
+        _overlayCtx.setLineDash([4, 3]);
+        _overlayCtx.beginPath();
+        _overlayCtx.moveTo(lineFromX, lineFromY);
+        _overlayCtx.lineTo(sx, sy);
+        _overlayCtx.stroke();
+        _overlayCtx.setLineDash([]);
+        // Ring at vehicle position for clear identification
+        _overlayCtx.beginPath();
+        _overlayCtx.arc(sx, sy, 6, 0, Math.PI * 2);
+        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.9)';
+        _overlayCtx.lineWidth   = 2;
+        _overlayCtx.stroke();
         _overlayCtx.beginPath();
         _overlayCtx.arc(sx, sy, 3, 0, Math.PI * 2);
-        _overlayCtx.fillStyle = '#ffffff';
+        _overlayCtx.fillStyle = _catColors2D[cat] || '#1e3a5f';
         _overlayCtx.fill();
+        _overlayCtx.strokeStyle = '#ffffff';
+        _overlayCtx.lineWidth = 1;
+        _overlayCtx.stroke();
     });
 }
 
@@ -1520,8 +1539,11 @@ function _initMiniMap(lat, lon) {
     if (_miniMap) { _miniMap.remove(); _miniMap = null; _miniMapMarkers = []; }
     _miniMap = L.map('t3dMiniMap', {
         zoomControl: false, attributionControl: false,
-        dragging: true, scrollWheelZoom: false, doubleClickZoom: true
+        dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
+        keyboard: false, boxZoom: false, touchZoom: false
     }).setView([lat, lon], 13);
+    // Prevent Leaflet from stealing mouse events — 3D canvas handles interaction
+    _miniMap.getContainer().style.pointerEvents = 'none';
     _miniMapLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19, subdomains: 'a,b,c',
         attribution: '© OpenStreetMap'
@@ -1541,7 +1563,7 @@ function _initMiniMap(lat, lon) {
 
 function _updateMiniMap(lat, lon, zoom) {
     if (!_miniMap) { _initMiniMap(lat, lon); return; }
-    _miniMap.setView([lat, lon], zoom || 13);
+    _miniMap.setView([lat, lon], zoom || 15);
 }
 
 function _addMiniMapMarker(lat, lon, label, color, isServer) {
@@ -1591,6 +1613,7 @@ function _populateMiniMap() {
     await refreshScene();
     _tryLoadMapTile(); // load navigation map tile for zone centre
     _initMiniMap(_mapTileLat, _mapTileLon);
+    _miniMap.setZoom(15); // close street-level view
     _populateMiniMap();
     animate();
     // Activate top-down as default (clearest road/traffic view)
