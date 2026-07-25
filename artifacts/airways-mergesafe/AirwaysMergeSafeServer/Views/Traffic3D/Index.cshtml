@@ -180,8 +180,8 @@
     </div>
 </div>
 
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script id="brandLogosData" type="application/json">@Html.Raw(Model.BrandLogosJson)</script>
 <script>
@@ -1523,8 +1523,20 @@ function _initMiniMap(lat, lon) {
         dragging: true, scrollWheelZoom: false, doubleClickZoom: true
     }).setView([lat, lon], 13);
     _miniMapLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19, subdomains: 'a,b,c'
+        maxZoom: 19, subdomains: 'a,b,c',
+        attribution: '© OpenStreetMap'
     }).addTo(_miniMap);
+    // Fallback: if tiles blocked by CSP, show a dark background with grid
+    _miniMap.on('tileerror', function() {
+        if (!_miniMap._cspFallback) {
+            _miniMap._cspFallback = true;
+            _miniMapLayer.remove();
+            // Add a simple CSS grid background
+            var mapEl = document.getElementById('t3dMiniMap');
+            if (mapEl) mapEl.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 100%)';
+            // Still show markers — they work without tiles
+        }
+    });
 }
 
 function _updateMiniMap(lat, lon, zoom) {
