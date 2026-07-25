@@ -414,6 +414,9 @@ function _simPersist(running) {
         localStorage.setItem(_SIM_SK, JSON.stringify(st));
         localStorage.setItem(_SIM_CK, JSON.stringify({ hwId: st.hwId, zoneId: st.zoneId, serverId: st.serverId }));
         localStorage.setItem('airways_sim_active', running ? 'true' : 'false');
+        // Heartbeat: write current time so other pages can verify the sim is alive
+        if (running) localStorage.setItem('airways_sim_heartbeat', String(Date.now()));
+        else localStorage.removeItem('airways_sim_heartbeat');
     } catch(e) {}
 }
 
@@ -435,12 +438,16 @@ function _simRestoreState() {
             var b = document.getElementById('simTotalBadge');
             if (b) b.textContent = simTotal + ' posted';
         }
-        // Auto-resume if sim was running when user navigated away
+        // Do NOT auto-resume — if the browser was closed or the page
+        // navigated away, the sim interval is dead.  Forcing a restart
+        // here creates an uncontrolled loop that keeps posting to the DB
+        // even though the user never asked for it.
         if (st.running) {
-            document.getElementById('btnStartSim').style.display = 'none';
-            document.getElementById('btnStopSim').style.display  = '';
-            setSimStatus('pending', 'Resuming simulation…');
-            setTimeout(function() { startSim(); }, 400);
+            // Mark as stopped — the interval was killed on unload
+            st.running = false;
+            localStorage.setItem(_SIM_SK, JSON.stringify(st));
+            localStorage.setItem('airways_sim_active', 'false');
+            setSimStatus('stopped', 'Interrupted · click Start to resume (' + simTotal + ' posted)');
         } else if (simTotal > 0) {
             setSimStatus('stopped', 'Stopped · ' + simTotal + ' total posted');
         }
@@ -655,20 +662,56 @@ function showClassResult(cl, srcType) {
 }
 
 // ── Lifecycle cleanup: stop sim + clear state when the tab/window closes ──
-// Without this, airways_sim_active stays 'true' in localStorage and the sim
-// auto-restarts on next page load even though the browser tab was closed.
-window.addEventListener('beforeunload', function() {
+// Both beforeunload and pagehide fire on tab close / navigation.
+// pagehide is more reliable on mobile; beforeunload covers desktop.
+function _simLifecycleShutdown() {
     if (simTimer || simDelayTmr) {
         if (simTimer)    { clearInterval(simTimer);    simTimer = null; }
         if (simDelayTmr) { clearTimeout(simDelayTmr);  simDelayTmr = null; }
+        // Fire-and-forget server cleanup — use sendBeacon so it survives page unload
         try {
-            localStorage.setItem('airways_sim_active', 'false');
-            if (airwaysBroadcast) airwaysBroadcast.postMessage({ type: 'sim_stopped' });
+            var tok = document.querySelector('input[name="__RequestVerificationToken"]')?.value || '';
+            var formData = new FormData();
+            formData.append('__RequestVerificationToken', tok);
+            navigator.sendBeacon('/DataInputFormats/SimulationStop', formData);
         } catch(e) {}
+    }
+    try {
+        // Mark sim as fully stopped in ALL storage keys so restore does NOT restart
+        var raw = localStorage.getItem(_SIM_SK);
+        if (raw) {
+            var st = JSON.parse(raw);
+            st.running = false;
+            st.at = Date.now();
+            localStorage.setItem(_SIM_SK, JSON.stringify(st));
+        }
+        localStorage.setItem('airways_sim_active', 'false');
+        localStorage.removeItem('airways_sim_heartbeat');
+        if (airwaysBroadcast) airwaysBroadcast.postMessage({ type: 'sim_stopped' });
+    } catch(e) {}
+}
+window.addEventListener('beforeunload', _simLifecycleShutdown);
+window.addEventListener('pagehide', _simLifecycleShutdown);
+
+// Stop sim when tab becomes hidden for more than 30s (mobile / tab switch)
+var _visHiddenSince = null;
+document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+        _visHiddenSince = Date.now();
+        // Give 30s grace period, then stop the sim
+        setTimeout(function() {
+            if (document.hidden && _visHiddenSince && (Date.now() - _visHiddenSince >= 30000)) {
+                if (simTimer || simDelayTmr) {
+                    stopSim();
+                }
+            }
+        }, 31000);
+    } else {
+        _visHiddenSince = null;
     }
 });
 
-// On page load: if the sim state is > 5 minutes stale, treat it as abandoned
+// On page load: if the sim state is stale (no heartbeat in 30s), treat as abandoned
 (function _checkAbandonedSim() {
     try {
         var raw = localStorage.getItem(_SIM_SK);
@@ -676,7 +719,7 @@ window.addEventListener('beforeunload', function() {
         var st = JSON.parse(raw);
         if (st.running && st.at) {
             var ageMin = (Date.now() - st.at) / 60000;
-            if (ageMin > 5) {
+            if (ageMin > 0.5) { // 30 seconds — sim is stale if no tick in last 30s
                 localStorage.setItem('airways_sim_active', 'false');
                 st.running = false;
                 localStorage.setItem(_SIM_SK, JSON.stringify(st));
