@@ -1,5 +1,4 @@
 using AirwaysMergeSafeServer.Data;
-using AirwaysMergeSafeServer.Filters;
 using AirwaysMergeSafeServer.Models;
 using AirwaysMergeSafeServer.Services;
 using AirwaysMergeSafeServer.ViewModels;
@@ -21,12 +20,14 @@ public class DataInputFormatsController : Controller
     private readonly AppDbContext        _db;
     private readonly InputPayloadService _payloadSvc;
     private readonly VehicleClassifier   _classifier;
+    private readonly ILogger<DataInputFormatsController> _logger;
 
     public DataInputFormatsController(
         AppDbContext        db,
         InputPayloadService payloadSvc,
-        VehicleClassifier   classifier)
-    { _db = db; _payloadSvc = payloadSvc; _classifier = classifier; }
+        VehicleClassifier   classifier,
+        ILogger<DataInputFormatsController> logger)
+    { _db = db; _payloadSvc = payloadSvc; _classifier = classifier; _logger = logger; }
 
     private bool IsAjax => Request.Headers["X-Requested-With"] == "XMLHttpRequest";
 
