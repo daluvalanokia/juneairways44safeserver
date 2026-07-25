@@ -159,6 +159,36 @@ public class DataInputFormatsController : Controller
         }
         catch { /* non-fatal */ }
 
+        // ── Update SimulationStatus in database ──────────────────────────────
+        // Maintain a persistent server-side record so the app knows the sim
+        // was recently active even after a restart.  This is the authoritative
+        // source — localStorage is only a hint for the browser.
+        try
+        {
+            var simStatus = await _db.SimulationStatuses
+                .OrderByDescending(s => s.Id)
+                .FirstOrDefaultAsync();
+
+            if (simStatus == null)
+            {
+                simStatus = new SimulationStatus { Id = 0 };
+                _db.SimulationStatuses.Add(simStatus);
+            }
+
+            simStatus.IsRunning    = true;
+            simStatus.HighwayId    = highwayId;
+            simStatus.ZoneId        = zoneId;
+            simStatus.ServerId     = serverId;
+            simStatus.SourceType    = type;
+            simStatus.TotalPosted  = simStatus.TotalPosted + 1;
+            simStatus.LastHeartbeat = DateTime.UtcNow;
+            simStatus.StoppedAt    = null;
+        }
+        catch (Exception exSim)
+        {
+            _logger.LogWarning("SimPost: Failed to update SimulationStatus: {Message}", exSim.Message);
+        }
+
         await _db.SaveChangesAsync();
 
         // Return classification in response so JS can update the scene immediately
@@ -193,6 +223,18 @@ public class DataInputFormatsController : Controller
     {
         try
         {
+            // ── Mark simulation as stopped in the database ────────────────────
+            var simStatus = await _db.SimulationStatuses
+                .OrderByDescending(s => s.Id)
+                .FirstOrDefaultAsync();
+            if (simStatus != null)
+            {
+                simStatus.IsRunning  = false;
+                simStatus.StoppedAt  = DateTime.UtcNow;
+                simStatus.TotalPosted = 0;
+                _db.SimulationStatuses.Update(simStatus);
+            }
+
             // Delete recent simulation-generated payloads (label starts with "Simulation [")
             var simPayloads = _db.SamplePayloads
                 .Where(p => p.Label != null && p.Label.StartsWith("Simulation ["));
@@ -204,11 +246,57 @@ public class DataInputFormatsController : Controller
             _db.VehicleEvents.RemoveRange(simEvents);
 
             await _db.SaveChangesAsync();
-            return Json(new { ok = true, message = "Simulation records cleaned up" });
+            return Json(new { ok = true, message = "Simulation stopped and records cleaned up" });
         }
         catch (Exception ex)
         {
             return Json(new { ok = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// GET endpoint — returns the current simulation status from the database.
+    /// The client calls this on page load to decide whether to auto-resume.
+    /// If the DB says IsRunning=false, the client will NOT resume from localStorage.
+    /// </summary>
+    [HttpGet, SkipSessionAuth]
+    public async Task<IActionResult> SimulationStatus()
+    {
+        try
+        {
+            var simStatus = await _db.SimulationStatuses
+                .OrderByDescending(s => s.Id)
+                .FirstOrDefaultAsync();
+
+            if (simStatus == null)
+                return Json(new { isRunning = false, stale = false, totalPosted = 0 });
+
+            var heartbeatAge = DateTime.UtcNow - simStatus.LastHeartbeat;
+            var isStale      = simStatus.IsRunning && heartbeatAge.TotalMinutes > 2;
+
+            // If stale, auto-mark as stopped
+            if (isStale)
+            {
+                simStatus.IsRunning = false;
+                simStatus.StoppedAt = DateTime.UtcNow;
+                await _db.SaveChangesAsync();
+            }
+
+            return Json(new
+            {
+                isRunning   = isStale ? false : simStatus.IsRunning,
+                stale       = isStale,
+                totalPosted = simStatus.TotalPosted,
+                highwayId   = simStatus.HighwayId ?? "",
+                zoneId      = simStatus.ZoneId ?? "",
+                serverId    = simStatus.ServerId ?? "",
+                sourceType   = simStatus.SourceType ?? "",
+                heartbeatAgeSec = (int)heartbeatAge.TotalSeconds
+            });
+        }
+        catch (Exception ex)
+        {
+            return Json(new { isRunning = false, stale = false, error = ex.Message });
         }
     }
 
