@@ -391,12 +391,30 @@ var _hwyLat1 = _mapCtrLat - 0.02, _hwyLon1 = _mapCtrLon;
 var _hwyLat2 = _mapCtrLat + 0.02, _hwyLon2 = _mapCtrLon;
 var _hwyHeading = 0;  // radians, 0 = North
 
-function _setHighwayCoords(lat, lon) {
-    // Draw a ~4km road segment centred on the zone, oriented N-S by default.
-    // In future, this could use the highway's actual heading from DB.
-    _hwyLat1 = lat - 0.02; _hwyLon1 = lon;
-    _hwyLat2 = lat + 0.02; _hwyLon2 = lon;
-    _hwyHeading = 0;
+function _setHighwayCoords(lat, lon, heading) {
+    // heading: 'EW' for east-west highways (I-20, I-10, I-30)
+    //          'NS' for north-south highways (I-35, I-45)
+    //          default: auto-detect from highway name or assume EW
+    var hw = (typeof HW === 'string') ? HW.toUpperCase() : '';
+    // I-20, I-10, I-30, I-40, I-80 are east-west; I-35, I-45, I-25 are north-south
+    var isEW = (heading === 'EW') ||
+               (heading !== 'NS' && (
+                   hw.indexOf('I20') >= 0 || hw.indexOf('I-20') >= 0 ||
+                   hw.indexOf('I10') >= 0 || hw.indexOf('I30') >= 0 ||
+                   hw.indexOf('I40') >= 0 || hw.indexOf('I80') >= 0 ||
+                   hw.indexOf('TX') >= 0
+               ));
+
+    if (isEW) {
+        // East-West highway: extend along longitude axis (±0.05° ≈ 5km at this latitude)
+        _hwyLat1 = lat;       _hwyLon1 = lon - 0.05;
+        _hwyLat2 = lat;       _hwyLon2 = lon + 0.05;
+    } else {
+        // North-South highway: extend along latitude axis
+        _hwyLat1 = lat - 0.05; _hwyLon1 = lon;
+        _hwyLat2 = lat + 0.05; _hwyLon2 = lon;
+    }
+    _hwyHeading = isEW ? 'EW' : 'NS';
 }
 
 function _drawHighwayOverlay() {
@@ -900,7 +918,8 @@ function _updateSimPanel(ev) {
     var lat = parseFloat(ev.latitude || ev.Latitude || 0);
     var lon = parseFloat(ev.longitude || ev.Longitude || 0);
     sf('sfLatLon', lat.toFixed(4) + ', ' + lon.toFixed(4));
-    sf('sfDbStatus', ev.dbId ? '✓ db#' + ev.dbId + ' · vid ' + vid : 'pending...');
+    sf('sfDbStatus', ev.dbId ? '✓ db#' + ev.dbId + ' · vid ' + vid :
+        (ev._dbSaved ? '✓ saved · vid ' + vid : 'pending...'));
 
     // Flash live label
     var lbl = document.getElementById('simLiveLabel');
