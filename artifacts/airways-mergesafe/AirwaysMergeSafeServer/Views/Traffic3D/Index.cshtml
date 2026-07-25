@@ -891,7 +891,7 @@ camS.position.set(0, 0, 500); camS.lookAt(0, 0, 0);
 
 // Top-down (traffic-management bird's-eye view — DEFAULT)
 // Tighter frustum so vehicles fill a readable portion of the screen
-const oTW = 90, oTH = 55;   // ~180 scene-units wide — sedan is ~2% of width
+const oTW = 45, oTH = 27;   // tighter default so vehicles are readable on first load
 const camT = new THREE.OrthographicCamera(-oTW, oTW, oTH, -oTH, 0.1, 2000);
 camT.position.set(0, 600, 0); camT.up.set(1, 0, 0); camT.lookAt(0, 0, 0);
 // Pan support for top-down view
@@ -904,12 +904,26 @@ let currentView = 'perspective';
 function setViewport(view) {
     currentView = view;
     const w = renderer.domElement.clientWidth;
+    const h = renderer.domElement.clientHeight;
     document.getElementById('labelA').style.display = view === 'split' ? '' : 'none';
     document.getElementById('labelB').style.display = view === 'split' ? '' : 'none';
     document.getElementById('labelC').style.display = view === 'split' ? '' : 'none';
     if (view === 'split') {
         document.getElementById('labelB').style.left = Math.round(w * 0.43) + 'px';
         document.getElementById('labelC').style.left = Math.round(w * 0.72) + 'px';
+    }
+    // When switching to top-down, recalculate frustum for current canvas size
+    // so the road always fills a readable portion of the viewport
+    if (view === 'top') {
+        var aspect = h > 0 ? h / w : oTH / oTW;
+        // Only reset if the current frustum is far from default
+        // (avoid resetting if the user has zoomed to their preference)
+        if (camT.right > 200 || camT.right < 8) {
+            var resetW = oTW;
+            camT.left = -resetW; camT.right = resetW;
+            camT.top  =  resetW * aspect; camT.bottom = -resetW * aspect;
+            camT.updateProjectionMatrix();
+        }
     }
 }
 
@@ -938,19 +952,31 @@ window.addEventListener('mousemove', e => {
         prevM = {x:e.clientX, y:e.clientY};
     }
 });
-// Zoom top-down view with wheel
+// Zoom top-down view with wheel — proportional step so it feels consistent at any zoom level
 canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    var step = e.deltaY > 0 ? 1.12 : 0.88;  // 12% per notch, direction-aware
     if (currentView === 'top') {
-        // Zoom by scaling frustum half-extents
-        var newW = Math.max(30, Math.min(250, camT.right + e.deltaY * 0.1));
-        var newH = newW * (oTH / oTW);
+        var aspect = (renderer && renderer.domElement)
+            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
+            : oTH / oTW;
+        var newW = Math.max(8, Math.min(350, camT.right * step));
         camT.left = -newW; camT.right = newW;
-        camT.top  =  newH; camT.bottom = -newH;
+        camT.top  =  newW * aspect; camT.bottom = -newW * aspect;
         camT.updateProjectionMatrix();
+        _syncLeafletZoom();
+    } else if (currentView === 'side') {
+        var aspect2 = (renderer && renderer.domElement)
+            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
+            : oH / oW;
+        var newW2 = Math.max(30, Math.min(400, camS.right * step));
+        camS.left = -newW2; camS.right = newW2;
+        camS.top  =  newW2 * aspect2; camS.bottom = -newW2 * aspect2;
+        camS.updateProjectionMatrix();
     } else {
-        radius = Math.max(60, Math.min(700, radius + e.deltaY * 0.25));
+        radius = Math.max(40, Math.min(700, radius * step));
     }
-});
+}, { passive: false });
 
 canvas.addEventListener('mousemove', e => {
     if (isDrag) return;
@@ -1349,18 +1375,23 @@ let _zoomTween = null;
 
 function t3dZoomIn() {
     if (currentView === 'perspective') {
-        radius = Math.max(60, radius * 0.82);
+        radius = Math.max(40, radius * 0.78);
     } else if (currentView === 'top') {
-        var newW = Math.max(25, camT.right * 0.82);
-        var ratio = camT.top / camT.right;
+        // Use actual canvas aspect ratio for correct proportions
+        var aspect = (renderer && renderer.domElement)
+            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
+            : oTH / oTW;
+        var newW = Math.max(8, camT.right * 0.78);  // min 8 units — tight vehicle view
         camT.left = -newW; camT.right = newW;
-        camT.top = newW * ratio; camT.bottom = -newW * ratio;
+        camT.top  =  newW * aspect; camT.bottom = -newW * aspect;
         camT.updateProjectionMatrix();
     } else if (currentView === 'side') {
-        var newW2 = Math.max(60, camS.right * 0.82);
-        var ratio2 = camS.top / camS.right;
+        var aspect2 = (renderer && renderer.domElement)
+            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
+            : oH / oW;
+        var newW2 = Math.max(30, camS.right * 0.78);
         camS.left = -newW2; camS.right = newW2;
-        camS.top = newW2 * ratio2; camS.bottom = -newW2 * ratio2;
+        camS.top  =  newW2 * aspect2; camS.bottom = -newW2 * aspect2;
         camS.updateProjectionMatrix();
     }
     // Sync Leaflet map zoom to match new Three.js frustum
@@ -1369,18 +1400,22 @@ function t3dZoomIn() {
 
 function t3dZoomOut() {
     if (currentView === 'perspective') {
-        radius = Math.min(700, radius * 1.22);
+        radius = Math.min(700, radius * 1.28);
     } else if (currentView === 'top') {
-        var newW = Math.min(500, camT.right * 1.22);
-        var ratio = camT.top / camT.right;
+        var aspect = (renderer && renderer.domElement)
+            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
+            : oTH / oTW;
+        var newW = Math.min(350, camT.right * 1.28);
         camT.left = -newW; camT.right = newW;
-        camT.top = newW * ratio; camT.bottom = -newW * ratio;
+        camT.top  =  newW * aspect; camT.bottom = -newW * aspect;
         camT.updateProjectionMatrix();
     } else if (currentView === 'side') {
-        var newW2 = Math.min(400, camS.right * 1.22);
-        var ratio2 = camS.top / camS.right;
+        var aspect2 = (renderer && renderer.domElement)
+            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
+            : oH / oW;
+        var newW2 = Math.min(400, camS.right * 1.28);
         camS.left = -newW2; camS.right = newW2;
-        camS.top = newW2 * ratio2; camS.bottom = -newW2 * ratio2;
+        camS.top  =  newW2 * aspect2; camS.bottom = -newW2 * aspect2;
         camS.updateProjectionMatrix();
     }
     // Sync Leaflet map zoom to match new Three.js frustum
