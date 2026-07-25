@@ -95,10 +95,11 @@ public class InputPayloadService
                 "vehicle_id"      => $"VEH-{rng.Next(1, 21):D3}",
                 "timestamp"       => DateTime.UtcNow.ToString("o"),
                 "speed_mph"       => isAirVehicle ? rng.Next(80, 180) : rng.Next(20, 100),
-                // Use zone GPS if provided — scatter along highway corridor
-                // Small N-S spread (±zoneRadiusDeg), wider E-W spread (×3) to simulate a road
-                "latitude"        => Math.Round((zoneLat ?? 32.7767) + (rng.NextDouble() - 0.5) * zoneRadiusDeg, 6),
-                "longitude"       => Math.Round((zoneLon ?? -96.7970) + (rng.NextDouble() - 0.5) * zoneRadiusDeg * 3.0, 6),
+                // Use zone GPS if provided — scatter ALONG the highway corridor
+                // Tight cross-axis spread (±0.002° ≈ ±220m) for road width
+                // Wide along-axis spread (±0.015° ≈ ±1.5km) for highway length
+                "latitude"        => Math.Round((zoneLat ?? 32.7767) + (rng.NextDouble() - 0.5) * 0.004, 6),
+                "longitude"       => Math.Round((zoneLon ?? -96.7970) + (rng.NextDouble() - 0.5) * 0.030, 6),
                 "altitude_m"      => altitudeM,
                 "altitude_ft"     => Math.Round(altitudeM * 3.28084, 1),
                 "vehicle_type"    => vehicleType,
