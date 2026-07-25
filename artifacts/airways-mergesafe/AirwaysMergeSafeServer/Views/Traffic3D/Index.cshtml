@@ -127,6 +127,24 @@
          style="top:6px;right:6px;font-size:.72rem;opacity:0;transition:opacity .5s ease;pointer-events:none;z-index:10">
         🛰 Live Sim — Vehicle Added
     </div>
+    <!-- Zoom controls (bottom-right) -->
+    <div style="position:absolute;bottom:10px;right:10px;z-index:8;display:flex;flex-direction:column;gap:4px">
+        <button id="btnZoomIn" onclick="t3dZoomIn()" title="Zoom In"
+                style="width:38px;height:38px;border-radius:8px;background:rgba(15,23,42,.92);
+                       color:#fff;border:1px solid rgba(99,179,237,.5);font-size:1.4rem;font-weight:700;
+                       cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.5);line-height:1">＋</button>
+        <button id="btnZoomOut" onclick="t3dZoomOut()" title="Zoom Out"
+                style="width:38px;height:38px;border-radius:8px;background:rgba(15,23,42,.92);
+                       color:#fff;border:1px solid rgba(99,179,237,.5);font-size:1.4rem;font-weight:700;
+                       cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.5);line-height:1">−</button>
+    </div>
+    <!-- Leaflet mini-map (bottom-left) -->
+    <div id="t3dMiniMap" style="position:absolute;bottom:10px;left:10px;z-index:8;
+                                   width:200px;height:150px;border-radius:8px;overflow:hidden;
+                                   border:2px solid rgba(99,179,237,.6);box-shadow:0 4px 12px rgba(0,0,0,.6)"></div>
+    <div style="position:absolute;bottom:165px;left:10px;z-index:8;
+                background:rgba(15,23,42,.92);color:#93c5fd;font-size:.62rem;font-weight:700;
+                padding:2px 8px;border-radius:4px;letter-spacing:.04em;pointer-events:none">🗺 Zone Map</div>
 </div>
 
 <!-- ── Classification legend + inspector ─────────────────────────────── -->
@@ -162,6 +180,8 @@
     </div>
 </div>
 
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script id="brandLogosData" type="application/json">@Html.Raw(Model.BrandLogosJson)</script>
 <script>
@@ -203,7 +223,10 @@ function t3dZoneChanged() {
 
     // Recenter map on zone centroid
     var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-    if (z && z.lat && z.lon) _reloadMapTile(z.lat, z.lon);
+    if (z && z.lat && z.lon) {
+        _reloadMapTile(z.lat, z.lon);
+        _updateMiniMap(z.lat, z.lon, 14);
+    }
 
     // Clear all existing meshes and reload — zone filter is a hard boundary
     _clearScene();
@@ -217,6 +240,11 @@ function t3dServerChanged() {
     if (opt && opt.dataset.zone) {
         document.getElementById('t3dZoneSel').value = opt.dataset.zone;
         selectedZoneId = opt.dataset.zone;
+    }
+    // Update mini-map to zone center
+    if (selectedZoneId) {
+        var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+        if (z && z.lat && z.lon) _updateMiniMap(z.lat, z.lon, 14);
     }
     // Clear scene and reload with server filter active
     _clearScene();
@@ -353,16 +381,22 @@ function norm(lat, lon) {
 // ── Scene setup ───────────────────────────────────────────────────────
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a2f1a); // dark terrain green — ground environment
-scene.fog = new THREE.Fog(0x1a2f1a, 600, 1200);
-scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+scene.fog = new THREE.Fog(0x2a3a2a, 400, 1000); // softer fog for depth
+// Hemisphere light — warm sky tone + cool ground bounce for natural ambient
+const hemiLight = new THREE.HemisphereLight(0xbfd4ea, 0x4a6b3a, 0.55);
+scene.add(hemiLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const dir = new THREE.DirectionalLight(0xffffff, 1.2);
 dir.position.set(0, 300, 80); scene.add(dir);
-const sunLight = new THREE.DirectionalLight(0xfff4cc, 0.5);
+const sunLight = new THREE.DirectionalLight(0xfff4cc, 0.6);
 sunLight.position.set(-100, 200, -200); scene.add(sunLight);
+// Fill light from opposite side — eliminates dark vehicle faces
+const fillLight = new THREE.DirectionalLight(0x8899bb, 0.35);
+fillLight.position.set(200, 150, -100); scene.add(fillLight);
 
 // ── Ground terrain ────────────────────────────────────────────────────
 const groundGeo = new THREE.PlaneGeometry(1400, 1400);
-const groundMat = new THREE.MeshPhongMaterial({ color: 0x1e3a1e }); // green terrain
+const groundMat = new THREE.MeshPhongMaterial({ color: 0x2d4a2d, shininess: 0 }); // richer green terrain
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.rotation.x = -Math.PI / 2; ground.position.y = -0.1;
 scene.add(ground);
@@ -394,7 +428,13 @@ scene.add(road);
     scene.add(el);
 });
 
-// Yellow center divider (double line)
+// Grass median strip between opposing lanes
+const medianGeo = new THREE.PlaneGeometry(1400, 3);
+const medianMat = new THREE.MeshPhongMaterial({ color: 0x3a6b3a });
+const median = new THREE.Mesh(medianGeo, medianMat);
+median.rotation.x = -Math.PI / 2; median.position.set(0, 0.01, 0);
+scene.add(median);
+// Yellow center divider (double line) on top of median
 [-0.9, 0.9].forEach(oz => {
     const cg = new THREE.PlaneGeometry(1400, 0.7);
     const cm2 = new THREE.MeshPhongMaterial({ color: 0xfbbf24 });
@@ -412,6 +452,25 @@ laneOffsets.forEach(oz => {
         const dash = new THREE.Mesh(dg, dm);
         dash.rotation.x = -Math.PI / 2; dash.position.set(x, 0.02, oz);
         scene.add(dash);
+    }
+});
+
+// Stop bars at road ends (white perpendicular lines)
+[-680, 680].forEach(function(xEnd) {
+    var sbGeo = new THREE.PlaneGeometry(3, roadW);
+    var sbMat = new THREE.MeshPhongMaterial({ color: 0xffffff });
+    var sb = new THREE.Mesh(sbGeo, sbMat);
+    sb.rotation.x = -Math.PI / 2; sb.position.set(xEnd, 0.03, 0);
+    scene.add(sb);
+});
+// Crosswalk stripes at road ends
+[-680, 680].forEach(function(xEnd) {
+    for (var cz = -roadW/2 + 4; cz < roadW/2; cz += 8) {
+        var cwGeo = new THREE.PlaneGeometry(6, 4);
+        var cwMat = new THREE.MeshPhongMaterial({ color: 0xe5e7eb });
+        var cw = new THREE.Mesh(cwGeo, cwMat);
+        cw.rotation.x = -Math.PI / 2; cw.position.set(xEnd, 0.025, cz);
+        scene.add(cw);
     }
 });
 
@@ -1224,6 +1283,45 @@ function _t3dApplySimContext() {
 }
 
 
+// ── Zoom buttons (work for all view modes) ────────────────────────────
+let _zoomTween = null;
+
+function t3dZoomIn() {
+    if (currentView === 'perspective') {
+        radius = Math.max(60, radius * 0.82);
+    } else if (currentView === 'top') {
+        var newW = Math.max(25, camT.right * 0.82);
+        var ratio = oTH / oTW;
+        camT.left = -newW; camT.right = newW;
+        camT.top = newW * ratio; camT.bottom = -newW * ratio;
+        camT.updateProjectionMatrix();
+    } else if (currentView === 'side') {
+        var newW2 = Math.max(60, camS.right * 0.82);
+        var ratio2 = oH / oW;
+        camS.left = -newW2; camS.right = newW2;
+        camS.top = newW2 * ratio2; camS.bottom = -newW2 * ratio2;
+        camS.updateProjectionMatrix();
+    }
+}
+
+function t3dZoomOut() {
+    if (currentView === 'perspective') {
+        radius = Math.min(700, radius * 1.22);
+    } else if (currentView === 'top') {
+        var newW = Math.min(300, camT.right * 1.22);
+        var ratio = oTH / oTW;
+        camT.left = -newW; camT.right = newW;
+        camT.top = newW * ratio; camT.bottom = -newW * ratio;
+        camT.updateProjectionMatrix();
+    } else if (currentView === 'side') {
+        var newW2 = Math.min(300, camS.right * 1.22);
+        var ratio2 = oH / oW;
+        camS.left = -newW2; camS.right = newW2;
+        camS.top = newW2 * ratio2; camS.bottom = -newW2 * ratio2;
+        camS.updateProjectionMatrix();
+    }
+}
+
 // ── Animate loop ──────────────────────────────────────────────────────
 const ROAD_HALF = 680; // wrap boundary along X axis
 let tick = 0, camTween = null;
@@ -1411,10 +1509,77 @@ function animate() {
     }
 }
 
+// ── Leaflet mini-map initialization ─────────────────────────────────────
+var _miniMap = null;
+var _miniMapLayer = null;
+var _miniMapMarkers = [];
+
+function _initMiniMap(lat, lon) {
+    var el = document.getElementById('t3dMiniMap');
+    if (!el || typeof L === 'undefined') return;
+    if (_miniMap) { _miniMap.remove(); _miniMap = null; _miniMapMarkers = []; }
+    _miniMap = L.map('t3dMiniMap', {
+        zoomControl: false, attributionControl: false,
+        dragging: true, scrollWheelZoom: false, doubleClickZoom: true
+    }).setView([lat, lon], 13);
+    _miniMapLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, subdomains: 'a,b,c'
+    }).addTo(_miniMap);
+}
+
+function _updateMiniMap(lat, lon, zoom) {
+    if (!_miniMap) { _initMiniMap(lat, lon); return; }
+    _miniMap.setView([lat, lon], zoom || 13);
+}
+
+function _addMiniMapMarker(lat, lon, label, color, isServer) {
+    if (!_miniMap || !lat || !lon) return;
+    var icon = L.divIcon({
+        className: '',
+        html: '<div style="width:' + (isServer ? 10 : 14) + 'px;height:' + (isServer ? 10 : 14) +
+              'px;border-radius:50%;background:' + color +
+              ';border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.6)"></div>',
+        iconSize: [isServer ? 10 : 14, isServer ? 10 : 14]
+    });
+    var m = L.marker([lat, lon], { icon: icon }).addTo(_miniMap);
+    m.bindPopup(label);
+    _miniMapMarkers.push(m);
+}
+
+function _clearMiniMapMarkers() {
+    _miniMapMarkers.forEach(function(m) { _miniMap.removeLayer(m); });
+    _miniMapMarkers = [];
+}
+
+// Populate mini-map with zone and server markers from server data
+function _populateMiniMap() {
+    if (!_miniMap || typeof T3D_ZONES === 'undefined') return;
+    _clearMiniMapMarkers();
+    // Zone markers (blue circles)
+    T3D_ZONES.forEach(function(z) {
+        if (z.lat && z.lon) _addMiniMapMarker(z.lat, z.lon,
+            'Zone: ' + z.zoneName, '#3b82f6', false);
+    });
+    // Server markers (amber dots) — placed at their zone coordinates with small offset
+    if (typeof T3D_SERVERS !== 'undefined') {
+        T3D_SERVERS.forEach(function(s) {
+            // Find the zone for this server to get coordinates
+            var zone = T3D_ZONES.find(function(z) { return z.zoneId === s.zoneId; });
+            if (zone && zone.lat && zone.lon) {
+                // Offset server marker slightly from zone center
+                _addMiniMapMarker(zone.lat + 0.002, zone.lon + 0.002,
+                    'Server: ' + s.serverName, '#f59e0b', true);
+            }
+        });
+    }
+}
+
 // ── Boot — default to top-down traffic view ───────────────────────────
 (async () => {
     await refreshScene();
     _tryLoadMapTile(); // load navigation map tile for zone centre
+    _initMiniMap(_mapTileLat, _mapTileLon);
+    _populateMiniMap();
     animate();
     // Activate top-down as default (clearest road/traffic view)
     setViewport('top');
