@@ -1633,13 +1633,12 @@ var _miniMapLayer = null;
 var _miniMapMarkers = [];
 
 function _leafletZoomFromFrustum() {
-    // Compute Leaflet zoom from Three.js top camera frustum width.
-    // camT.right = half-width in scene units; XZ_SCALE = scene units per degree lon.
-    // At scene half-width W: visible degrees = W/XZ_SCALE → km = deg*111
-    // Reference: zoom 15 ≈ 0.18km half-width visible
-    var halfW  = (camT && camT.right) ? camT.right : 90;
-    var km     = (halfW / XZ_SCALE) * 111;
-    var lz     = Math.round(15 - Math.log2(km / 0.18));
+    // Compute Leaflet zoom from Three.js top camera frustum half-width.
+    // Uses floor (not round) so small frustum tweaks don't trigger integer zoom jumps
+    // that cause Leaflet to tear down and reload the entire tile layer.
+    var halfW = (camT && camT.right) ? camT.right : 45;
+    var km    = (halfW / XZ_SCALE) * 111;
+    var lz    = Math.floor(15 - Math.log2(km / 0.18));
     return Math.max(10, Math.min(18, lz));
 }
 
@@ -1655,9 +1654,13 @@ function _initMiniMap(lat, lon) {
     }).setView([lat, lon], initZoom);
     // CRITICAL: invalidateSize fixes black tile gaps when the container was
     // not yet fully painted when L.map() was called.
+    // Two-pass: first at 80ms (layout), second at 300ms (after tile fetch starts).
+    setTimeout(function() {
+        if (_miniMap) _miniMap.invalidateSize(true);
+    }, 80);
     setTimeout(function() {
         if (_miniMap) { _miniMap.invalidateSize(true); _populateMiniMap(); }
-    }, 100);
+    }, 300);
     // Prevent Leaflet from stealing mouse events — 3D canvas handles interaction
     _miniMap.getContainer().style.pointerEvents = 'none';
     _miniMapLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1674,8 +1677,13 @@ function _initMiniMap(lat, lon) {
             if (mapEl) mapEl.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 100%)';
         }
     }, 3000); // 3 seconds — fast fallback to dark gradient when DNS/tiles unreachable
+    var _tileErrorCount = 0;
     _miniMap.on('tileerror', function() {
-        if (!_miniMap._cspFallback) {
+        if (_miniMap._cspFallback) return;
+        _tileErrorCount++;
+        // Only trigger fallback after 3 consecutive tile errors — a single
+        // tile 404 (e.g. ocean, boundary tile) should not blank the whole map.
+        if (_tileErrorCount >= 3) {
             _miniMap._cspFallback = true;
             clearTimeout(_leafletFallbackTimer);
             _miniMapLayer.remove();
@@ -1684,6 +1692,7 @@ function _initMiniMap(lat, lon) {
         }
     });
     _miniMap.on('tileload', function() {
+        _tileErrorCount = 0; // reset on success — only consecutive errors trigger fallback
         clearTimeout(_leafletFallbackTimer);
     });
 }
@@ -1691,15 +1700,30 @@ function _initMiniMap(lat, lon) {
 function _updateMiniMap(lat, lon, zoom) {
     if (!_miniMap) { _initMiniMap(lat, lon); return; }
     var z = zoom !== undefined ? zoom : _leafletZoomFromFrustum();
-    _miniMap.setView([lat, lon], z, { animate: true, duration: 0.5 });
+    // Use panTo (no zoom change) unless zoom level actually differs — prevents tile blanking
+    var currentZ = _miniMap.getZoom();
+    if (Math.abs(currentZ - z) >= 1.0) {
+        // Zoom level changed — do a non-animated setView to avoid tile teardown
+        _miniMap.setView([lat, lon], z, { animate: false });
+        setTimeout(function() { if (_miniMap) _miniMap.invalidateSize(true); }, 30);
+    } else {
+        // Same zoom — just pan smoothly without touching tiles
+        _miniMap.panTo([lat, lon], { animate: false });
+    }
 }
 
 // Sync Leaflet zoom to match Three.js camera — called after any zoom button press
 function _syncLeafletZoom() {
     if (!_miniMap) return;
     var z = _leafletZoomFromFrustum();
-    if (Math.abs(_miniMap.getZoom() - z) >= 0.5) {
-        _miniMap.setZoom(z, { animate: true });
+    // Only change zoom when the integer tile level shifts — avoids tile teardown
+    // on every small frustum adjustment. animate:false prevents tile layer blanking.
+    if (Math.abs(_miniMap.getZoom() - z) >= 1.0) {
+        _miniMap.setZoom(z, { animate: false });
+        // Re-validate container size after zoom so Leaflet doesn't leave blank gaps
+        setTimeout(function() {
+            if (_miniMap) _miniMap.invalidateSize(true);
+        }, 30);
     }
 }
 
@@ -1750,7 +1774,8 @@ function _populateMiniMap() {
     await refreshScene();
     _tryLoadMapTile(); // load navigation map tile for zone centre
     _initMiniMap(_mapTileLat, _mapTileLon);
-    _miniMap.setZoom(_leafletZoomFromFrustum()); // match Three.js frustum
+    // NOTE: _initMiniMap already calls setView with _leafletZoomFromFrustum() —
+    // do NOT call setZoom here again; a second immediate zoom blanks the tile layer.
     _populateMiniMap();
     animate();
     // Activate top-down as default (clearest road/traffic view)
