@@ -183,6 +183,35 @@ public class DataInputFormatsController : Controller
         });
     }
 
+    /// <summary>
+    /// Server-side simulation stop — called by the client when the simulation
+    /// is stopped or the page is unloaded.  Cleans up simulation-generated
+    /// SamplePayloads and VehicleEvents so they don't accumulate in the DB.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> SimulationStop()
+    {
+        try
+        {
+            // Delete recent simulation-generated payloads (label starts with "Simulation [")
+            var simPayloads = _db.SamplePayloads
+                .Where(p => p.Label != null && p.Label.StartsWith("Simulation ["));
+            _db.SamplePayloads.RemoveRange(simPayloads);
+
+            // Delete simulation-generated VehicleEvents (VehicleId starts with "SIM-")
+            var simEvents = _db.VehicleEvents
+                .Where(v => v.VehicleId != null && v.VehicleId.StartsWith("SIM-"));
+            _db.VehicleEvents.RemoveRange(simEvents);
+
+            await _db.SaveChangesAsync();
+            return Json(new { ok = true, message = "Simulation records cleaned up" });
+        }
+        catch (Exception ex)
+        {
+            return Json(new { ok = false, error = ex.Message });
+        }
+    }
+
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(InputFormatConfig model, string[] enabledFields, string[]? customFieldNames)
     {
