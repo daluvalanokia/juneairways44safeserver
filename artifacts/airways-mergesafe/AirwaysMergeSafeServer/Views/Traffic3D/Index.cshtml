@@ -5,6 +5,7 @@
         Model.Zones.Where(z => z.Latitude.HasValue).Select(z => new {
             zoneId = z.ZoneId, zoneName = z.ZoneName, status = z.Status,
             lat = z.Latitude, lon = z.Longitude,
+            highwayId = z.HighwayId,
             altM = z.AltitudeMeters ?? 0, radius = z.GeofenceRadius
         }));
     var sensorsJson = System.Text.Json.JsonSerializer.Serialize(
@@ -400,19 +401,27 @@ function _setHighwayCoords(lat, lon, heading) {
     var isEW = (heading === 'EW') ||
                (heading !== 'NS' && (
                    hw.indexOf('I20') >= 0 || hw.indexOf('I-20') >= 0 ||
-                   hw.indexOf('I10') >= 0 || hw.indexOf('I30') >= 0 ||
-                   hw.indexOf('I40') >= 0 || hw.indexOf('I80') >= 0 ||
-                   hw.indexOf('TX') >= 0
+                   hw.indexOf('I10') >= 0 || hw.indexOf('I-10') >= 0 ||
+                   hw.indexOf('I30') >= 0 || hw.indexOf('I-30') >= 0 ||
+                   hw.indexOf('I40') >= 0 || hw.indexOf('I-40') >= 0 ||
+                   hw.indexOf('I80') >= 0 || hw.indexOf('I-80') >= 0
                ));
+    // If no explicit heading and no E-W pattern match, check for N-S patterns
+    if (!isEW && heading !== 'EW' && heading !== 'NS') {
+        var isNS = hw.indexOf('I35') >= 0 || hw.indexOf('I-35') >= 0 ||
+                   hw.indexOf('I45') >= 0 || hw.indexOf('I-45') >= 0 ||
+                   hw.indexOf('I25') >= 0 || hw.indexOf('I-25') >= 0;
+        if (!isNS) isEW = true;  // Default to E-W if unknown
+    }
 
     if (isEW) {
         // East-West highway: extend along longitude axis (±0.05° ≈ 5km at this latitude)
-        _hwyLat1 = lat;       _hwyLon1 = lon - 0.05;
-        _hwyLat2 = lat;       _hwyLon2 = lon + 0.05;
+        _hwyLat1 = lat;       _hwyLon1 = lon - 0.03;
+        _hwyLat2 = lat;       _hwyLon2 = lon + 0.03;
     } else {
         // North-South highway: extend along latitude axis
-        _hwyLat1 = lat - 0.05; _hwyLon1 = lon;
-        _hwyLat2 = lat + 0.05; _hwyLon2 = lon;
+        _hwyLat1 = lat - 0.03; _hwyLon1 = lon;
+        _hwyLat2 = lat + 0.03; _hwyLon2 = lon;
     }
     _hwyHeading = isEW ? 'EW' : 'NS';
 }
@@ -793,7 +802,7 @@ function t3dZoneChanged() {
         o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
     });
     var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-    if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); _setHighwayCoords(z.lat, z.lon); }
+    if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); _setHighwayCoords(z.lat, z.lon, z.highwayId); }
     _clearVehicles(); refreshScene();
 }
 
@@ -806,7 +815,7 @@ function t3dServerChanged() {
     }
     if (selectedZoneId) {
         var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-        if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); _setHighwayCoords(z.lat, z.lon); }
+        if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); _setHighwayCoords(z.lat, z.lon, z.highwayId); }
     }
     _clearVehicles(); refreshScene();
 }
@@ -934,7 +943,10 @@ function _onSimMsg(data) {
     if (!data) return;
     if (data.type === 'sim_vehicle' || data.type === 'sim_event') {
         var ev = data.payload || data;
+        var _wasFirst = !simRunning;
         simRunning = true; feedHeld = true;
+        // Clear the scene on the FIRST sim event to remove pre-existing live DB vehicles
+        if (_wasFirst) _clearVehicles();
         // Accept both snake_case (sim payload) and camelCase
         _simHwId   = ev.highway_id  || ev.highwayId  || _simHwId;
         _simZoneId = ev.zone_id     || ev.zoneId     || _simZoneId;
@@ -946,7 +958,7 @@ function _onSimMsg(data) {
             if (z && z.lat && z.lon) {
                 midLat = z.lat; midLon = z.lon;
                 _panMapTo(z.lat, z.lon);
-                _setHighwayCoords(z.lat, z.lon);
+                _setHighwayCoords(z.lat, z.lon, z.highwayId);
             }
             var zsel = document.getElementById('t3dZoneSel');
             if (zsel) zsel.value = _simZoneId;
