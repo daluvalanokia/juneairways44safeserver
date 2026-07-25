@@ -218,11 +218,15 @@ function t3dZoneChanged() {
         o.style.display = show ? '' : 'none';
     });
 
-    // Recenter map on zone centroid
+    // Recenter map AND scene origin on zone centroid
     var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
     if (z && z.lat && z.lon) {
+        // Update scene origin so GPS → scene coordinates are correct for this zone
+        midLat = z.lat; midLon = z.lon;
         _reloadMapTile(z.lat, z.lon);
-        _updateMiniMap(z.lat, z.lon, 14);
+        _updateMiniMap(z.lat, z.lon);
+        // Pan top camera back to origin so new vehicles appear centred
+        camTpanX = 0; camTpanZ = 0;
     }
 
     // Clear all existing meshes and reload — zone filter is a hard boundary
@@ -238,10 +242,15 @@ function t3dServerChanged() {
         document.getElementById('t3dZoneSel').value = opt.dataset.zone;
         selectedZoneId = opt.dataset.zone;
     }
-    // Update mini-map to zone center
+    // Update scene origin + map center to zone of selected server
     if (selectedZoneId) {
         var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-        if (z && z.lat && z.lon) _updateMiniMap(z.lat, z.lon, 14);
+        if (z && z.lat && z.lon) {
+            midLat = z.lat; midLon = z.lon;
+            _reloadMapTile(z.lat, z.lon);
+            _updateMiniMap(z.lat, z.lon);
+            camTpanX = 0; camTpanZ = 0;
+        }
     }
     // Clear scene and reload with server filter active
     _clearScene();
@@ -414,7 +423,14 @@ function classifyLocal(ev) {
 }
 
 // ── Lat/lon normalisation ─────────────────────────────────────────────
-let midLat = 32.75, midLon = -97.0;
+// midLat/midLon = scene origin in real-world coordinates.
+// Initialise from zone data so vehicles from the first DB load land at correct positions.
+var _initMidLat = 32.75, _initMidLon = -97.0;
+if (typeof T3D_ZONES !== 'undefined' && T3D_ZONES.length > 0) {
+    var _z0 = T3D_ZONES.find(function(z){ return z.lat && z.lon; });
+    if (_z0) { _initMidLat = _z0.lat; _initMidLon = _z0.lon; }
+}
+let midLat = _initMidLat, midLon = _initMidLon;
 function norm(lat, lon) {
     return { x: (lon - midLon) * XZ_SCALE, z: (lat - midLat) * XZ_SCALE };
 }
@@ -1336,35 +1352,39 @@ function t3dZoomIn() {
         radius = Math.max(60, radius * 0.82);
     } else if (currentView === 'top') {
         var newW = Math.max(25, camT.right * 0.82);
-        var ratio = oTH / oTW;
+        var ratio = camT.top / camT.right;
         camT.left = -newW; camT.right = newW;
         camT.top = newW * ratio; camT.bottom = -newW * ratio;
         camT.updateProjectionMatrix();
     } else if (currentView === 'side') {
         var newW2 = Math.max(60, camS.right * 0.82);
-        var ratio2 = oH / oW;
+        var ratio2 = camS.top / camS.right;
         camS.left = -newW2; camS.right = newW2;
         camS.top = newW2 * ratio2; camS.bottom = -newW2 * ratio2;
         camS.updateProjectionMatrix();
     }
+    // Sync Leaflet map zoom to match new Three.js frustum
+    _syncLeafletZoom();
 }
 
 function t3dZoomOut() {
     if (currentView === 'perspective') {
         radius = Math.min(700, radius * 1.22);
     } else if (currentView === 'top') {
-        var newW = Math.min(300, camT.right * 1.22);
-        var ratio = oTH / oTW;
+        var newW = Math.min(500, camT.right * 1.22);
+        var ratio = camT.top / camT.right;
         camT.left = -newW; camT.right = newW;
         camT.top = newW * ratio; camT.bottom = -newW * ratio;
         camT.updateProjectionMatrix();
     } else if (currentView === 'side') {
-        var newW2 = Math.min(300, camS.right * 1.22);
-        var ratio2 = oH / oW;
+        var newW2 = Math.min(400, camS.right * 1.22);
+        var ratio2 = camS.top / camS.right;
         camS.left = -newW2; camS.right = newW2;
         camS.top = newW2 * ratio2; camS.bottom = -newW2 * ratio2;
         camS.updateProjectionMatrix();
     }
+    // Sync Leaflet map zoom to match new Three.js frustum
+    _syncLeafletZoom();
 }
 
 // ── Animate loop ──────────────────────────────────────────────────────
@@ -1577,15 +1597,32 @@ var _miniMap = null;
 var _miniMapLayer = null;
 var _miniMapMarkers = [];
 
+function _leafletZoomFromFrustum() {
+    // Compute Leaflet zoom from Three.js top camera frustum width.
+    // camT.right = half-width in scene units; XZ_SCALE = scene units per degree lon.
+    // At scene half-width W: visible degrees = W/XZ_SCALE → km = deg*111
+    // Reference: zoom 15 ≈ 0.18km half-width visible
+    var halfW  = (camT && camT.right) ? camT.right : 90;
+    var km     = (halfW / XZ_SCALE) * 111;
+    var lz     = Math.round(15 - Math.log2(km / 0.18));
+    return Math.max(10, Math.min(18, lz));
+}
+
 function _initMiniMap(lat, lon) {
     var el = document.getElementById('t3dMiniMap');
     if (!el || typeof L === 'undefined') return;
     if (_miniMap) { _miniMap.remove(); _miniMap = null; _miniMapMarkers = []; }
+    var initZoom = _leafletZoomFromFrustum();
     _miniMap = L.map('t3dMiniMap', {
         zoomControl: false, attributionControl: false,
         dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
         keyboard: false, boxZoom: false, touchZoom: false
-    }).setView([lat, lon], 13);
+    }).setView([lat, lon], initZoom);
+    // CRITICAL: invalidateSize fixes black tile gaps when the container was
+    // not yet fully painted when L.map() was called.
+    setTimeout(function() {
+        if (_miniMap) { _miniMap.invalidateSize(true); _populateMiniMap(); }
+    }, 100);
     // Prevent Leaflet from stealing mouse events — 3D canvas handles interaction
     _miniMap.getContainer().style.pointerEvents = 'none';
     _miniMapLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1601,7 +1638,7 @@ function _initMiniMap(lat, lon) {
             var mapEl = document.getElementById('t3dMiniMap');
             if (mapEl) mapEl.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 100%)';
         }
-    }, 3000);
+    }, 8000); // 8 seconds — tiles can take longer on first load over slow connections
     _miniMap.on('tileerror', function() {
         if (!_miniMap._cspFallback) {
             _miniMap._cspFallback = true;
@@ -1618,7 +1655,17 @@ function _initMiniMap(lat, lon) {
 
 function _updateMiniMap(lat, lon, zoom) {
     if (!_miniMap) { _initMiniMap(lat, lon); return; }
-    _miniMap.setView([lat, lon], zoom || 15);
+    var z = zoom !== undefined ? zoom : _leafletZoomFromFrustum();
+    _miniMap.setView([lat, lon], z, { animate: true, duration: 0.5 });
+}
+
+// Sync Leaflet zoom to match Three.js camera — called after any zoom button press
+function _syncLeafletZoom() {
+    if (!_miniMap) return;
+    var z = _leafletZoomFromFrustum();
+    if (Math.abs(_miniMap.getZoom() - z) >= 0.5) {
+        _miniMap.setZoom(z, { animate: true });
+    }
 }
 
 function _addMiniMapMarker(lat, lon, label, color, isServer) {
@@ -1668,7 +1715,7 @@ function _populateMiniMap() {
     await refreshScene();
     _tryLoadMapTile(); // load navigation map tile for zone centre
     _initMiniMap(_mapTileLat, _mapTileLon);
-    _miniMap.setZoom(15); // close street-level view
+    _miniMap.setZoom(_leafletZoomFromFrustum()); // match Three.js frustum
     _populateMiniMap();
     animate();
     // Activate top-down as default (clearest road/traffic view)
@@ -1687,6 +1734,13 @@ function _populateMiniMap() {
 setInterval(function() {
     if (!simRunning && !feedHeld) refreshScene();
 }, 30000);
+
+// ── Window resize: keep Leaflet in sync with container ──────────────────
+window.addEventListener('resize', function() {
+    if (_miniMap) {
+        setTimeout(function() { _miniMap.invalidateSize(true); }, 50);
+    }
+});
 
 // ── Live simulation feed ───────────────────────────────────────────────
 function _simNorm(evObj, cl) {
