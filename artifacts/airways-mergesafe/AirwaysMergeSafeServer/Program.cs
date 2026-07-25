@@ -126,58 +126,205 @@ try
             logger.LogError(ex, "Startup: MigrateAsync failed — running column safety guards.");
         }
 
-        // ── Step 1b: Critical-table existence guard ─────────────────────
-        // Handles the case where git checkout/pull/stash overwrote mergesafe.db
-        // with a stale or corrupted version. The __EFMigrationsHistory table
-        // may show all migrations as "applied" but the actual tables are missing
-        // (corruption from the file being replaced underneath the running app).
-        // If any critical table is missing, drop and recreate the entire database.
+        // ── Step 1b: Ensure ALL critical tables exist ──────────────────────
+        // Brute-force safety net: if MigrateAsync() failed or the database was
+        // corrupted/stale (e.g. git checkout overwrote mergesafe.db), create
+        // every table with CREATE TABLE IF NOT EXISTS so the app can boot.
+        // This is idempotent — existing tables are not affected.
         if (!isPostgres)
         {
-            try
+            var createTables = new[]
             {
-                var criticalTables = new[] { "Highways", "MergeZones", "SwitchServers", "UserProfiles" };
-                var conn = db.Database.GetDbConnection();
-                await conn.OpenAsync();
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table'";
-                using var reader = await cmd.ExecuteReaderAsync();
-                var existing = new HashSet<string>();
-                while (await reader.ReadAsync())
-                    existing.Add(reader.GetString(0));
-                await reader.CloseAsync();
-                await conn.CloseAsync();
+                // Highways
+                @"CREATE TABLE IF NOT EXISTS Highways (
+                    Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Name        TEXT NOT NULL,
+                    HighwayId   TEXT NOT NULL,
+                    State       TEXT,
+                    Description TEXT,
+                    IsActive    INTEGER NOT NULL DEFAULT 1,
+                    CreatedDate TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                // MergeZones
+                @"CREATE TABLE IF NOT EXISTS MergeZones (
+                    Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ZoneName        TEXT NOT NULL,
+                    ZoneId          TEXT NOT NULL,
+                    HighwayId       TEXT NOT NULL,
+                    MileMarker      REAL,
+                    Latitude        REAL,
+                    Longitude       REAL,
+                    GeofenceRadius  INTEGER NOT NULL DEFAULT 500,
+                    Status          TEXT NOT NULL DEFAULT 'active',
+                    AltitudeMeters  REAL DEFAULT 0,
+                    CreatedDate     TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                // SwitchServers
+                @"CREATE TABLE IF NOT EXISTS SwitchServers (
+                    Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ServerName      TEXT NOT NULL,
+                    ServerId        TEXT NOT NULL,
+                    ZoneId          TEXT,
+                    HighwayId       TEXT NOT NULL,
+                    IpAddress       TEXT,
+                    Port            INTEGER NOT NULL DEFAULT 5000,
+                    Status          TEXT NOT NULL DEFAULT 'offline',
+                    FirmwareVersion TEXT,
+                    UptimeSeconds   INTEGER NOT NULL DEFAULT 0,
+                    CpuPercent      REAL NOT NULL DEFAULT 0,
+                    MemoryPercent   REAL NOT NULL DEFAULT 0,
+                    LastHeartbeat   TEXT NOT NULL DEFAULT (datetime('now')),
+                    AltitudeMinMeters  REAL,
+                    AltitudeMaxMeters  REAL,
+                    AltitudeWidthMeters REAL,
+                    GpsLocation     TEXT,
+                    CreatedDate     TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                // SensorDevices
+                @"CREATE TABLE IF NOT EXISTS SensorDevices (
+                    Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    DeviceName      TEXT NOT NULL,
+                    DeviceId        TEXT NOT NULL,
+                    DeviceType      TEXT NOT NULL,
+                    ZoneId          TEXT,
+                    HighwayId       TEXT NOT NULL,
+                    MileMarker      REAL,
+                    Latitude        REAL,
+                    Longitude       REAL,
+                    Status          TEXT NOT NULL DEFAULT 'offline',
+                    FirmwareVersion TEXT,
+                    AltitudeMeters  REAL DEFAULT 0,
+                    LastHeartbeat   TEXT NOT NULL DEFAULT (datetime('now')),
+                    CreatedDate     TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                // TriangulationConfigs
+                @"CREATE TABLE IF NOT EXISTS TriangulationConfigs (
+                    Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ZoneId          TEXT NOT NULL,
+                    HighwayId       TEXT NOT NULL,
+                    GeofenceRadius  INTEGER NOT NULL DEFAULT 500,
+                    IsActive        INTEGER NOT NULL DEFAULT 1,
+                    Switch1Label    TEXT, Switch1ServerId TEXT,
+                    Switch1Lat      REAL, Switch1Lon REAL,
+                    Switch2Label    TEXT, Switch2ServerId TEXT,
+                    Switch2Lat      REAL, Switch2Lon REAL,
+                    Switch3Label    TEXT, Switch3ServerId TEXT,
+                    Switch3Lat      REAL, Switch3Lon REAL,
+                    CreatedDate     TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                // VehicleEvents
+                @"CREATE TABLE IF NOT EXISTS VehicleEvents (
+                    Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    EventType       TEXT NOT NULL DEFAULT 'vehicle_pass',
+                    ZoneId          TEXT,
+                    HighwayId       TEXT NOT NULL,
+                    DeviceId        TEXT,
+                    VehicleId       TEXT,
+                    SpeedMph        REAL,
+                    Latitude        REAL,
+                    Longitude       REAL,
+                    Heading         REAL,
+                    Direction       TEXT,
+                    Payload         TEXT,
+                    AltitudeMeters  REAL DEFAULT 0,
+                    VehicleMode     TEXT NOT NULL DEFAULT 'ground',
+                    VehicleCategory TEXT NOT NULL DEFAULT 'sedan',
+                    VehicleClassJson TEXT,
+                    IsAirFlyCar     TEXT NOT NULL DEFAULT 'N',
+                    CreatedDate     TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                // InputFormatConfigs
+                @"CREATE TABLE IF NOT EXISTS InputFormatConfigs (
+                    Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    FormatName      TEXT NOT NULL,
+                    SourceId        TEXT,
+                    SourceType      TEXT NOT NULL DEFAULT 'tomtom',
+                    InputSource     TEXT,
+                    Description     TEXT,
+                    EnabledFieldsRaw TEXT,
+                    CreatedDate     TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                // SamplePayloads
+                @"CREATE TABLE IF NOT EXISTS SamplePayloads (
+                    Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ConfigId    INTEGER,
+                    SourceType  TEXT NOT NULL DEFAULT 'tomtom',
+                    Label       TEXT,
+                    Payload     TEXT,
+                    IsValid     INTEGER NOT NULL DEFAULT 1,
+                    CreatedDate TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                // UserProfiles
+                @"CREATE TABLE IF NOT EXISTS UserProfiles (
+                    Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    UserId          TEXT,
+                    FullName        TEXT NOT NULL,
+                    UserType        TEXT NOT NULL DEFAULT 'operator',
+                    Phone           TEXT,
+                    Address         TEXT,
+                    HighwayId       TEXT,
+                    HighwayName     TEXT,
+                    DeviceIdsRaw    TEXT,
+                    Notes           TEXT,
+                    Password        TEXT,
+                    IsActive        INTEGER NOT NULL DEFAULT 1,
+                    FailedLoginAttempts INTEGER NOT NULL DEFAULT 0,
+                    LockedUntil     TEXT,
+                    CreatedDate     TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                // AuditLogs
+                @"CREATE TABLE IF NOT EXISTS AuditLogs (
+                    Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    UserId      TEXT NOT NULL DEFAULT '',
+                    FullName    TEXT NOT NULL DEFAULT '',
+                    HighwayId   TEXT,
+                    Controller  TEXT NOT NULL DEFAULT '',
+                    Action      TEXT NOT NULL DEFAULT '',
+                    EntityType  TEXT,
+                    EntityId    TEXT,
+                    Summary     TEXT,
+                    IpAddress   TEXT,
+                    CreatedDate TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+            };
 
-                var missing = criticalTables.Where(t => !existing.Contains(t)).ToList();
-                if (missing.Count > 0)
+            foreach (var sql in createTables)
+            {
+                try { await db.Database.ExecuteSqlRawAsync(sql); }
+                catch (Exception exTable)
                 {
-                    logger.LogError("Startup: Critical tables missing from DB: {Tables}. "
-                        + "Database appears corrupted (likely overwritten by git checkout). "
-                        + "Dropping and recreating from scratch.", string.Join(", ", missing));
-
-                    // Delete the corrupt database file and re-run migrations
-                    await db.Database.EnsureDeletedAsync();
-                    await db.Database.MigrateAsync();
-                    logger.LogInformation("Startup: Database recreated — {TableCount} critical tables verified.",
-                        criticalTables.Length);
+                    logger.LogDebug("Startup: CREATE TABLE skipped: {Message}", exTable.Message);
                 }
             }
-            catch (Exception exGuard)
+
+            // Create critical indexes (idempotent)
+            var createIndexes = new[]
             {
-                logger.LogError(exGuard, "Startup: Table existence guard failed — attempting full recreate.");
-                try
-                {
-                    await db.Database.EnsureDeletedAsync();
-                    await db.Database.MigrateAsync();
-                    logger.LogInformation("Startup: Database recreated after guard failure.");
-                }
-                catch (Exception exRecreate)
-                {
-                    logger.LogError(exRecreate, "Startup: Full recreate failed — app will start with missing tables.");
-                }
+                "CREATE INDEX IF NOT EXISTS IX_MergeZones_HighwayId     ON MergeZones (HighwayId)",
+                "CREATE INDEX IF NOT EXISTS IX_SwitchServers_HighwayId  ON SwitchServers (HighwayId)",
+                "CREATE INDEX IF NOT EXISTS IX_SensorDevices_HighwayId  ON SensorDevices (HighwayId)",
+                "CREATE INDEX IF NOT EXISTS IX_VehicleEvents_HighwayId  ON VehicleEvents (HighwayId)",
+                "CREATE INDEX IF NOT EXISTS IX_UserProfiles_HighwayId   ON UserProfiles (HighwayId)",
+                "CREATE INDEX IF NOT EXISTS IX_SwitchServers_HighwayId_ZoneId ON SwitchServers (HighwayId, ZoneId)",
+                "CREATE INDEX IF NOT EXISTS IX_SensorDevices_HighwayId_ZoneId ON SensorDevices (HighwayId, ZoneId)",
+                "CREATE INDEX IF NOT EXISTS IX_VehicleEvents_HighwayId_ZoneId ON VehicleEvents (HighwayId, ZoneId)",
+                "CREATE INDEX IF NOT EXISTS IX_VehicleEvents_VehicleMode     ON VehicleEvents (VehicleMode)",
+                "CREATE INDEX IF NOT EXISTS IX_VehicleEvents_VehicleCategory ON VehicleEvents (VehicleCategory)",
+                "CREATE INDEX IF NOT EXISTS IX_AuditLogs_UserId                ON AuditLogs (UserId)",
+                "CREATE INDEX IF NOT EXISTS IX_AuditLogs_CreatedDate           ON AuditLogs (CreatedDate)",
+                "CREATE INDEX IF NOT EXISTS IX_AuditLogs_HighwayId_CreatedDate ON AuditLogs (HighwayId, CreatedDate)",
+            };
+            foreach (var sql in createIndexes)
+            {
+                try { await db.Database.ExecuteSqlRawAsync(sql); }
+                catch { /* index already exists — harmless */ }
             }
+
+            logger.LogInformation("Startup: All {Count} tables + {IdxCount} indexes verified via CREATE IF NOT EXISTS.",
+                createTables.Length, createIndexes.Length);
         }
 
+        // ── Step 2: Idempotent column guards ──────────────────────────────
         // ── Step 2: Idempotent column guards ──────────────────────────────
         // Safety net for pre-existing DBs created before any migration was added.
         // SQLite does NOT support "ADD COLUMN IF NOT EXISTS" — each statement is
@@ -206,24 +353,6 @@ try
             "ALTER TABLE VehicleEvents ADD COLUMN AltitudeMeters REAL DEFAULT 0",
             "ALTER TABLE SensorDevices ADD COLUMN AltitudeMeters REAL DEFAULT 0",
             "ALTER TABLE MergeZones    ADD COLUMN AltitudeMeters REAL DEFAULT 0",
-
-            // 20260620000001 AddAuditLog
-            @"CREATE TABLE IF NOT EXISTS AuditLogs (
-                Id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                UserId      TEXT    NOT NULL DEFAULT '',
-                FullName    TEXT    NOT NULL DEFAULT '',
-                HighwayId   TEXT,
-                Controller  TEXT    NOT NULL DEFAULT '',
-                Action      TEXT    NOT NULL DEFAULT '',
-                EntityType  TEXT,
-                EntityId    TEXT,
-                Summary     TEXT,
-                IpAddress   TEXT,
-                CreatedDate TEXT    NOT NULL DEFAULT (datetime('now'))
-            )",
-            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_UserId                ON AuditLogs (UserId)",
-            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_CreatedDate           ON AuditLogs (CreatedDate)",
-            "CREATE INDEX IF NOT EXISTS IX_AuditLogs_HighwayId_CreatedDate ON AuditLogs (HighwayId, CreatedDate)",
 
             // 20260620000002 AddVehicleClassification
             "ALTER TABLE VehicleEvents ADD COLUMN VehicleMode     TEXT NOT NULL DEFAULT 'ground'",
