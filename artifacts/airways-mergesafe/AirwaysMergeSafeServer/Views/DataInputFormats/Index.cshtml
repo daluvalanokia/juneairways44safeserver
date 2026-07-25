@@ -459,6 +459,10 @@ function simBroadcast(type) {
     var _ivSec = parseInt((document.getElementById('simInterval')||{}).value||'30');
     if (airwaysBroadcast) airwaysBroadcast.postMessage({ type: type, intervalSec: _ivSec });
     _simPersist(type === 'sim_started');
+    // Write heartbeat immediately on sim_started so T3D watchdog sees it
+    if (type === 'sim_started') {
+        try { localStorage.setItem('airways_sim_heartbeat', String(Date.now())); } catch(e) {}
+    }
 }
 
 function simFilterDropdowns() {
@@ -693,19 +697,20 @@ function _simLifecycleShutdown() {
 window.addEventListener('beforeunload', _simLifecycleShutdown);
 window.addEventListener('pagehide', _simLifecycleShutdown);
 
-// Stop sim when tab becomes hidden for more than 30s (mobile / tab switch)
+// Stop sim when tab is hidden for more than 2 minutes (mobile / tab switch).
+// Shorter timeouts kill the sim during brief tab switches.
 var _visHiddenSince = null;
 document.addEventListener('visibilitychange', function() {
     if (document.hidden) {
         _visHiddenSince = Date.now();
-        // Give 30s grace period, then stop the sim
+        // Give 2 min grace period — sim keeps running in background
         setTimeout(function() {
-            if (document.hidden && _visHiddenSince && (Date.now() - _visHiddenSince >= 30000)) {
+            if (document.hidden && _visHiddenSince && (Date.now() - _visHiddenSince >= 120000)) {
                 if (simTimer || simDelayTmr) {
                     stopSim();
                 }
             }
-        }, 31000);
+        }, 121000);
     } else {
         _visHiddenSince = null;
     }
@@ -718,9 +723,14 @@ document.addEventListener('visibilitychange', function() {
         if (!raw) return;
         var st = JSON.parse(raw);
         if (st.running && st.at) {
-            var ageMin = (Date.now() - st.at) / 60000;
-            if (ageMin > 0.5) { // 30 seconds — sim is stale if no tick in last 30s
+            // Use 3x the sim interval as the staleness window (min 90 seconds).
+            // If the sim interval is 30s, staleness kicks in at 90s — not 30s.
+            var simIntervalSec = st.interval || 30;
+            var staleLimitSec  = Math.max(90, simIntervalSec * 3);
+            var ageSec = (Date.now() - st.at) / 1000;
+            if (ageSec > staleLimitSec) {
                 localStorage.setItem('airways_sim_active', 'false');
+                localStorage.removeItem('airways_sim_heartbeat');
                 st.running = false;
                 localStorage.setItem(_SIM_SK, JSON.stringify(st));
             }
