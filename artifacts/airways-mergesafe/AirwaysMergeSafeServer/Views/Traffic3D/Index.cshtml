@@ -316,9 +316,13 @@ function _initMap() {
         keyboard: false, boxZoom: false, touchZoom: false
     }).setView([_mapCtrLat, _mapCtrLon], 15);
 
-    // Two-pass invalidateSize so tiles load correctly after DOM paint
+    // Mark ready immediately — _map.project() works as soon as setView is called.
+    // Don't gate rendering on a setTimeout that may fire before DOM is painted.
+    _mapReady = true;
+
+    // invalidateSize fixes tile gaps after DOM paint — but doesn't block rendering
     setTimeout(function() { if (_map) _map.invalidateSize(true); }, 80);
-    setTimeout(function() { if (_map) { _map.invalidateSize(true); _mapReady = true; } }, 300);
+    setTimeout(function() { if (_map) _map.invalidateSize(true); }, 300);
 
     // Block map from stealing mouse events (3D canvas handles interaction)
     _map.getContainer().style.pointerEvents = 'none';
@@ -396,21 +400,32 @@ function _setHighwayCoords(lat, lon) {
 }
 
 function _drawHighwayOverlay() {
-    if (!_map || !_oc || !_octx || !_mapReady) return;
-    var cw = _oc.parentElement.clientWidth;
-    var ch = _oc.parentElement.clientHeight;
-    if (_oc.width !== cw || _oc.height !== ch) { _oc.width = cw; _oc.height = ch; }
+    if (!_oc || !_octx) return;
+    var cw = _oc.width, ch = _oc.height;
+    if (cw < 2 || ch < 2) return;
 
-    // Project the highway endpoints from GPS to pixel using Leaflet's own projection
-    var origin = _map.getPixelOrigin();
-    var z = _map.getZoom();
-    var p1 = _map.project([_hwyLat1, _hwyLon1], z);
-    var p2 = _map.project([_hwyLat2, _hwyLon2], z);
-    var x1 = p1.x - origin.x, y1 = p1.y - origin.y;
-    var x2 = p2.x - origin.x, y2 = p2.y - origin.y;
+    var x1, y1, x2, y2, zoomFactor;
+    if (_map && _mapReady) {
+        // Primary: Leaflet projection
+        var origin = _map.getPixelOrigin();
+        var z = _map.getZoom();
+        var p1 = _map.project([_hwyLat1, _hwyLon1], z);
+        var p2 = _map.project([_hwyLat2, _hwyLon2], z);
+        x1 = p1.x - origin.x; y1 = p1.y - origin.y;
+        x2 = p2.x - origin.x; y2 = p2.y - origin.y;
+        zoomFactor = Math.pow(2, z - 15);
+    } else {
+        // Fallback: linear projection
+        var zfb = _leafletZoom || 15;
+        var pxPerDeg = Math.pow(2, zfb) * 256 / 360;
+        x1 = cw/2 + (_hwyLon1 - _mapCtrLon) * pxPerDeg;
+        y1 = ch/2 - (_hwyLat1 - _mapCtrLat) * pxPerDeg;
+        x2 = cw/2 + (_hwyLon2 - _mapCtrLon) * pxPerDeg;
+        y2 = ch/2 - (_hwyLat2 - _mapCtrLat) * pxPerDeg;
+        zoomFactor = Math.pow(2, zfb - 15);
+    }
 
     // Road width in pixels — scales with Leaflet zoom (tight coupling with map)
-    var zoomFactor = Math.pow(2, z - 15);
     var roadPx = Math.max(24, Math.round(48 * zoomFactor));
 
     // Draw road as a thick line from p1 to p2 (the "bridge" over the highway)
@@ -425,7 +440,7 @@ function _drawHighwayOverlay() {
     var ex = x2 + ux * extLen, ey = y2 + uy * extLen;
 
     // Road surface (semi-transparent asphalt)
-    _octx.clearRect(0, 0, cw, ch);
+    // NOTE: do NOT clearRect here — _renderLoop already clears the canvas.
     _octx.strokeStyle = 'rgba(80, 100, 120, 0.55)';
     _octx.lineWidth = roadPx;
     _octx.lineCap = 'butt';
@@ -468,20 +483,27 @@ function _drawHighwayOverlay() {
 
 // ── Vehicle overlay: draw vehicles as GPS-projected circles with labels ──
 function _drawVehicles() {
-    if (!_map || !_oc || !_octx || !_mapReady) return;
+    if (!_oc || !_octx) return;
     var cw = _oc.width, ch = _oc.height;
+    if (cw < 2 || ch < 2) return;
 
     vehicleData.forEach(function(vd, vid) {
         if (!vd.lat || !vd.lon) return;
 
-        // GPS → Leaflet layer point → canvas pixel
-        var pt = _map.latLngToLayerPoint([vd.lat, vd.lon]);
-        // latLngToLayerPoint gives pixel relative to map container origin
-        // We need to offset by the map's pane transform
-        var origin = _map.getPixelOrigin();
-        var mapPt  = _map.project([vd.lat, vd.lon], _map.getZoom());
-        var sx = mapPt.x - origin.x;
-        var sy = mapPt.y - origin.y;
+        var sx, sy;
+        if (_map && _mapReady) {
+            // Primary: Leaflet projection — exact GPS → pixel
+            var origin = _map.getPixelOrigin();
+            var mapPt  = _map.project([vd.lat, vd.lon], _map.getZoom());
+            sx = mapPt.x - origin.x;
+            sy = mapPt.y - origin.y;
+        } else {
+            // Fallback: simple linear projection from map centre
+            var zoom = _leafletZoom || 15;
+            var pxPerDeg = Math.pow(2, zoom) * 256 / 360;
+            sx = cw / 2 + (vd.lon - _mapCtrLon) * pxPerDeg;
+            sy = ch / 2 - (vd.lat - _mapCtrLat) * pxPerDeg;
+        }
 
         // Cull off-screen
         if (sx < -60 || sx > cw + 60 || sy < -60 || sy > ch + 60) return;
@@ -570,16 +592,21 @@ function _drawVehicles() {
 var _animFrame = null;
 function _renderLoop() {
     _animFrame = requestAnimationFrame(_renderLoop);
-    // Sync overlay canvas size with container
-    var wrap = document.getElementById('sceneWrap');
-    if (wrap && _oc) {
-        var cw = wrap.clientWidth, ch = wrap.clientHeight;
-        if (_oc.width !== cw || _oc.height !== ch) { _oc.width = cw; _oc.height = ch; }
-    }
-    if (_octx && _oc) {
-        _octx.clearRect(0, 0, _oc.width, _oc.height);
-        _drawHighwayOverlay();
-        _drawVehicles();
+    try {
+        // Sync overlay canvas size with container
+        var wrap = document.getElementById('sceneWrap');
+        if (wrap && _oc) {
+            var cw = wrap.clientWidth, ch = wrap.clientHeight;
+            if (_oc.width !== cw || _oc.height !== ch) { _oc.width = cw; _oc.height = ch; }
+        }
+        if (_octx && _oc) {
+            _octx.clearRect(0, 0, _oc.width, _oc.height);
+            _drawHighwayOverlay();
+            _drawVehicles();
+        }
+    } catch(e) {
+        // Don't let a projection error kill the render loop
+        console.warn('Render loop error:', e);
     }
 }
 
@@ -778,13 +805,13 @@ function loadEvents(events) {
         if (!vid) return;
         var lat = parseFloat(ev.latitude  || ev.Latitude  || 0);
         var lon = parseFloat(ev.longitude || ev.Longitude || 0);
-        if (!lat || !lon) return;
+        if (isNaN(lat) || isNaN(lon)) return;
         var spd  = parseFloat(ev.speed_mph || ev.speedMph || ev.SpeedMph || 0);
         var make = ev.vehicle_make || ev.vehicleMake || ev.VehicleMake || ev.make || '';
         var vc   = classifyVehicle(ev);
-        // Clamp to zone centre area if coordinates are wildly off (sim sometimes sends 0,0)
-        if (Math.abs(lat - _mapCtrLat) > 0.5 || Math.abs(lon - _mapCtrLon) > 0.5) {
-            // Vehicle is far from selected zone — nudge to zone centre with small random offset
+        // Use real GPS coordinates — the map will pan to show them.
+        // Only fall back to zone centre if coordinates are 0,0 (unparsed).
+        if ((lat === 0 && lon === 0) || isNaN(lat) || isNaN(lon)) {
             lat = _mapCtrLat + (Math.random() - 0.5) * 0.004;
             lon = _mapCtrLon + (Math.random() - 0.5) * 0.004;
         }
@@ -792,9 +819,26 @@ function loadEvents(events) {
     });
     // Prune stale (>90s old)
     vehicleData.forEach(function(vd, vid) {
-        if (now - vd.lastSeen > 90000) vehicleData.delete(vid);
+        if (now - vd.lastSeen > 120000) vehicleData.delete(vid);
     });
     _updateStatsBar();
+    
+    // Auto-pan map to include the newest vehicle if it's off-screen
+    if (_map && _mapReady && events.length > 0) {
+        var lastEv = events[events.length - 1];
+        var lastLat = parseFloat(lastEv.latitude || lastEv.Latitude || 0);
+        var lastLon = parseFloat(lastEv.longitude || lastEv.Longitude || 0);
+        if (lastLat && lastLon) {
+            var bounds = _map.getBounds();
+            if (!bounds.contains([lastLat, lastLon])) {
+                var curCtr = _map.getCenter();
+                var newLat = curCtr.lat + (lastLat - curCtr.lat) * 0.3;
+                var newLon = curCtr.lng + (lastLon - curCtr.lng) * 0.3;
+                _map.panTo([newLat, newLon], { animate: false });
+                _mapCtrLat = newLat; _mapCtrLon = newLon;
+            }
+        }
+    }
 }
 
 function _updateStatsBar() {
