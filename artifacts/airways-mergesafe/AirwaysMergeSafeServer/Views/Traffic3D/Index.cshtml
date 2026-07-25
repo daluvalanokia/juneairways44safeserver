@@ -1840,19 +1840,23 @@ if (typeof BroadcastChannel !== 'undefined') {
 
 // Bug Fix 4: Separate storage listener for airways_sim_active (sim lifecycle state)
 // and airways_sim_last_event (vehicle payloads). Previously mixed → dead sim_started check.
-// Heartbeat watchdog — if sim is running but no heartbeat in 35s, force stop
+// Heartbeat watchdog — if sim is running but no heartbeat in 3x the sim
+// interval (min 90s), the DIF tab was closed or crashed — force stop.
 var _hbWatchdog = null;
 function _startHbWatchdog() {
     if (_hbWatchdog) clearInterval(_hbWatchdog);
     _hbWatchdog = setInterval(function() {
         if (simRunning) {
             var hb = localStorage.getItem('airways_sim_heartbeat');
-            if (!hb || (Date.now() - parseInt(hb)) > 35000) {
+            // Use 3x the sim interval as the death threshold (min 90 seconds).
+            // If sim interval is 30s, death occurs at 90s — not 35s.
+            var deathThresholdMs = Math.max(90000, _simIntervalMs * 3);
+            if (!hb || (Date.now() - parseInt(hb)) > deathThresholdMs) {
                 // Heartbeat died — the DIF tab was closed or crashed
                 onSimStateChange(false);
             }
         }
-    }, 10000); // check every 10s
+    }, 30000); // check every 30s — less aggressive than 10s
 }
 _startHbWatchdog();
 
@@ -1880,9 +1884,10 @@ window.addEventListener('storage', function(e) {
 // sim was interrupted by a page close/crash and is no longer actually running.
 (function() {
     if (localStorage.getItem('airways_sim_active') === 'true') {
-        // Check heartbeat — sim must have posted a tick within the last 30 seconds
+        // Check heartbeat — sim must have posted a tick within 3x the interval (min 90s)
         var hb = localStorage.getItem('airways_sim_heartbeat');
-        var isFresh = hb && (Date.now() - parseInt(hb)) < 30000;
+        var freshThresholdMs = Math.max(90000, _simIntervalMs * 3);
+        var isFresh = hb && (Date.now() - parseInt(hb)) < freshThresholdMs;
         if (isFresh) {
             _t3dApplySimContext();
             onSimStateChange(true);
