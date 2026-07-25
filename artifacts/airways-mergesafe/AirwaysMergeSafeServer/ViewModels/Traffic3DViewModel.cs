@@ -28,4 +28,8 @@ public class Traffic3DViewModel
 
     // Air Scene speed-alert configuration (JSON blob, passed to AirScene view)
     public string AirSceneAlertsJson { get; set; } = "{}";
+
+    // Brand logo SVG data URIs from VehicleRegistry — passed to 3D scene for rendering
+    // Shape: { "Toyota":"data:image/svg+xml;base64,...", "Honda":"data:...", ... }
+    public string BrandLogosJson { get; set; } = "{}";
 }
