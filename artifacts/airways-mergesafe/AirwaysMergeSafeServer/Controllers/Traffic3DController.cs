@@ -21,14 +21,16 @@ public class Traffic3DController : Controller
     private readonly IConfiguration      _cfg;
     private readonly IMemoryCache        _cache;
     private readonly IHttpClientFactory  _httpFactory;
+    private readonly IVehicleRegistry    _vehicleRegistry;
 
     private static readonly Regex _bboxRegex = new(
         @"^-?\d{1,3}(\.\d+)?,-?\d{1,3}(\.\d+)?,-?\d{1,3}(\.\d+)?,-?\d{1,3}(\.\d+)?$",
         RegexOptions.Compiled);
 
     public Traffic3DController(AppDbContext db, IConfiguration cfg,
-        IMemoryCache cache, IHttpClientFactory httpFactory)
-    { _db = db; _cfg = cfg; _cache = cache; _httpFactory = httpFactory; }
+        IMemoryCache cache, IHttpClientFactory httpFactory,
+        IVehicleRegistry vehicleRegistry)
+    { _db = db; _cfg = cfg; _cache = cache; _httpFactory = httpFactory; _vehicleRegistry = vehicleRegistry; }
 
     public async Task<IActionResult> Index(string? highwayId)
     {
@@ -62,6 +64,11 @@ public class Traffic3DController : Controller
         var groundCount = recentEvents.Count;
         var airCount    = 0; // air vehicles are in AirScene (/AirScene)
 
+        // Serialize brand logos from VehicleRegistry for 3D scene rendering
+        var brandLogos = _vehicleRegistry.All
+            .GroupBy(v => v.Make)
+            .ToDictionary(g => g.Key, g => g.First().BrandLogo);
+
         return View(new Traffic3DViewModel
         {
             Highways          = highways,
@@ -72,7 +79,8 @@ public class Traffic3DController : Controller
             TomTomApiKey      = _cfg["TomTomApiKey"],
             RecentEventsJson  = JsonSerializer.Serialize(recentEvents),
             GroundCount       = groundCount,
-            AirCount          = airCount
+            AirCount          = airCount,
+            BrandLogosJson    = JsonSerializer.Serialize(brandLogos)
         });
     }
 
