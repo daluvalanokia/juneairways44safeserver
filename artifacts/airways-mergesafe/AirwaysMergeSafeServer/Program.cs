@@ -126,6 +126,58 @@ try
             logger.LogError(ex, "Startup: MigrateAsync failed — running column safety guards.");
         }
 
+        // ── Step 1b: Critical-table existence guard ─────────────────────
+        // Handles the case where git checkout/pull/stash overwrote mergesafe.db
+        // with a stale or corrupted version. The __EFMigrationsHistory table
+        // may show all migrations as "applied" but the actual tables are missing
+        // (corruption from the file being replaced underneath the running app).
+        // If any critical table is missing, drop and recreate the entire database.
+        if (!isPostgres)
+        {
+            try
+            {
+                var criticalTables = new[] { "Highways", "MergeZones", "SwitchServers", "UserProfiles" };
+                var conn = db.Database.GetDbConnection();
+                await conn.OpenAsync();
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table'";
+                using var reader = await cmd.ExecuteReaderAsync();
+                var existing = new HashSet<string>();
+                while (await reader.ReadAsync())
+                    existing.Add(reader.GetString(0));
+                await reader.CloseAsync();
+                await conn.CloseAsync();
+
+                var missing = criticalTables.Where(t => !existing.Contains(t)).ToList();
+                if (missing.Count > 0)
+                {
+                    logger.LogError("Startup: Critical tables missing from DB: {Tables}. "
+                        + "Database appears corrupted (likely overwritten by git checkout). "
+                        + "Dropping and recreating from scratch.", string.Join(", ", missing));
+
+                    // Delete the corrupt database file and re-run migrations
+                    await db.Database.EnsureDeletedAsync();
+                    await db.Database.MigrateAsync();
+                    logger.LogInformation("Startup: Database recreated — {TableCount} critical tables verified.",
+                        criticalTables.Length);
+                }
+            }
+            catch (Exception exGuard)
+            {
+                logger.LogError(exGuard, "Startup: Table existence guard failed — attempting full recreate.");
+                try
+                {
+                    await db.Database.EnsureDeletedAsync();
+                    await db.Database.MigrateAsync();
+                    logger.LogInformation("Startup: Database recreated after guard failure.");
+                }
+                catch (Exception exRecreate)
+                {
+                    logger.LogError(exRecreate, "Startup: Full recreate failed — app will start with missing tables.");
+                }
+            }
+        }
+
         // ── Step 2: Idempotent column guards ──────────────────────────────
         // Safety net for pre-existing DBs created before any migration was added.
         // SQLite does NOT support "ADD COLUMN IF NOT EXISTS" — each statement is
