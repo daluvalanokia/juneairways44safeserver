@@ -117,7 +117,8 @@
 
 <!-- ── Scene grid (split / single-panel modes) ────────────────────────── -->
 <div id="sceneWrap" style="position:relative;height:520px;background:#1a2f1a;border-radius:8px;overflow:hidden">
-    <canvas id="mainCanvas" style="width:100%;height:100%"></canvas>
+    <canvas id="mainCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
+    <canvas id="t3d-label-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:5;"></canvas>
     <!-- Overlay labels for split mode -->
     <div id="labelA" class="badge bg-secondary position-absolute" style="top:6px;left:6px;display:none">Perspective</div>
     <div id="labelB" class="badge bg-info text-dark position-absolute"    style="top:6px;display:none">Side ↕</div>
@@ -440,7 +441,7 @@ function _clearScene() {
                 ch.material.dispose();
             }
         });
-        if (_overlayCtx) _overlayCtx.clearRect(0, 0, _overlayCanvas.width, _overlayCanvas.height);
+        if (_overlayCtx && _overlayCanvas) _overlayCtx.clearRect(0, 0, _overlayCanvas.width, _overlayCanvas.height);
     });
     vehicleMeshes.length = 0;
     vehicleData.length   = 0;
@@ -544,11 +545,20 @@ function buildVehicleMesh(ev, vid) {
 var BRAND_LOGO_URIS = {};
 try { BRAND_LOGO_URIS = JSON.parse(document.getElementById('brandLogosData').textContent); } catch(e) {}
 var BRAND_LOGO_IMAGES = {};
+var _logoLoadedCount = 0, _logoTotalCount = 0;
 Object.keys(BRAND_LOGO_URIS).forEach(function(make) {
     var img = new Image();
+    _logoTotalCount++;
+    img.onload = function() {
+        _logoLoadedCount++;
+        // Once all logos loaded, force overlay redraw on next animation tick
+        if (_logoLoadedCount >= _logoTotalCount) { window._logosReady = true; }
+    };
     img.src = BRAND_LOGO_URIS[make];
     BRAND_LOGO_IMAGES[make] = img;
 });
+// If no logos defined (empty registry), mark as ready immediately
+if (_logoTotalCount === 0) window._logosReady = true;
 
 // ── Fallback badge lookup — used when SVG logo hasn't loaded yet ──
 var BRAND_BADGES = {
@@ -748,6 +758,7 @@ const canvas = document.getElementById('mainCanvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+// Overlay canvas size is synced inside _drawLabelOverlay each frame
 
 // Perspective — looking down the highway at a shallow road-level angle
 const camP = new THREE.PerspectiveCamera(55, canvas.clientWidth/canvas.clientHeight, 0.1, 3000);
@@ -1223,95 +1234,119 @@ const _overlayCtx    = _overlayCanvas ? _overlayCanvas.getContext('2d') : null;
 const _catColors2D = { sedan:'#1d4ed8', suv:'#15803d', truck:'#b45309',
                         motorcycle:'#7e22ce', van:'#334155' };
 
-function _drawLabelOverlay(camera, currentView) {
-    if (!_overlayCtx) return;
+function _drawLabelOverlay(camera) {
+    if (!_overlayCtx || !_overlayCanvas) return;
     const oc = _overlayCanvas;
-    const w = oc.width, h = oc.height;
-    _overlayCtx.clearRect(0, 0, w, h);
+    // Ensure canvas dimensions match rendered output
+    var rw = renderer.domElement.clientWidth  || renderer.domElement.width;
+    var rh = renderer.domElement.clientHeight || renderer.domElement.height;
+    if (oc.width !== rw || oc.height !== rh) { oc.width = rw; oc.height = rh; }
+    _overlayCtx.clearRect(0, 0, oc.width, oc.height);
     if (!vehicleMeshes.length) return;
 
     vehicleMeshes.forEach(function(grp) {
         if (!grp.userData || grp.userData.vx === undefined) return;
-        const ud  = grp.userData;
-        const vid = ud.vid || '';
-        const cat = ud.vc ? (ud.vc.category || 'sedan') : 'sedan';
-        const make = ud.ev ? (ud.ev.vehicleMake || ud.ev.make || '') : '';
+        const ud   = grp.userData;
+        const vid  = (ud.vid || '').trim();
+        const cat  = ud.vc ? (ud.vc.category || 'sedan') : 'sedan';
+        const make = ud.ev ? (ud.ev.vehicleMake || ud.ev.make || ud.ev.VehicleMake || '') : '';
 
-        // Project 3D position to 2D screen coords using camera
-        const worldPos = new THREE.Vector3();
-        grp.getWorldPosition(worldPos);
-        const ndc = worldPos.clone().project(camera);
-        const sx  = (ndc.x * 0.5 + 0.5) * w;
-        const sy  = (1 - (ndc.y * 0.5 + 0.5)) * h;
+        // Project 3D group world position → NDC → screen pixels
+        const wp  = new THREE.Vector3();
+        grp.getWorldPosition(wp);
+        const ndc = wp.clone().project(camera);
+        const sx  = ( ndc.x * 0.5 + 0.5) * oc.width;
+        const sy  = (1 - (ndc.y * 0.5 + 0.5)) * oc.height;
 
-        // Only draw if on screen
-        if (sx < -60 || sx > w + 60 || sy < -30 || sy > h + 30) return;
+        // Cull off-screen labels (with generous margin)
+        if (sx < -80 || sx > oc.width + 80 || sy < -50 || sy > oc.height + 50) return;
 
-        // ── Draw label pill above vehicle ──
-        var logoImg = make ? BRAND_LOGO_IMAGES[make] : null;
-        var logoLoaded = logoImg && logoImg.complete && logoImg.naturalWidth > 0;
+        // ── Label layout ──────────────────────────────────────────────
+        var hasLogo = make && BRAND_LOGO_IMAGES[make] &&
+                      BRAND_LOGO_IMAGES[make].complete &&
+                      BRAND_LOGO_IMAGES[make].naturalWidth > 0;
         var badge   = make ? BRAND_BADGES[make] : null;
-        var pillW = 136, pillH = 30;
-        var pillX = sx - pillW / 2;
-        var pillY = sy - 44;  // float above vehicle
+        var pillW = 148, pillH = 36;
+        var pillX = Math.max(2, Math.min(oc.width - pillW - 2, sx - pillW / 2));
+        var pillY = sy - 60;  // float 60px above the vehicle screen position
+        if (pillY < 2) pillY = sy + 10; // flip below if near top edge
 
-        // Background pill
-        _overlayCtx.fillStyle = _catColors2D[cat] || '#1e3a5f';
+        // ── Background pill ───────────────────────────────────────────
+        _overlayCtx.save();
+        _overlayCtx.shadowColor   = 'rgba(0,0,0,0.7)';
+        _overlayCtx.shadowBlur    = 6;
+        _overlayCtx.shadowOffsetY = 2;
+        _overlayCtx.fillStyle     = _catColors2D[cat] || '#1e3a5f';
         _overlayCtx.beginPath();
-        _overlayCtx.roundRect(pillX, pillY, pillW, pillH, 6);
+        _overlayCtx.roundRect(pillX, pillY, pillW, pillH, 7);
         _overlayCtx.fill();
-        _overlayCtx.strokeStyle = 'rgba(0,0,0,0.5)';
-        _overlayCtx.lineWidth = 1.5;
-        _overlayCtx.stroke();
-
-        if (logoLoaded) {
-            // Draw actual SVG logo from registry (22x22)
-            _overlayCtx.drawImage(logoImg, pillX + 4, pillY + 4, 22, 22);
-            // Vehicle ID
-            _overlayCtx.fillStyle = '#ffffff';
-            _overlayCtx.font = 'bold 11px monospace';
-            _overlayCtx.textAlign = 'left';
-            _overlayCtx.textBaseline = 'middle';
-            _overlayCtx.fillText(vid.slice(0,12), pillX + 30, pillY + 10);
-            // Make name (smaller, below ID)
-            _overlayCtx.fillStyle = 'rgba(255,255,255,0.8)';
-            _overlayCtx.font = '9px Arial';
-            _overlayCtx.fillText(make.slice(0,12), pillX + 30, pillY + 22);
-        } else if (badge) {
-            // Fallback initials circle
-            _overlayCtx.beginPath();
-            _overlayCtx.arc(pillX + 14, pillY + pillH/2, 11, 0, Math.PI*2);
-            _overlayCtx.fillStyle = badge.color;
-            _overlayCtx.fill();
-            _overlayCtx.fillStyle = '#ffffff';
-            _overlayCtx.font = badge.initials.length > 2 ? 'bold 7px Arial' : 'bold 10px Arial';
-            _overlayCtx.textAlign = 'center';
-            _overlayCtx.textBaseline = 'middle';
-            _overlayCtx.fillText(badge.initials, pillX + 14, pillY + pillH/2);
-            // Vehicle ID
-            _overlayCtx.fillStyle = '#ffffff';
-            _overlayCtx.font = 'bold 11px monospace';
-            _overlayCtx.textAlign = 'left';
-            _overlayCtx.fillText(vid.slice(0,12), pillX + 29, pillY + 10);
-            _overlayCtx.fillStyle = 'rgba(255,255,255,0.8)';
-            _overlayCtx.font = '9px Arial';
-            _overlayCtx.fillText(make.slice(0,12), pillX + 29, pillY + 22);
-        } else {
-            // ID only
-            _overlayCtx.fillStyle = '#ffffff';
-            _overlayCtx.font = 'bold 12px monospace';
-            _overlayCtx.textAlign = 'center';
-            _overlayCtx.textBaseline = 'middle';
-            _overlayCtx.fillText(vid.slice(0,14), pillX + pillW/2, pillY + pillH/2);
-        }
-
-        // ── Connector line from pill to vehicle ──
-        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.4)';
+        _overlayCtx.restore();
+        // White border ring
+        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.25)';
         _overlayCtx.lineWidth   = 1;
         _overlayCtx.beginPath();
-        _overlayCtx.moveTo(sx, pillY + pillH);
+        _overlayCtx.roundRect(pillX + 0.5, pillY + 0.5, pillW - 1, pillH - 1, 7);
+        _overlayCtx.stroke();
+
+        // ── Left side: brand logo OR initials badge ───────────────────
+        var logoDrawn = false;
+        if (hasLogo) {
+            try {
+                _overlayCtx.save();
+                _overlayCtx.beginPath();
+                _overlayCtx.arc(pillX + 18, pillY + pillH / 2, 14, 0, Math.PI * 2);
+                _overlayCtx.clip();
+                _overlayCtx.drawImage(BRAND_LOGO_IMAGES[make], pillX + 4, pillY + 4, 28, 28);
+                _overlayCtx.restore();
+                logoDrawn = true;
+            } catch(e) { logoDrawn = false; }
+        }
+        if (!logoDrawn && badge) {
+            // Circle with brand initials
+            _overlayCtx.beginPath();
+            _overlayCtx.arc(pillX + 18, pillY + pillH / 2, 14, 0, Math.PI * 2);
+            _overlayCtx.fillStyle = badge.color;
+            _overlayCtx.fill();
+            _overlayCtx.strokeStyle = 'rgba(255,255,255,0.4)';
+            _overlayCtx.lineWidth = 1.5;
+            _overlayCtx.stroke();
+            _overlayCtx.fillStyle    = '#fff';
+            _overlayCtx.font         = badge.initials.length > 2 ? 'bold 8px Arial' : 'bold 12px Arial';
+            _overlayCtx.textAlign    = 'center';
+            _overlayCtx.textBaseline = 'middle';
+            _overlayCtx.fillText(badge.initials, pillX + 18, pillY + pillH / 2 + 1);
+            logoDrawn = true;
+        }
+
+        // ── Right side: vehicle ID + make name ───────────────────────
+        var textX = logoDrawn ? pillX + 37 : pillX + 8;
+        _overlayCtx.fillStyle    = '#ffffff';
+        _overlayCtx.font         = 'bold 12px monospace';
+        _overlayCtx.textAlign    = 'left';
+        _overlayCtx.textBaseline = 'top';
+        _overlayCtx.fillText((vid || '–').slice(0, 13), textX, pillY + 6);
+        _overlayCtx.fillStyle    = 'rgba(255,255,255,0.75)';
+        _overlayCtx.font         = '10px Arial';
+        _overlayCtx.textBaseline = 'bottom';
+        _overlayCtx.fillText(
+            (make ? make.slice(0,11) + '  ' : '') + cat,
+            textX, pillY + pillH - 5
+        );
+
+        // ── Connector line: pill bottom → vehicle position ────────────
+        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+        _overlayCtx.lineWidth   = 1.2;
+        var lineFromX = pillX + pillW / 2;
+        var lineFromY = (pillY < sy) ? pillY + pillH : pillY;
+        _overlayCtx.beginPath();
+        _overlayCtx.moveTo(lineFromX, lineFromY);
         _overlayCtx.lineTo(sx, sy);
         _overlayCtx.stroke();
+        // Dot at vehicle position
+        _overlayCtx.beginPath();
+        _overlayCtx.arc(sx, sy, 3, 0, Math.PI * 2);
+        _overlayCtx.fillStyle = '#ffffff';
+        _overlayCtx.fill();
     });
 }
 
@@ -1364,17 +1399,15 @@ function animate() {
         renderer.setScissor(cw*0.72, 0, cw*0.28, ch);
         renderer.render(scene, camT);
         renderer.setScissorTest(false);
+        // 2D label overlay over top-view panel in split mode
+        _drawLabelOverlay(camT);
     } else {
         renderer.setViewport(0, 0, cw, ch);
         const cam = currentView === 'side' ? camS : currentView === 'top' ? camT : camP;
         if (cam.isPerspectiveCamera) { cam.aspect = cw/ch; cam.updateProjectionMatrix(); }
-        if (_overlayCanvas) { _overlayCanvas.width = cw; _overlayCanvas.height = ch; }
         renderer.render(scene, cam);
-        if (_overlayCanvas) {
-            _overlayCanvas.width  = renderer.domElement.clientWidth;
-            _overlayCanvas.height = renderer.domElement.clientHeight;
-        }
-        _drawLabelOverlay(cam, currentView);
+        // Draw 2D labels AFTER Three.js render (overlay is on top)
+        _drawLabelOverlay(cam);
     }
 }
 
