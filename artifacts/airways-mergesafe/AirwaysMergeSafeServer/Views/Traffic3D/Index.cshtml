@@ -264,6 +264,40 @@ function _reloadMapTile(lat, lon) {
     _mapTileLat = lat; _mapTileLon = lon; _mapTileLoading = false; _tryLoadMapTile();
 }
 
+// Canvas-generated fallback texture (no network needed)
+var _fallbackTexReady = false;
+function _makeFallbackGridTexture() {
+    var c = document.createElement('canvas');
+    c.width = c.height = 512;
+    var cx = c.getContext('2d');
+    cx.fillStyle = '#1e2e1e';
+    cx.fillRect(0, 0, 512, 512);
+    cx.strokeStyle = '#3a5a3a';
+    cx.lineWidth = 1;
+    for (var i = 0; i <= 512; i += 64) {
+        cx.beginPath(); cx.moveTo(i, 0); cx.lineTo(i, 512); cx.stroke();
+        cx.beginPath(); cx.moveTo(0, i); cx.lineTo(512, i); cx.stroke();
+    }
+    cx.strokeStyle = '#4a6a4a'; cx.lineWidth = 3;
+    cx.beginPath(); cx.moveTo(0, 256); cx.lineTo(512, 256); cx.stroke();
+    cx.beginPath(); cx.moveTo(256, 0); cx.lineTo(512, 512); cx.stroke();
+    var tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(4, 4);
+    return tex;
+}
+
+function _applyFallbackTexture() {
+    if (_fallbackTexReady) return;
+    _fallbackTexReady = true;
+    if (window._t3dGround) {
+        var tex = _makeFallbackGridTexture();
+        window._t3dGround.material.map   = tex;
+        window._t3dGround.material.color.setHex(0x2a3a2a);
+        window._t3dGround.material.needsUpdate = true;
+    }
+}
+
 function _tryLoadMapTile() {
     if (_mapTileLoading) return;
     _mapTileLoading = true;
@@ -271,14 +305,24 @@ function _tryLoadMapTile() {
     var url = 'https://tile.openstreetmap.org/' + t.z + '/' + t.x + '/' + t.y + '.png';
     var loader = new THREE.TextureLoader();
     loader.crossOrigin = 'anonymous';
+    var timedOut = false;
+    var to = setTimeout(function() {
+        timedOut = true;
+        _applyFallbackTexture();
+    }, 3000);
     loader.load(url, function(tex) {
+        if (timedOut) return;
+        clearTimeout(to);
         tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
         if (window._t3dGround) {
             window._t3dGround.material.map   = tex;
-            window._t3dGround.material.color.setHex(0xddeedd); // light tint over map
+            window._t3dGround.material.color.setHex(0xddeedd);
             window._t3dGround.material.needsUpdate = true;
         }
-    }, undefined, function() { /* CORS blocked — keep terrain fallback */ });
+    }, undefined, function() {
+        clearTimeout(to);
+        _applyFallbackTexture();
+    });
 }
 
 // ── Ground vehicle geometry + colour factory ──────────────────────────
@@ -1546,18 +1590,29 @@ function _initMiniMap(lat, lon) {
     _miniMap.getContainer().style.pointerEvents = 'none';
     _miniMapLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19, subdomains: 'a,b,c',
-        attribution: '© OpenStreetMap'
+        attribution: '',
+        maxRetries: 1,
+        retryDelay: 500
     }).addTo(_miniMap);
-    // Fallback: if tiles blocked by CSP, show a dark background with grid
-    _miniMap.on('tileerror', function() {
+    var _leafletFallbackTimer = setTimeout(function() {
         if (!_miniMap._cspFallback) {
             _miniMap._cspFallback = true;
             _miniMapLayer.remove();
-            // Add a simple CSS grid background
             var mapEl = document.getElementById('t3dMiniMap');
             if (mapEl) mapEl.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 100%)';
-            // Still show markers — they work without tiles
         }
+    }, 3000);
+    _miniMap.on('tileerror', function() {
+        if (!_miniMap._cspFallback) {
+            _miniMap._cspFallback = true;
+            clearTimeout(_leafletFallbackTimer);
+            _miniMapLayer.remove();
+            var mapEl = document.getElementById('t3dMiniMap');
+            if (mapEl) mapEl.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 100%)';
+        }
+    });
+    _miniMap.on('tileload', function() {
+        clearTimeout(_leafletFallbackTimer);
     });
 }
 
