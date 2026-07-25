@@ -62,7 +62,7 @@ public class VehicleClassifier
         TraceLogger.Enter("VehicleClassifier", nameof(Classify), $"sourceType={sourceType}");
         double? altM = null, speedMph = null, lat = null, lon = null;
         double? verticalRateFpm = null, battSoc = null, rotorRpm = null, corridorDevM = null;
-        string? vehicleType = null, flightPhase = null, corridorId = null;
+        string? vehicleType = null, vehicleMake = null, flightPhase = null, corridorId = null;
         bool hasVehicleType = false, hasAlt = false, hasSpeed = false, hasLatLon = false;
         bool hasFlightPhase = false, conflictFlag = false;
 
@@ -94,7 +94,6 @@ public class VehicleClassifier
                 { vehicleType = vtEl.GetString()?.ToLowerInvariant(); hasVehicleType = !string.IsNullOrEmpty(vehicleType); }
 
                 // Read vehicle_make for brand badge display in 3D scene
-                string? vehicleMake = null;
                 if (root.TryGetProperty("vehicle_make", out var vmEl))
                     vehicleMake = vmEl.GetString();
 
