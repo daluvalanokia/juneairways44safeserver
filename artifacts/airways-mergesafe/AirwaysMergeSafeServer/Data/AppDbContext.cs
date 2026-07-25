@@ -24,6 +24,7 @@ public class AppDbContext : DbContext
 
     // E2: Audit log — append-only, never mutated after insert
     public DbSet<AuditLog>            AuditLogs            => Set<AuditLog>();
+    public DbSet<SimulationStatus>    SimulationStatuses    => Set<SimulationStatus>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
