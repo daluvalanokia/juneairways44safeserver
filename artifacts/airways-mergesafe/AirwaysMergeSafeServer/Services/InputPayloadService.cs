@@ -52,7 +52,12 @@ public class InputPayloadService
     public string Generate(
         string               sourceType,
         IEnumerable<string>  enabledFields,
-        IEnumerable<string>? customFields = null)
+        IEnumerable<string>? customFields = null,
+        double?              zoneLat      = null,
+        double?              zoneLon      = null,
+        double               zoneRadiusDeg = 0.015,
+        string?              zoneId       = null,
+        string?              highwayId    = null)
     {
         TraceLogger.Enter("InputPayloadService", nameof(Generate), $"sourceType={sourceType}");
         try
@@ -90,8 +95,10 @@ public class InputPayloadService
                 "vehicle_id"      => $"VEH-{rng.Next(1, 21):D3}",
                 "timestamp"       => DateTime.UtcNow.ToString("o"),
                 "speed_mph"       => isAirVehicle ? rng.Next(80, 180) : rng.Next(20, 100),
-                "latitude"        => Math.Round(32.7767 + (rng.NextDouble() - 0.5) * 0.2, 6),
-                "longitude"       => Math.Round(-96.7970 + (rng.NextDouble() - 0.5) * 0.2, 6),
+                // Use zone GPS if provided — scatter along highway corridor
+                // Small N-S spread (±zoneRadiusDeg), wider E-W spread (×3) to simulate a road
+                "latitude"        => Math.Round((zoneLat ?? 32.7767) + (rng.NextDouble() - 0.5) * zoneRadiusDeg, 6),
+                "longitude"       => Math.Round((zoneLon ?? -96.7970) + (rng.NextDouble() - 0.5) * zoneRadiusDeg * 3.0, 6),
                 "altitude_m"      => altitudeM,
                 "altitude_ft"     => Math.Round(altitudeM * 3.28084, 1),
                 "vehicle_type"    => vehicleType,
@@ -99,8 +106,8 @@ public class InputPayloadService
                 "direction"       => rng.Next(0, 360),
                 "lane"            => isAirVehicle ? rng.Next(10, 20) : rng.Next(1, 5),
                 "event_type"      => new[] { "detection","merge","speeding","conflict","fault" }[rng.Next(5)],
-                "zone_id"         => $"ZONE-{rng.Next(1, 10):D3}",
-                "highway_id"      => "I20-TX",
+                "zone_id"         => !string.IsNullOrEmpty(zoneId) ? zoneId : $"ZONE-{rng.Next(1, 10):D3}",
+                "highway_id"      => !string.IsNullOrEmpty(highwayId) ? highwayId : "I20-TX",
                 "signal_strength" => sourceType == "telecom" ? rng.Next(-80, -30) : rng.Next(-95, -40),
                 "heading"         => rng.Next(0, 360),
                 "satellite_count" => rng.Next(4, 16),
