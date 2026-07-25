@@ -1840,26 +1840,6 @@ if (typeof BroadcastChannel !== 'undefined') {
 
 // Bug Fix 4: Separate storage listener for airways_sim_active (sim lifecycle state)
 // and airways_sim_last_event (vehicle payloads). Previously mixed → dead sim_started check.
-// Heartbeat watchdog — if sim is running but no heartbeat in 3x the sim
-// interval (min 90s), the DIF tab was closed or crashed — force stop.
-var _hbWatchdog = null;
-function _startHbWatchdog() {
-    if (_hbWatchdog) clearInterval(_hbWatchdog);
-    _hbWatchdog = setInterval(function() {
-        if (simRunning) {
-            var hb = localStorage.getItem('airways_sim_heartbeat');
-            // Use 3x the sim interval as the death threshold (min 90 seconds).
-            // If sim interval is 30s, death occurs at 90s — not 35s.
-            var deathThresholdMs = Math.max(90000, _simIntervalMs * 3);
-            if (!hb || (Date.now() - parseInt(hb)) > deathThresholdMs) {
-                // Heartbeat died — the DIF tab was closed or crashed
-                onSimStateChange(false);
-            }
-        }
-    }, 30000); // check every 30s — less aggressive than 10s
-}
-_startHbWatchdog();
-
 window.addEventListener('storage', function(e) {
     if (e.key === 'airways_sim_active') { onSimStateChange(e.newValue === 'true'); return; }
     if (e.key === 'airways_sim_heartbeat' && e.newValue) return; // heartbeat tick — sim is alive
@@ -1879,24 +1859,14 @@ window.addEventListener('storage', function(e) {
             _simInject(msg.payload, msg.classification);
     } catch(ex) {}
 });
-// Restore sim feed state from localStorage on page load (handles DataInputFormats navigation)
-// BUT only enter sim mode if the heartbeat is fresh (< 30s old) — otherwise the
-// sim was interrupted by a page close/crash and is no longer actually running.
+// Restore sim feed state from localStorage on page load.
+// The simulation is user-controlled: it's active if the user clicked Start
+// and hasn't clicked Stop. No heartbeat check — the sim persists across
+// page navigation. Exit sim mode only when sim_stopped is received.
 (function() {
     if (localStorage.getItem('airways_sim_active') === 'true') {
-        // Check heartbeat — sim must have posted a tick within 3x the interval (min 90s)
-        var hb = localStorage.getItem('airways_sim_heartbeat');
-        var freshThresholdMs = Math.max(90000, _simIntervalMs * 3);
-        var isFresh = hb && (Date.now() - parseInt(hb)) < freshThresholdMs;
-        if (isFresh) {
-            _t3dApplySimContext();
-            onSimStateChange(true);
-        } else {
-            // Heartbeat is stale or missing — sim is not actually running
-            // Clear the stale state so the 3D scene shows live data
-            localStorage.setItem('airways_sim_active', 'false');
-            localStorage.removeItem('airways_sim_heartbeat');
-        }
+        _t3dApplySimContext();
+        onSimStateChange(true);
     }
 })();
 </script>
