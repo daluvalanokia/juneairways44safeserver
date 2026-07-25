@@ -438,16 +438,15 @@ function _simRestoreState() {
             var b = document.getElementById('simTotalBadge');
             if (b) b.textContent = simTotal + ' posted';
         }
-        // Do NOT auto-resume — if the browser was closed or the page
-        // navigated away, the sim interval is dead.  Forcing a restart
-        // here creates an uncontrolled loop that keeps posting to the DB
-        // even though the user never asked for it.
+        // Auto-resume: the user started the sim and navigated away
+        // (e.g., to Traffic3D).  The setInterval died on unload, but the
+        // user never clicked Stop — so we resume automatically.
+        // This is user-controlled: they explicitly clicked Start.
         if (st.running) {
-            // Mark as stopped — the interval was killed on unload
-            st.running = false;
-            localStorage.setItem(_SIM_SK, JSON.stringify(st));
-            localStorage.setItem('airways_sim_active', 'false');
-            setSimStatus('stopped', 'Interrupted · click Start to resume (' + simTotal + ' posted)');
+            document.getElementById('btnStartSim').style.display = 'none';
+            document.getElementById('btnStopSim').style.display  = '';
+            setSimStatus('pending', 'Resuming simulation…');
+            setTimeout(function() { startSim(); }, 300);
         } else if (simTotal > 0) {
             setSimStatus('stopped', 'Stopped · ' + simTotal + ' total posted');
         }
@@ -567,13 +566,25 @@ function startSim() {
 }
 
 function stopSim() {
-    if (simTimer)    { clearInterval(simTimer);    simTimer    = null; }
+    if (simTimer)    { clearInterval(simTimer);    simTimer = null; }
     if (simDelayTmr) { clearTimeout(simDelayTmr);  simDelayTmr = null; }
     document.getElementById('btnStartSim').style.display = '';
     document.getElementById('btnStopSim').style.display  = 'none';
     setSimStatus('stopped', 'Stopped · ' + simTotal + ' total posted');
     _simPersist(false); // mark stopped so restore does NOT auto-restart
     simBroadcast('sim_stopped');
+    // Server-side cleanup: delete simulation-generated DB records
+    try {
+        var tok = document.querySelector('#simAFForm input[name="__RequestVerificationToken"]') != null
+                  ? document.querySelector('#simAFForm input[name="__RequestVerificationToken"]').value
+                  : (document.querySelector('input[name="__RequestVerificationToken"]') != null
+                     ? document.querySelector('input[name="__RequestVerificationToken"]').value : '');
+        fetch('/DataInputFormats/SimulationStop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+            body: '__RequestVerificationToken=' + encodeURIComponent(tok)
+        }).catch(function(){});
+    } catch(e) {}
 }
 
 function setSimStatus(state, msg) {
@@ -665,78 +676,29 @@ function showClassResult(cl, srcType) {
     badge.style.color      = '#fff';
 }
 
-// ── Lifecycle cleanup: stop sim + clear state when the tab/window closes ──
-// Both beforeunload and pagehide fire on tab close / navigation.
-// pagehide is more reliable on mobile; beforeunload covers desktop.
-function _simLifecycleShutdown() {
-    if (simTimer || simDelayTmr) {
-        if (simTimer)    { clearInterval(simTimer);    simTimer = null; }
-        if (simDelayTmr) { clearTimeout(simDelayTmr);  simDelayTmr = null; }
-        // Fire-and-forget server cleanup — use sendBeacon so it survives page unload
-        try {
-            var tok = document.querySelector('input[name="__RequestVerificationToken"]')?.value || '';
-            var formData = new FormData();
-            formData.append('__RequestVerificationToken', tok);
-            navigator.sendBeacon('/DataInputFormats/SimulationStop', formData);
-        } catch(e) {}
-    }
+// ── Lifecycle: do NOT stop sim on page unload ──
+// The sim is user-controlled — only the Stop button stops it.
+// When the page unloads, the setInterval dies naturally, but the
+// state persists as running=true so _simRestoreState() can resume
+// when the user navigates back to this page.
+// We do NOT broadcast sim_stopped — that would kill the 3D scene's
+// sim mode while the user is just switching pages.
+// Server cleanup happens only when the user explicitly clicks Stop.
+// The heartbeat timestamp lets the 3D scene know the sim was recently
+// active even if this tab is no longer open.
+window.addEventListener('pagehide', function() {
+    // Write a final heartbeat so T3D knows the sim was alive as of now
     try {
-        // Mark sim as fully stopped in ALL storage keys so restore does NOT restart
-        var raw = localStorage.getItem(_SIM_SK);
-        if (raw) {
-            var st = JSON.parse(raw);
-            st.running = false;
-            st.at = Date.now();
-            localStorage.setItem(_SIM_SK, JSON.stringify(st));
+        if (simTimer || simDelayTmr) {
+            localStorage.setItem('airways_sim_heartbeat', String(Date.now()));
         }
-        localStorage.setItem('airways_sim_active', 'false');
-        localStorage.removeItem('airways_sim_heartbeat');
-        if (airwaysBroadcast) airwaysBroadcast.postMessage({ type: 'sim_stopped' });
     } catch(e) {}
-}
-window.addEventListener('beforeunload', _simLifecycleShutdown);
-window.addEventListener('pagehide', _simLifecycleShutdown);
-
-// Stop sim when tab is hidden for more than 2 minutes (mobile / tab switch).
-// Shorter timeouts kill the sim during brief tab switches.
-var _visHiddenSince = null;
-document.addEventListener('visibilitychange', function() {
-    if (document.hidden) {
-        _visHiddenSince = Date.now();
-        // Give 2 min grace period — sim keeps running in background
-        setTimeout(function() {
-            if (document.hidden && _visHiddenSince && (Date.now() - _visHiddenSince >= 120000)) {
-                if (simTimer || simDelayTmr) {
-                    stopSim();
-                }
-            }
-        }, 121000);
-    } else {
-        _visHiddenSince = null;
-    }
 });
 
-// On page load: if the sim state is stale (no heartbeat in 30s), treat as abandoned
-(function _checkAbandonedSim() {
-    try {
-        var raw = localStorage.getItem(_SIM_SK);
-        if (!raw) return;
-        var st = JSON.parse(raw);
-        if (st.running && st.at) {
-            // Use 3x the sim interval as the staleness window (min 90 seconds).
-            // If the sim interval is 30s, staleness kicks in at 90s — not 30s.
-            var simIntervalSec = st.interval || 30;
-            var staleLimitSec  = Math.max(90, simIntervalSec * 3);
-            var ageSec = (Date.now() - st.at) / 1000;
-            if (ageSec > staleLimitSec) {
-                localStorage.setItem('airways_sim_active', 'false');
-                localStorage.removeItem('airways_sim_heartbeat');
-                st.running = false;
-                localStorage.setItem(_SIM_SK, JSON.stringify(st));
-            }
-        }
-    } catch(e) {}
-})();
+// No automatic stale check — the simulation is user-controlled.
+// It starts when the user clicks Start and stops when the user clicks Stop.
+// Navigating away from this page kills the setInterval, but the state
+// persists as running=true so it resumes on return.
 </script>
 }
 else
