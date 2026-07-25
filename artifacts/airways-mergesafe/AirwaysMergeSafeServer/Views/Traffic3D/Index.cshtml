@@ -183,1859 +183,759 @@
 <script id="brandLogosData" type="application/json">@Html.Raw(Model.BrandLogosJson)</script>
 <script>
 /* ══════════════════════════════════════════════════════════════════════
-   GROUND-ONLY 3D TRAFFIC SCENE  (Task 10 rewrite)
-   Air vehicles are shown in the dedicated Air Scene (/AirScene).
-   Bug fixes: Pause/Resume, BroadcastChannel filter, gated interval,
-              separate storage listener for airways_sim_active.
+   TRAFFIC3D — Leaflet-first architecture with 2D canvas vehicle overlay
+   
+   Design:
+   - Leaflet owns the map (real OSM tiles centred on zone GPS coordinates)
+   - A transparent 2D canvas overlay sits on top (z-index:2)
+   - Vehicles are drawn as coloured circles with brand badges + ID labels
+     projected from GPS lat/lon → Leaflet pixelpoint → canvas px
+   - Three.js is kept ONLY for the 3D/Side/Perspective views (optional)
+   - Zoom: Leaflet.setZoom controls both map tiles AND vehicle scale
+   
+   The previous architecture had Three.js vehicles in an abstract scene
+   coordinate system (XZ_SCALE=800 units) that did not match the real
+   GPS positions coming from simulation, causing vehicles to render
+   outside the canvas bounds as hexagons.
    ══════════════════════════════════════════════════════════════════════ */
 
-const ALT_SCALE = 0.05;
-const XZ_SCALE  = 800;
+// ── Constants ─────────────────────────────────────────────────────────
 const HW        = '@hw';
+const XZ_SCALE  = 800;   // kept for 3D perspective view
+const ALT_SCALE = 0.05;
 
-// FIX 4: Seed the 3D scene with the last 80 events already loaded by the controller.
-// This means vehicles appear instantly on page load — no waiting for the first poll.
-// The /api/events/live JSON shape matches: id, vehicleId, speedMph, latitude, longitude,
-// vehicleMode, vehicleCategory, vehicleClassJson, createdDate, etc.
+// ── Initial events preloaded by controller ────────────────────────────
 const _INITIAL_EVENTS = @Html.Raw(Model.RecentEventsJson ?? "[]");
 
-// ── Zone / Server dropdown state ──────────────────────────────────────
+// ── Zone / Server data from Razor ─────────────────────────────────────
 const T3D_SERVERS = @Html.Raw(serversJson);
 const T3D_ZONES   = @Html.Raw(zonesJson);
 var selectedZoneId   = '';
 var selectedServerId = '';
 
-function t3dZoneChanged() {
-    selectedZoneId = document.getElementById('t3dZoneSel').value;
-    // When zone changes, reset server selection to avoid conflicting filters
-    selectedServerId = '';
-    document.getElementById('t3dServerSel').value = '';
+// ── Map centre: zone GPS coordinates (or Dallas default) ──────────────
+var _mapCtrLat = @Html.Raw(zoneCtrLat.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture));
+var _mapCtrLon = @Html.Raw(zoneCtrLon.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture));
 
-    // Show only servers that belong to the selected zone (or all if no zone)
-    var srvSel = document.getElementById('t3dServerSel');
-    srvSel.querySelectorAll('option').forEach(function(o) {
-        var show = !selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId;
-        o.style.display = show ? '' : 'none';
+// Initialise from first zone that has coordinates
+if (typeof T3D_ZONES !== 'undefined' && T3D_ZONES.length > 0) {
+    var _z0 = T3D_ZONES.find(function(z){ return z.lat && z.lon; });
+    if (_z0) { _mapCtrLat = _z0.lat; _mapCtrLon = _z0.lon; }
+}
+
+// midLat/midLon: scene origin for 3D perspective view
+var midLat = _mapCtrLat, midLon = _mapCtrLon;
+function norm(lat, lon) {
+    return { x: (lon - midLon) * XZ_SCALE, z: (lat - midLat) * XZ_SCALE };
+}
+
+// ── Brand badges from VehicleRegistry ────────────────────────────────
+var BRAND_BADGES = {};
+var BRAND_LOGO_IMAGES = {};
+(function() {
+    try {
+        var raw = document.getElementById('brandLogosData');
+        if (!raw) return;
+        var data = JSON.parse(raw.textContent || raw.innerHTML);
+        if (!data) return;
+        Object.keys(data).forEach(function(make) {
+            var d = data[make];
+            BRAND_BADGES[make] = { color: d.color || '#334155', initials: d.initials || make.slice(0,2).toUpperCase() };
+            if (d.svgDataUri) {
+                var img = new Image();
+                img.src = d.svgDataUri;
+                BRAND_LOGO_IMAGES[make] = img;
+            }
+        });
+    } catch(e) { console.warn('Brand badge load error:', e); }
+})();
+
+// ── Category colours ──────────────────────────────────────────────────
+const CAT_COLORS = {
+    sedan:      '#1d4ed8',
+    suv:        '#15803d',
+    truck:      '#b45309',
+    motorcycle: '#7e22ce',
+    van:        '#334155'
+};
+const CAT_SPEC = {
+    sedan:      { color: '#3b82f6' },
+    suv:        { color: '#22c55e' },
+    truck:      { color: '#f59e0b' },
+    motorcycle: { color: '#a855f7' },
+    van:        { color: '#64748b' }
+};
+
+// ── Vehicle classification heuristic ─────────────────────────────────
+function classifyVehicle(ev) {
+    var cat = 'sedan';
+    var raw = (ev.vehicleCategory || ev.VehicleCategory || ev.vehicleMode || ev.VehicleMode || '').toLowerCase();
+    if (raw.includes('truck'))      cat = 'truck';
+    else if (raw.includes('suv'))   cat = 'suv';
+    else if (raw.includes('motor') || raw.includes('bike')) cat = 'motorcycle';
+    else if (raw.includes('van'))   cat = 'van';
+    else {
+        var sp = ev.speedMph || ev.SpeedMph || 0;
+        if (sp > 85) cat = 'motorcycle';
+    }
+    return { category: cat, domain: 'ground', color: CAT_SPEC[cat]?.color || '#3b82f6' };
+}
+
+// ── Simulation / feed state ───────────────────────────────────────────
+var simRunning = false;
+var feedHeld   = false;
+var _simHwId   = null;
+var _simZoneId = null;
+var _simSrvId  = null;
+
+// ── Vehicle map: vehicleId → { ev, vc, lat, lon, speedMph, make, lastSeen } ──
+var vehicleData = new Map();   // GPS-based vehicle store for 2D overlay
+
+// ── Overlay canvas ────────────────────────────────────────────────────
+var _oc  = document.getElementById('t3d-label-overlay');
+var _octx = _oc ? _oc.getContext('2d') : null;
+
+// ── Leaflet map ───────────────────────────────────────────────────────
+var _map = null;
+var _tileLayer = null;
+var _tileErrors = 0;
+var _mapReady = false;
+
+function _initMap() {
+    var el = document.getElementById('t3dMiniMap');
+    if (!el || typeof L === 'undefined') return;
+    if (_map) { _map.remove(); _map = null; }
+
+    _map = L.map('t3dMiniMap', {
+        zoomControl: false,
+        attributionControl: false,
+        dragging: false,
+        scrollWheelZoom: false,
+        doubleClickZoom: false,
+        keyboard: false, boxZoom: false, touchZoom: false
+    }).setView([_mapCtrLat, _mapCtrLon], 15);
+
+    // Two-pass invalidateSize so tiles load correctly after DOM paint
+    setTimeout(function() { if (_map) _map.invalidateSize(true); }, 80);
+    setTimeout(function() { if (_map) { _map.invalidateSize(true); _mapReady = true; } }, 300);
+
+    // Block map from stealing mouse events (3D canvas handles interaction)
+    _map.getContainer().style.pointerEvents = 'none';
+
+    _tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, subdomains: 'abc', attribution: '', maxRetries: 1
+    }).addTo(_map);
+
+    _tileErrors = 0;
+    var _fallbackTimer = setTimeout(function() {
+        if (_map && !_map._tileFallback) _applyTileFallback();
+    }, 3000);
+
+    _tileLayer.on('tileerror', function() {
+        _tileErrors++;
+        if (_tileErrors >= 3 && _map && !_map._tileFallback) {
+            clearTimeout(_fallbackTimer);
+            _applyTileFallback();
+        }
     });
+    _tileLayer.on('tileload', function() {
+        _tileErrors = 0;
+        clearTimeout(_fallbackTimer);
+    });
+}
 
-    // Recenter map AND scene origin on zone centroid
-    var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-    if (z && z.lat && z.lon) {
-        // Update scene origin so GPS → scene coordinates are correct for this zone
-        midLat = z.lat; midLon = z.lon;
-        _reloadMapTile(z.lat, z.lon);
-        _updateMiniMap(z.lat, z.lon);
-        // Pan top camera back to origin so new vehicles appear centred
-        camTpanX = 0; camTpanZ = 0;
+function _applyTileFallback() {
+    if (!_map) return;
+    _map._tileFallback = true;
+    if (_tileLayer) _tileLayer.remove();
+    var el = document.getElementById('t3dMiniMap');
+    if (el) el.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 50%, #1a2040 100%)';
+}
+
+function _panMapTo(lat, lon) {
+    if (!_map) return;
+    _mapCtrLat = lat; _mapCtrLon = lon;
+    _map.panTo([lat, lon], { animate: false });
+}
+
+// ── Zoom: Leaflet zoom level controls both map + vehicle size ─────────
+var _leafletZoom = 15;
+
+function t3dZoomIn() {
+    _leafletZoom = Math.min(18, _leafletZoom + 1);
+    if (_map) { _map.setZoom(_leafletZoom, { animate: false });
+        setTimeout(function() { if (_map) _map.invalidateSize(true); }, 30); }
+}
+function t3dZoomOut() {
+    _leafletZoom = Math.max(10, _leafletZoom - 1);
+    if (_map) { _map.setZoom(_leafletZoom, { animate: false });
+        setTimeout(function() { if (_map) _map.invalidateSize(true); }, 30); }
+}
+
+// Mouse wheel: zoom in/out
+document.getElementById('t3dMiniMap').addEventListener('wheel', function(e) {
+    e.preventDefault();
+    if (e.deltaY < 0) t3dZoomIn(); else t3dZoomOut();
+}, { passive: false });
+
+// ── Highway overlay: draw a semi-transparent road strip over the real road ──
+// Uses the selected zone's heading or defaults to North–South
+function _drawHighwayOverlay() {
+    if (!_map || !_oc || !_octx || !_mapReady) return;
+    var cw = _oc.parentElement.clientWidth;
+    var ch = _oc.parentElement.clientHeight;
+    if (_oc.width !== cw || _oc.height !== ch) { _oc.width = cw; _oc.height = ch; }
+    _octx.clearRect(0, 0, cw, ch);
+
+    // Draw highway strip: a wide semi-transparent road band centred on map
+    // Approximate the highway as a vertical band (N-S) at the map centre
+    // Width scales with zoom: ~30px at z15, wider when zoomed in
+    var zoomFactor = Math.pow(2, _leafletZoom - 15);
+    var roadPx     = Math.round(48 * zoomFactor);   // highway width in pixels
+    var cxPx       = cw / 2;  // map centre is always screen centre (no drag)
+
+    // Road surface
+    _octx.fillStyle = 'rgba(80, 100, 120, 0.55)';
+    _octx.fillRect(cxPx - roadPx / 2, 0, roadPx, ch);
+
+    // Yellow centre line
+    _octx.strokeStyle = 'rgba(253, 224, 71, 0.90)';
+    _octx.lineWidth = Math.max(2, 3 * zoomFactor);
+    _octx.setLineDash([]);
+    _octx.beginPath();
+    _octx.moveTo(cxPx, 0); _octx.lineTo(cxPx, ch);
+    _octx.stroke();
+
+    // Lane dashes (left and right of centre)
+    _octx.strokeStyle = 'rgba(255,255,255,0.70)';
+    _octx.lineWidth = Math.max(1, 1.5 * zoomFactor);
+    _octx.setLineDash([20 * zoomFactor, 14 * zoomFactor]);
+    var laneW = roadPx / 4;
+    [-laneW, laneW].forEach(function(dx) {
+        _octx.beginPath();
+        _octx.moveTo(cxPx + dx, 0); _octx.lineTo(cxPx + dx, ch);
+        _octx.stroke();
+    });
+    _octx.setLineDash([]);
+
+    // Edge kerb lines
+    _octx.strokeStyle = 'rgba(255,255,255,0.55)';
+    _octx.lineWidth = Math.max(2, 3 * zoomFactor);
+    [-roadPx/2, roadPx/2].forEach(function(dx) {
+        _octx.beginPath();
+        _octx.moveTo(cxPx + dx, 0); _octx.lineTo(cxPx + dx, ch);
+        _octx.stroke();
+    });
+}
+
+// ── Vehicle overlay: draw vehicles as GPS-projected circles with labels ──
+function _drawVehicles() {
+    if (!_map || !_oc || !_octx || !_mapReady) return;
+    var cw = _oc.width, ch = _oc.height;
+
+    vehicleData.forEach(function(vd, vid) {
+        if (!vd.lat || !vd.lon) return;
+
+        // GPS → Leaflet layer point → canvas pixel
+        var pt = _map.latLngToLayerPoint([vd.lat, vd.lon]);
+        // latLngToLayerPoint gives pixel relative to map container origin
+        // We need to offset by the map's pane transform
+        var origin = _map.getPixelOrigin();
+        var mapPt  = _map.project([vd.lat, vd.lon], _map.getZoom());
+        var sx = mapPt.x - origin.x;
+        var sy = mapPt.y - origin.y;
+
+        // Cull off-screen
+        if (sx < -60 || sx > cw + 60 || sy < -60 || sy > ch + 60) return;
+
+        var cat   = vd.vc ? vd.vc.category : 'sedan';
+        var color = CAT_COLORS[cat] || '#1d4ed8';
+        var make  = vd.make || '';
+        var badge = BRAND_BADGES[make];
+
+        // ── Vehicle dot ───────────────────────────────────────────────
+        var dotR = 7;
+        _octx.beginPath();
+        _octx.arc(sx, sy, dotR, 0, Math.PI * 2);
+        _octx.fillStyle = color;
+        _octx.fill();
+        _octx.strokeStyle = 'rgba(255,255,255,0.9)';
+        _octx.lineWidth = 1.5;
+        _octx.stroke();
+
+        // Speed indicator ring (arc proportional to speed)
+        var spd = vd.speedMph || 0;
+        var arc = (Math.min(spd, 120) / 120) * Math.PI * 2;
+        _octx.beginPath();
+        _octx.arc(sx, sy, dotR + 4, -Math.PI / 2, -Math.PI / 2 + arc);
+        _octx.strokeStyle = 'rgba(253,224,71,0.85)';
+        _octx.lineWidth = 2.5;
+        _octx.stroke();
+
+        // ── Label pill ────────────────────────────────────────────────
+        var pillW = 148, pillH = 36;
+        var pillX = Math.max(2, Math.min(cw - pillW - 2, sx - pillW / 2));
+        var pillY = sy - 56;
+        if (pillY < 2) pillY = sy + dotR + 8;
+
+        // Shadow + pill background
+        _octx.save();
+        _octx.shadowColor = 'rgba(0,0,0,0.65)'; _octx.shadowBlur = 6; _octx.shadowOffsetY = 2;
+        _octx.fillStyle = color;
+        _octx.beginPath();
+        _octx.roundRect(pillX, pillY, pillW, pillH, 7);
+        _octx.fill();
+        _octx.restore();
+
+        // Pill border
+        _octx.strokeStyle = 'rgba(255,255,255,0.22)';
+        _octx.lineWidth = 1;
+        _octx.beginPath(); _octx.roundRect(pillX + 0.5, pillY + 0.5, pillW - 1, pillH - 1, 7); _octx.stroke();
+
+        // Brand badge (circle + initials)
+        if (badge) {
+            _octx.beginPath();
+            _octx.arc(pillX + 18, pillY + pillH / 2, 13, 0, Math.PI * 2);
+            _octx.fillStyle = badge.color; _octx.fill();
+            _octx.strokeStyle = 'rgba(255,255,255,0.35)'; _octx.lineWidth = 1.5; _octx.stroke();
+            _octx.fillStyle = '#fff';
+            _octx.font = badge.initials.length > 2 ? 'bold 7px Arial' : 'bold 11px Arial';
+            _octx.textAlign = 'center'; _octx.textBaseline = 'middle';
+            _octx.fillText(badge.initials, pillX + 18, pillY + pillH / 2 + 1);
+        }
+
+        // Vehicle ID text
+        var textX = badge ? pillX + 35 : pillX + 8;
+        _octx.fillStyle = '#fff';
+        _octx.font = 'bold 11px monospace';
+        _octx.textAlign = 'left'; _octx.textBaseline = 'top';
+        _octx.fillText((vid || '–').slice(0, 14), textX, pillY + 5);
+
+        // Make + category
+        _octx.fillStyle = 'rgba(255,255,255,0.72)';
+        _octx.font = '9.5px Arial'; _octx.textBaseline = 'bottom';
+        _octx.fillText((make ? make.slice(0, 10) + '  ' : '') + cat, textX, pillY + pillH - 4);
+
+        // Connector line from pill to dot
+        var lineFromX = pillX + pillW / 2;
+        var lineFromY = pillY < sy ? pillY + pillH : pillY;
+        _octx.strokeStyle = 'rgba(0,0,0,0.5)'; _octx.lineWidth = 3;
+        _octx.beginPath(); _octx.moveTo(lineFromX, lineFromY); _octx.lineTo(sx, sy); _octx.stroke();
+        _octx.strokeStyle = 'rgba(255,255,255,0.8)'; _octx.lineWidth = 1.2;
+        _octx.setLineDash([4, 3]);
+        _octx.beginPath(); _octx.moveTo(lineFromX, lineFromY); _octx.lineTo(sx, sy); _octx.stroke();
+        _octx.setLineDash([]);
+    });
+}
+
+// ── Animation loop: runs at 60fps, redraws overlay on every frame ─────
+var _animFrame = null;
+function _renderLoop() {
+    _animFrame = requestAnimationFrame(_renderLoop);
+    // Sync overlay canvas size with container
+    var wrap = document.getElementById('sceneWrap');
+    if (wrap && _oc) {
+        var cw = wrap.clientWidth, ch = wrap.clientHeight;
+        if (_oc.width !== cw || _oc.height !== ch) { _oc.width = cw; _oc.height = ch; }
+    }
+    if (_octx && _oc) {
+        _octx.clearRect(0, 0, _oc.width, _oc.height);
+        _drawHighwayOverlay();
+        _drawVehicles();
+    }
+}
+
+// ── THREE.JS SCENE (Perspective/Side/Split views) ─────────────────────
+// Three.js is kept for the 3D perspective and side-elevation views.
+// In Top view, we use the 2D canvas overlay above instead.
+const _3dCanvas = document.getElementById('mainCanvas');
+const renderer  = new THREE.WebGLRenderer({ canvas: _3dCanvas, antialias: true, alpha: true });
+renderer.setClearColor(0x000000, 0);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(_3dCanvas.clientWidth, _3dCanvas.clientHeight);
+
+const scene3 = new THREE.Scene();
+scene3.fog = new THREE.Fog(0x2a3a2a, 800, 1400);
+scene3.add(new THREE.HemisphereLight(0xbfd4ea, 0x4a6b3a, 0.55));
+scene3.add(new THREE.AmbientLight(0xffffff, 0.45));
+var dir3 = new THREE.DirectionalLight(0xffffff, 1.2);
+dir3.position.set(120, 200, 80); scene3.add(dir3);
+
+// Road for 3D view
+var roadGeo3 = new THREE.PlaneGeometry(1400, 48);
+roadGeo3.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+scene3.add(new THREE.Mesh(roadGeo3, new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.9, transparent: true })));
+// Centre line
+var clGeo = new THREE.PlaneGeometry(1400, 1.5);
+clGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+var clMesh = new THREE.Mesh(clGeo, new THREE.MeshPhongMaterial({ color: 0xfde047 }));
+clMesh.position.y = 0.02; scene3.add(clMesh);
+// Lane dashes
+for (var di = -13; di <= 13; di++) {
+    var dg = new THREE.PlaneGeometry(14, 0.5);
+    dg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+    var dm = new THREE.Mesh(dg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
+    dm.position.set(di * 40, 0.02, -10); scene3.add(dm.clone());
+    dm.position.z = 10; scene3.add(dm);
+}
+
+// Cameras
+const camP3 = new THREE.PerspectiveCamera(55, _3dCanvas.clientWidth / _3dCanvas.clientHeight, 0.1, 3000);
+camP3.position.set(-220, 55, 120); camP3.lookAt(60, 0, 0);
+const camS3 = new THREE.OrthographicCamera(-240, 240, 90, -90, 0.1, 2000);
+camS3.position.set(0, 0, 500); camS3.lookAt(0, 0, 0);
+
+var currentView = 'top';   // default to top (uses 2D overlay)
+var radius3 = 280, theta3 = 0.6, phi3 = 0.5;
+var vehicleMeshes3 = [];  // THREE.Group objects for 3D perspective view
+
+// 3D mesh factory — simple coloured box per vehicle type
+function _make3DVehicle(ev, vc) {
+    var l = 4.5, w = 1.9, h = 1.4;
+    if (vc.category === 'truck') { l = 9; w = 2.4; h = 2.8; }
+    else if (vc.category === 'suv') { l = 5; w = 2.1; h = 1.8; }
+    else if (vc.category === 'van') { l = 5.5; w = 2.1; h = 2.2; }
+    else if (vc.category === 'motorcycle') { l = 2.2; w = 0.6; h = 1.1; }
+    var geo = new THREE.BoxGeometry(l, h, w);
+    var mat = new THREE.MeshPhongMaterial({ color: new THREE.Color(vc.color || '#3b82f6') });
+    return new THREE.Mesh(geo, mat);
+}
+
+// Build or update 3D mesh from vehicleData (called when loading events in 3D views)
+function _sync3DMeshes() {
+    // Remove stale
+    vehicleMeshes3 = vehicleMeshes3.filter(function(m) {
+        if (!vehicleData.has(m.userData.vid)) { scene3.remove(m); return false; }
+        return true;
+    });
+    // Add new
+    vehicleData.forEach(function(vd, vid) {
+        var exists = vehicleMeshes3.find(function(m){ return m.userData.vid === vid; });
+        if (!exists) {
+            var mesh = _make3DVehicle(vd.ev, vd.vc);
+            var p = norm(vd.lat || midLat, vd.lon || midLon);
+            var lane = (Math.random() - 0.5) * 20;
+            mesh.position.set(p.x, 0.7, lane);
+            mesh.userData = { vid: vid, vx: (vd.speedMph || 30) * 0.015 * (Math.random() > 0.5 ? 1 : -1),
+                              laneZ: lane, baseY: 0.7, phase: Math.random() * Math.PI * 2 };
+            scene3.add(mesh);
+            vehicleMeshes3.push(mesh);
+        }
+    });
+}
+
+// 3D animate loop (only active in perspective/side/split views)
+var _3dAnimRunning = false;
+var _tick3 = 0;
+function _animate3D() {
+    if (!_3dAnimRunning) return;
+    requestAnimationFrame(_animate3D); _tick3++;
+    camP3.position.x = -220 + radius3 * 0.4 * Math.sin(theta3 * 0.3);
+    camP3.position.y = Math.max(20, radius3 * Math.sin(phi3));
+    camP3.position.z =  120 + radius3 * 0.25 * Math.cos(theta3 * 0.3);
+    camP3.lookAt(60, 0, 0);
+    vehicleMeshes3.forEach(function(m) {
+        var ud = m.userData;
+        m.position.x += ud.vx;
+        m.position.z += (ud.laneZ - m.position.z) * 0.05;
+        m.position.y = ud.baseY + Math.sin(_tick3 * 0.22 + ud.phase) * Math.abs(ud.vx) * 0.14;
+        if (m.position.x >  680) m.position.x = -680;
+        if (m.position.x < -680) m.position.x =  680;
+    });
+    var cw = _3dCanvas.clientWidth, ch = _3dCanvas.clientHeight;
+    renderer.setSize(cw, ch, false);
+    var cam = currentView === 'side' ? camS3 : camP3;
+    if (cam.isPerspectiveCamera) { cam.aspect = cw/ch; cam.updateProjectionMatrix(); }
+    renderer.render(scene3, cam);
+}
+
+// 3D camera drag
+var _isDrag3 = false, _prevM3 = {x:0,y:0};
+_3dCanvas.addEventListener('mousedown', function(e) { _isDrag3 = true; _prevM3 = {x:e.clientX, y:e.clientY}; });
+window.addEventListener('mouseup', function() { _isDrag3 = false; });
+window.addEventListener('mousemove', function(e) {
+    if (!_isDrag3) return;
+    theta3 -= (e.clientX - _prevM3.x) * 0.005;
+    phi3 = Math.max(0.05, Math.min(1.4, phi3 - (e.clientY - _prevM3.y) * 0.005));
+    _prevM3 = {x:e.clientX, y:e.clientY};
+});
+_3dCanvas.addEventListener('wheel', function(e) {
+    radius3 = Math.max(40, Math.min(700, radius3 + e.deltaY * 0.25));
+});
+
+// ── View toggle ───────────────────────────────────────────────────────
+function setViewport(view) {
+    currentView = view;
+    var is2D = (view === 'top');
+    // Show Three.js canvas only for 3D views
+    _3dCanvas.style.display = is2D ? 'none' : '';
+    // Overlay canvas always visible
+    _oc.style.display = '';
+
+    // Start/stop 3D render loop
+    if (!is2D && !_3dAnimRunning) {
+        _3dAnimRunning = true; _sync3DMeshes(); _animate3D();
+    } else if (is2D) {
+        _3dAnimRunning = false;
+        renderer.clear();   // blank the 3D canvas when not in use
     }
 
-    // Clear all existing meshes and reload — zone filter is a hard boundary
-    _clearScene();
-    refreshScene();
+    // Show Leaflet map for top view; hide for 3D (it shows through alpha)
+    document.getElementById('t3dMiniMap').style.visibility = is2D ? 'visible' : 'hidden';
+
+    // Split mode labels
+    ['labelA','labelB','labelC'].forEach(function(id) {
+        document.getElementById(id).style.display = view === 'split' ? '' : 'none';
+    });
+}
+
+// View buttons
+document.querySelectorAll('#viewToggle button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        document.querySelectorAll('#viewToggle button').forEach(function(b) {
+            b.classList.remove('active','btn-primary'); b.classList.add('btn-outline-primary');
+        });
+        btn.classList.add('active','btn-primary'); btn.classList.remove('btn-outline-primary');
+        setViewport(btn.dataset.view);
+    });
+});
+
+// ── Zone / Server change handlers ─────────────────────────────────────
+function t3dZoneChanged() {
+    selectedZoneId = document.getElementById('t3dZoneSel').value;
+    selectedServerId = '';
+    document.getElementById('t3dServerSel').value = '';
+    var srvSel = document.getElementById('t3dServerSel');
+    srvSel.querySelectorAll('option').forEach(function(o) {
+        o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+    });
+    var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+    if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); }
+    _clearVehicles(); refreshScene();
 }
 
 function t3dServerChanged() {
     selectedServerId = document.getElementById('t3dServerSel').value;
-    // Auto-select the matching zone for this server
     var opt = document.querySelector('#t3dServerSel option[value="' + selectedServerId + '"]');
     if (opt && opt.dataset.zone) {
         document.getElementById('t3dZoneSel').value = opt.dataset.zone;
         selectedZoneId = opt.dataset.zone;
     }
-    // Update scene origin + map center to zone of selected server
     if (selectedZoneId) {
         var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-        if (z && z.lat && z.lon) {
-            midLat = z.lat; midLon = z.lon;
-            _reloadMapTile(z.lat, z.lon);
-            _updateMiniMap(z.lat, z.lon);
-            camTpanX = 0; camTpanZ = 0;
-        }
+        if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); }
     }
-    // Clear scene and reload with server filter active
-    _clearScene();
-    refreshScene();
+    _clearVehicles(); refreshScene();
 }
 
-// ── OSM tile helpers (navigation map background) ─────────────────────
-function _latLonToTile(lat, lon, z) {
-    var n = 1 << z;
-    var x = Math.floor((lon + 180) / 360 * n);
-    var sinLat = Math.sin(lat * Math.PI / 180);
-    var y = Math.floor((1 - Math.log((sinLat + 1) / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n);
-    return { x: x, y: y, z: z };
-}
-var _mapTileLat = @Html.Raw(zoneCtrLat.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture));
-var _mapTileLon = @Html.Raw(zoneCtrLon.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture));
-var _mapTileLoading = false;
-
-function _reloadMapTile(lat, lon) {
-    _mapTileLat = lat; _mapTileLon = lon; _mapTileLoading = false; _tryLoadMapTile();
-}
-
-// Canvas-generated fallback texture (no network needed)
-var _fallbackTexReady = false;
-function _makeFallbackGridTexture() {
-    var c = document.createElement('canvas');
-    c.width = c.height = 512;
-    var cx = c.getContext('2d');
-    cx.fillStyle = '#1e2e1e';
-    cx.fillRect(0, 0, 512, 512);
-    cx.strokeStyle = '#3a5a3a';
-    cx.lineWidth = 1;
-    for (var i = 0; i <= 512; i += 64) {
-        cx.beginPath(); cx.moveTo(i, 0); cx.lineTo(i, 512); cx.stroke();
-        cx.beginPath(); cx.moveTo(0, i); cx.lineTo(512, i); cx.stroke();
-    }
-    cx.strokeStyle = '#4a6a4a'; cx.lineWidth = 3;
-    cx.beginPath(); cx.moveTo(0, 256); cx.lineTo(512, 256); cx.stroke();
-    cx.beginPath(); cx.moveTo(256, 0); cx.lineTo(512, 512); cx.stroke();
-    var tex = new THREE.CanvasTexture(c);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(4, 4);
-    return tex;
-}
-
-function _applyFallbackTexture() {
-    if (_fallbackTexReady) return;
-    _fallbackTexReady = true;
-    if (window._t3dGround) {
-        var tex = _makeFallbackGridTexture();
-        window._t3dGround.material.map   = tex;
-        window._t3dGround.material.color.setHex(0x2a3a2a);
-        window._t3dGround.material.needsUpdate = true;
-    }
-}
-
-function _tryLoadMapTile() {
-    if (_mapTileLoading) return;
-    _mapTileLoading = true;
-    var t = _latLonToTile(_mapTileLat, _mapTileLon, 14);
-    var url = 'https://tile.openstreetmap.org/' + t.z + '/' + t.x + '/' + t.y + '.png';
-    var loader = new THREE.TextureLoader();
-    loader.crossOrigin = 'anonymous';
-    var timedOut = false;
-    var to = setTimeout(function() {
-        timedOut = true;
-        _applyFallbackTexture();
-    }, 3000);
-    loader.load(url, function(tex) {
-        if (timedOut) return;
-        clearTimeout(to);
-        tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-        if (window._t3dGround) {
-            window._t3dGround.material.map   = tex;
-            window._t3dGround.material.color.setHex(0xddeedd);
-            window._t3dGround.material.needsUpdate = true;
-        }
-    }, undefined, function() {
-        clearTimeout(to);
-        _applyFallbackTexture();
-    });
-}
-
-// ── Ground vehicle geometry + colour factory ──────────────────────────
-// ── Vehicle shape specs — distinctive geometry per category ─────────
-// Each vehicle has: body box + cab box (roof section) for a car silhouette,
-// rendered as a THREE.Group so it looks like a real vehicle from top/side view.
-// Color-coded by category for instant visual classification.
-const VEHICLE_SCALE = 2.0; // 2x larger vehicles for better 3D scene visibility
-
-const CAT_SPEC = {
-    // Blue compact sedan  — low roof, short body (scaled 2x)
-    sedan:      { color:'#3b82f6',
-                  geo: () => _carGroup(3.6, 0.76, 1.70,  1.8, 0.56, 1.40,  '#2563eb') },
-    // Green SUV  — taller body, bigger footprint (scaled 2x)
-    suv:        { color:'#22c55e',
-                  geo: () => _carGroup(4.2, 1.04, 2.00,  2.2, 0.72, 1.70, '#16a34a') },
-    // Amber truck — long body, cab up front (scaled 2x)
-    truck:      { color:'#f59e0b',
-                  geo: () => _truckGroup() },
-    // Purple motorcycle — thin cylinder + small box (scaled 2x)
-    motorcycle: { color:'#a855f7',
-                  geo: () => _motoGroup() },
-    // Slate van — tall boxy shape, no separate cab (scaled 2x)
-    van:        { color:'#64748b',
-                  geo: () => _carGroup(4.8, 1.90, 2.10,  4.0, 1.40, 1.90, '#475569') },
-};
-const DEFAULT_SPEC = CAT_SPEC.sedan;
-
-// ── Shape helpers — return BufferGeometry (merged car silhouette) ────
-function _carGroup(bL,bH,bW, cL,cH,cW, roofColor) {
-    // Returns a custom BufferGeometry approximating a car body+cab top-view shape.
-    // Body = full length base; Cab = shorter roof section centered on top.
-    // We merge two boxes into one geometry using manual vertex copy.
-    const body = new THREE.BoxGeometry(bL, bH, bW);
-    const cab  = new THREE.BoxGeometry(cL, cH, cW);
-    // Shift cab up to sit on body top
-    const cabMatrix = new THREE.Matrix4().makeTranslation(0, (bH+cH)/2, 0);
-    cab.applyMatrix4(cabMatrix);
-    // Merge with BufferGeometryUtils if available, else return body only
-    if (THREE.BufferGeometryUtils && THREE.BufferGeometryUtils.mergeGeometries) {
-        return THREE.BufferGeometryUtils.mergeGeometries([body, cab]);
-    }
-    return body; // fallback: plain box
-}
-function _truckGroup() {
-    const body = new THREE.BoxGeometry(5.2, 1.10, 1.90);
-    const cab  = new THREE.BoxGeometry(1.8, 1.40, 1.80);
-    cab.applyMatrix4(new THREE.Matrix4().makeTranslation(1.6, 1.20, 0));
-    if (THREE.BufferGeometryUtils && THREE.BufferGeometryUtils.mergeGeometries)
-        return THREE.BufferGeometryUtils.mergeGeometries([body, cab]);
-    return body;
-}
-function _motoGroup() {
-    const body  = new THREE.CylinderGeometry(0.24, 0.28, 1.10, 8);
-    body.applyMatrix4(new THREE.Matrix4().makeRotationZ(Math.PI / 2));
-    return body;
-}
-
-function getSpec(vc) {
-    if (!vc) return DEFAULT_SPEC;
-    const cat = vc.category || vc.vehicleCategory || 'sedan';
-    return CAT_SPEC[cat] || DEFAULT_SPEC;
-}
-
-// ── JS-side ground classifier ─────────────────────────────────────────
-function classifyLocal(ev) {
-    if (ev.vehicleClassJson) {
-        try {
-            const vc = typeof ev.vehicleClassJson === 'string'
-                ? JSON.parse(ev.vehicleClassJson) : ev.vehicleClassJson;
-            if (vc && vc.category && vc.domain === 'ground') return vc;
-        } catch(e) {}
-    }
-    if (ev.vehicleCategory && ev.vehicleMode === 'ground')
-        return { category: ev.vehicleCategory, domain: 'ground',
-                 color: CAT_SPEC[ev.vehicleCategory]?.color || '#3b82f6' };
-
-    // Speed heuristic — ground only
-    const s = ev.speedMph;
-    let cat = 'sedan';
-    if (s !== null && s !== undefined) {
-        if (s <= 25)      cat = 'motorcycle';
-        else if (s <= 55) cat = 'sedan';
-        else if (s <= 75) cat = 'suv';
-        else if (s <= 90) cat = 'truck';
-        else              cat = 'van';
-    }
-    return { category: cat, domain: 'ground', color: CAT_SPEC[cat]?.color || '#3b82f6' };
-}
-
-// ── Lat/lon normalisation ─────────────────────────────────────────────
-// midLat/midLon = scene origin in real-world coordinates.
-// Initialise from zone data so vehicles from the first DB load land at correct positions.
-var _initMidLat = 32.75, _initMidLon = -97.0;
-if (typeof T3D_ZONES !== 'undefined' && T3D_ZONES.length > 0) {
-    var _z0 = T3D_ZONES.find(function(z){ return z.lat && z.lon; });
-    if (_z0) { _initMidLat = _z0.lat; _initMidLon = _z0.lon; }
-}
-let midLat = _initMidLat, midLon = _initMidLon;
-function norm(lat, lon) {
-    return { x: (lon - midLon) * XZ_SCALE, z: (lat - midLat) * XZ_SCALE };
-}
-
-// ── Scene setup ───────────────────────────────────────────────────────
-const scene = new THREE.Scene();
-// Scene background is transparent — Leaflet map shows through
-// scene.background = null; // transparent
-// Minimal fog — preserves map background visibility
-scene.fog = new THREE.Fog(0x2a3a2a, 800, 1400);
-// Hemisphere light — warm sky tone + cool ground bounce for natural ambient
-const hemiLight = new THREE.HemisphereLight(0xbfd4ea, 0x4a6b3a, 0.55);
-scene.add(hemiLight);
-scene.add(new THREE.AmbientLight(0xffffff, 0.45));
-const dir = new THREE.DirectionalLight(0xffffff, 1.2);
-dir.position.set(0, 300, 80); scene.add(dir);
-const sunLight = new THREE.DirectionalLight(0xfff4cc, 0.6);
-sunLight.position.set(-100, 200, -200); scene.add(sunLight);
-// Fill light from opposite side — eliminates dark vehicle faces
-const fillLight = new THREE.DirectionalLight(0x8899bb, 0.35);
-fillLight.position.set(200, 150, -100); scene.add(fillLight);
-
-// ── Ground terrain ────────────────────────────────────────────────────
-const groundGeo = new THREE.PlaneGeometry(1400, 1400);
-// Ground plane is transparent — Leaflet map is the actual background
-const groundMat = new THREE.MeshPhongMaterial({ color: 0x2d4a2d, shininess: 0, transparent: true, opacity: 0.0 });
-const ground = new THREE.Mesh(groundGeo, groundMat);
-ground.rotation.x = -Math.PI / 2; ground.position.y = -0.1;
-scene.add(ground);
-window._t3dGround = ground; // exposed for OSM tile loader
-
-// ── Asphalt road surface (highway running along X axis) ───────────────
-const roadW = 72; // total road width (4 lanes × ~18 units each)
-const roadGeo = new THREE.PlaneGeometry(1400, roadW);
-const roadMat = new THREE.MeshPhongMaterial({ color: 0x374151, transparent: true, opacity: 0.85 }); // semi-transparent asphalt over map
-const road = new THREE.Mesh(roadGeo, roadMat);
-road.rotation.x = -Math.PI / 2; road.position.y = 0.0;
-scene.add(road);
-
-// Road shoulders (concrete-grey border strips)
-[-roadW/2 - 5, roadW/2 + 5].forEach(oz => {
-    const sg = new THREE.PlaneGeometry(1400, 10);
-    const sm = new THREE.MeshPhongMaterial({ color: 0x4b5563 });
-    const sh = new THREE.Mesh(sg, sm);
-    sh.rotation.x = -Math.PI / 2; sh.position.set(0, 0, oz);
-    scene.add(sh);
-});
-
-// Outer edge white lines
-[-roadW/2, roadW/2].forEach(oz => {
-    const eg = new THREE.PlaneGeometry(1400, 1.2);
-    const em = new THREE.MeshPhongMaterial({ color: 0xffffff });
-    const el = new THREE.Mesh(eg, em);
-    el.rotation.x = -Math.PI / 2; el.position.set(0, 0.02, oz);
-    scene.add(el);
-});
-
-// Grass median strip between opposing lanes
-const medianGeo = new THREE.PlaneGeometry(1400, 3);
-const medianMat = new THREE.MeshPhongMaterial({ color: 0x3a6b3a });
-const median = new THREE.Mesh(medianGeo, medianMat);
-median.rotation.x = -Math.PI / 2; median.position.set(0, 0.01, 0);
-scene.add(median);
-// Yellow center divider (double line) on top of median
-[-0.9, 0.9].forEach(oz => {
-    const cg = new THREE.PlaneGeometry(1400, 0.7);
-    const cm2 = new THREE.MeshPhongMaterial({ color: 0xfbbf24 });
-    const cl2 = new THREE.Mesh(cg, cm2);
-    cl2.rotation.x = -Math.PI / 2; cl2.position.set(0, 0.02, oz);
-    scene.add(cl2);
-});
-
-// Dashed white lane dividers between lanes
-const laneOffsets = [-18, 18]; // between inner and outer lanes each side
-laneOffsets.forEach(oz => {
-    for (let x = -680; x < 700; x += 28) {
-        const dg = new THREE.PlaneGeometry(14, 0.6);
-        const dm = new THREE.MeshPhongMaterial({ color: 0xffffff });
-        const dash = new THREE.Mesh(dg, dm);
-        dash.rotation.x = -Math.PI / 2; dash.position.set(x, 0.02, oz);
-        scene.add(dash);
-    }
-});
-
-// Stop bars at road ends (white perpendicular lines)
-[-680, 680].forEach(function(xEnd) {
-    var sbGeo = new THREE.PlaneGeometry(3, roadW);
-    var sbMat = new THREE.MeshPhongMaterial({ color: 0xffffff });
-    var sb = new THREE.Mesh(sbGeo, sbMat);
-    sb.rotation.x = -Math.PI / 2; sb.position.set(xEnd, 0.03, 0);
-    scene.add(sb);
-});
-// Crosswalk stripes at road ends
-[-680, 680].forEach(function(xEnd) {
-    for (var cz = -roadW/2 + 4; cz < roadW/2; cz += 8) {
-        var cwGeo = new THREE.PlaneGeometry(6, 4);
-        var cwMat = new THREE.MeshPhongMaterial({ color: 0xe5e7eb });
-        var cw = new THREE.Mesh(cwGeo, cwMat);
-        cw.rotation.x = -Math.PI / 2; cw.position.set(xEnd, 0.025, cz);
-        scene.add(cw);
-    }
-});
-
-// Roadside trees (simple green cylinders on terrain)
-for (let x = -650; x <= 650; x += 60) {
-    [-50, 50].forEach(oz => {
-        const tg = new THREE.CylinderGeometry(3, 4, 12, 8);
-        const tm = new THREE.MeshPhongMaterial({ color: 0x166534 });
-        const tree = new THREE.Mesh(tg, tm);
-        tree.position.set(x + (Math.random()-0.5)*10, 6, oz + (Math.random()-0.5)*5);
-        scene.add(tree);
-    });
-}
-
-// Zone rings removed per user request — zones are tracked in the dropdown only.
-// (TorusGeometry circles removed from 3D scene to reduce visual clutter)
-
-// ── Scene clear helper — removes all vehicle meshes (used on filter change) ──
-function _clearScene() {
-    vehicleMeshes.forEach(function(m) {
-        scene.remove(m);
-        // Traverse group children (body mesh + label sprite)
-        m.traverse(function(ch) {
-            if (ch.geometry) ch.geometry.dispose();
-            if (ch.material) {
-                if (ch.material.map) ch.material.map.dispose();
-                ch.material.dispose();
-            }
-        });
-        if (_overlayCtx && _overlayCanvas) _overlayCtx.clearRect(0, 0, _overlayCanvas.width, _overlayCanvas.height);
-    });
-    vehicleMeshes.length = 0;
-    vehicleData.length   = 0;
-    vehicleMap.clear();
-    var sc = document.getElementById('statGround');
-    if (sc) sc.textContent = '0';
-}
-
-// ── Vehicle mesh management ───────────────────────────────────────────
-const vehicleMeshes = [], vehicleData = [];
-const vehicleMap    = new Map();   // vehicleId → mesh  (enables live upsert by vehicle)
-const raycaster = new THREE.Raycaster();
-const mouse2    = new THREE.Vector2();
-let selectedVehicleMesh = null;
-
-// Lane centre Z positions (4 lanes: 2 eastbound, 2 westbound)
-const LANE_Z = [-27, -9, 9, 27];
-
-// Deterministic lane keyed to vehicleId — same vehicle keeps same lane across refreshes
-function stableLane(vid) {
-    var h = 0;
-    for (var i = 0; i < (vid || '').length; i++) h = (h * 31 + vid.charCodeAt(i)) | 0;
-    return LANE_Z[Math.abs(h) % LANE_Z.length];
-}
-
-// ── Top-down silhouette shapes per vehicle category ─────────────────
-// These flat PlaneGeometry shapes sit on the road surface and give
-// instant category recognition from the bird's-eye camera.
-function _topSilhouette(cat, color) {
-    var shapes = {
-        sedan:      { l:4.0, w:1.8, r:0.8 },   // compact rounded rectangle
-        suv:        { l:4.5, w:2.2, r:0.6 },   // wider, squarer
-        truck:      { l:5.8, w:2.2, r:0.4 },   // long, less rounded
-        motorcycle: { l:2.0, w:0.6, r:0.3 },   // very narrow
-        van:        { l:5.0, w:2.4, r:0.3 },   // tall wide box
-    };
-    var s = shapes[cat] || shapes.sedan;
-    // Use a CapsuleGeometry-like shape (stretched cylinder) for top-down
-    // Fallback: PlaneGeometry for simplicity and performance
-    var geo = new THREE.PlaneGeometry(s.l, s.w, 2, 1);
-    geo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));  // lay flat
-    var mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color), transparent: true, opacity: 0.95 });
-    var sil = new THREE.Mesh(geo, mat);
-    sil.position.y = 0.25;  // just above road surface
-    sil.renderOrder = 1;    // always on top of road
-    return sil;
-}
-
-function buildVehicleMesh(ev, vid) {
-    const vc   = classifyLocal(ev);
-    const spec = getSpec(vc);
-    const geo  = spec.geo();
-    const mat  = new THREE.MeshPhongMaterial({ color: new THREE.Color(vc.color || spec.color) });
-    const mesh = new THREE.Mesh(geo, mat);
-
-    // Snap to a road lane centre; keep x from GPS if available
-    const p = (ev.latitude && ev.longitude) ? norm(ev.latitude, ev.longitude)
-              : { x: (Math.random()-0.5)*400, z: 0 };
-    const laneZ = (vid != null) ? stableLane(vid) : LANE_Z[vehicleMap.size % LANE_Z.length];
-    mesh.position.set(p.x, 0.70, laneZ); // raised for 2x scale
-
-    // FIX C2: 'direction' field alias — the payload sends "direction" not "heading".
-    // Also accept directionDeg / headingDeg for maximum compatibility.
-    const headingDeg = ev.heading ?? ev.direction ?? ev.directionDeg ?? ev.headingDeg
-                       ?? (laneZ < 0 ? 90 : 270);
-    const headingRad = headingDeg * Math.PI / 180;
-    // Speed in scene-units/frame — scaled so vehicles travel a plausible
-    // road distance between data ticks (not 20 road-lengths).
-    // At the sim post interval, a vehicle should move ~10-20% of road length.
-    // Road = 1360 units; target = 136 units per interval.
-    // vx_per_frame = 136 / (intervalSec * 60fps)
-    var _ivSec6 = Math.max(2, _simIntervalMs / 1000);
-    const speedFactor = ((ev.speedMph ?? 55) / 55) * (136 / (_ivSec6 * 60));
-    const vx =  Math.sin(headingRad) * speedFactor;
-    const vz = -Math.cos(headingRad) * speedFactor;
-    // Stable suspension phase per vehicle (hash of vid) so each vehicle bobs independently
-    var _ph = 0; if (vid) for (var _i = 0; _i < vid.length; _i++) _ph = (_ph*31+vid.charCodeAt(_i))|0;
-    const phase = (Math.abs(_ph) % 100) / 100 * Math.PI * 2;
-
-    mesh.rotation.y = headingRad; // face the direction of travel
-
-    // ── Vehicle ID label — canvas texture sprite with brand badge ──────
-    const _label = _makeVehicleLabel(vid, vc.category || 'sedan', ev.vehicleMake);
-    _label.position.set(0, 4.5, 0); // float above the larger 2x vehicle body
-    // ── Top-down flat silhouette — visible from bird's-eye camera ──────
-    const _silhouette = _topSilhouette(vc.category || 'sedan', vc.color || spec.color);
-    const _group = new THREE.Group();
-    _group.add(mesh);
-    _group.add(_silhouette);  // flat top-view shape (visible from above)
-    _group.add(_label);
-    _group.position.copy(mesh.position);
-    mesh.position.set(0, 0, 0);      // mesh is now relative to group
-    _group.userData = { ev, vc, baseY: 0.70, idx: vehicleMeshes.length,
-                        vx, vz, targetVx: vx, targetVz: vz, laneZ, headingRad, phase,
-                        vid, label: _label };
-    return _group;
-}
-
-// ── Brand logos from VehicleRegistry — actual SVG data URIs from server ──
-// Pre-loaded as Image objects for canvas drawing in vehicle labels
-var BRAND_LOGO_URIS = {};
-try { BRAND_LOGO_URIS = JSON.parse(document.getElementById('brandLogosData').textContent); } catch(e) {}
-var BRAND_LOGO_IMAGES = {};
-var _logoLoadedCount = 0, _logoTotalCount = 0;
-Object.keys(BRAND_LOGO_URIS).forEach(function(make) {
-    var img = new Image();
-    _logoTotalCount++;
-    img.onload = function() {
-        _logoLoadedCount++;
-        // Once all logos loaded, force overlay redraw on next animation tick
-        if (_logoLoadedCount >= _logoTotalCount) { window._logosReady = true; }
-    };
-    img.src = BRAND_LOGO_URIS[make];
-    BRAND_LOGO_IMAGES[make] = img;
-});
-// If no logos defined (empty registry), mark as ready immediately
-if (_logoTotalCount === 0) window._logosReady = true;
-
-// ── Fallback badge lookup — used when SVG logo hasn't loaded yet ──
-var BRAND_BADGES = {
-    'Toyota':         { initials: 'T',   color: '#EB0A1E' },
-    'Honda':          { initials: 'H',   color: '#CC0000' },
-    'Ford':           { initials: 'F',   color: '#003478' },
-    'Chevrolet':      { initials: 'C',   color: '#D9A40E' },
-    'BMW':            { initials: 'BMW', color: '#16588e' },
-    'Mercedes':       { initials: 'M',   color: '#00A19A' },
-    'Jeep':           { initials: 'J',   color: '#4A7C59' },
-    'Tesla':          { initials: 'T',   color: '#e82127' },
-    'Ram':            { initials: 'R',   color: '#A7A9AC' },
-    'Harley-Davidson':{ initials: 'HD',  color: '#FF6600' },
-    'Joby':           { initials: 'J',   color: '#00bcd4' },
-    'Archer':         { initials: 'A',   color: '#1e90ff' },
-    'Wisk':           { initials: 'W',   color: '#22c55e' }
-};
-
-// ── Canvas-texture label sprite for vehicle id + actual brand logo ──────
-function _makeVehicleLabel(vid, category, make) {
-    const canvas  = document.createElement('canvas');
-    canvas.width  = 256; canvas.height = 64;  // larger canvas for bigger logos
-    const ctx     = canvas.getContext('2d');
-    const catColors = { sedan:'#1d4ed8', suv:'#15803d', truck:'#b45309',
-                        motorcycle:'#7e22ce', van:'#334155' };
-    var logoImg = make ? BRAND_LOGO_IMAGES[make] : null;
-    var badge   = make ? BRAND_BADGES[make] : null;
-    var logoLoaded = logoImg && logoImg.complete && logoImg.naturalWidth > 0;
-
-    // Background pill (category color) — wider for larger logo
-    ctx.fillStyle   = catColors[category] || '#1e3a5f';
-    ctx.beginPath(); ctx.roundRect(3, 3, 250, 58, 12); ctx.fill();
-    // Subtle inner shadow for depth
-    ctx.strokeStyle  = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth    = 2; ctx.stroke();
-
-    if (logoLoaded) {
-        // ── Draw actual SVG logo from VehicleRegistry ──
-        // Logo is 48x48 SVG, drawn at 44x44 on the canvas (left side)
-        ctx.drawImage(logoImg, 8, 10, 44, 44);
-        // Vehicle ID text (right of logo)
-        ctx.fillStyle   = '#ffffff';
-        ctx.font        = 'bold 20px monospace';
-        ctx.textAlign   = 'left';
-        ctx.textBaseline= 'middle';
-        ctx.fillText((vid || '?').slice(0,14), 60, 32);
-        // Make name text (below ID, smaller)
-        if (make) {
-            ctx.fillStyle   = 'rgba(255,255,255,0.7)';
-            ctx.font        = '12px Arial';
-            ctx.fillText(make.slice(0,16), 60, 50);
-        }
-    } else if (badge) {
-        // ── Fallback: brand badge with initials (while SVG loads) ──
-        var bx = 30, by = 32, br = 22;
-        ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2);
-        ctx.fillStyle   = badge.color;
-        ctx.fill();
-        ctx.strokeStyle  = 'rgba(255,255,255,0.3)';
-        ctx.lineWidth    = 2; ctx.stroke();
-        // Brand initials inside circle
-        ctx.fillStyle   = '#ffffff';
-        ctx.font        = badge.initials.length > 2
-                        ? 'bold 14px Arial'
-                        : 'bold 19px Arial';
-        ctx.textAlign   = 'center';
-        ctx.textBaseline= 'middle';
-        ctx.fillText(badge.initials, bx, by + 1);
-        // Vehicle ID text (right of badge)
-        ctx.fillStyle   = '#ffffff';
-        ctx.font        = 'bold 20px monospace';
-        ctx.textAlign   = 'left';
-        ctx.textBaseline= 'middle';
-        ctx.fillText((vid || '?').slice(0,14), 62, 32);
-        // Make name text (below ID, smaller)
-        ctx.fillStyle   = 'rgba(255,255,255,0.7)';
-        ctx.font        = '12px Arial';
-        ctx.fillText((make || '').slice(0,16), 62, 50);
-    } else {
-        // No make available — fall back to ID-only (backward compatible)
-        ctx.fillStyle   = '#ffffff';
-        ctx.font        = 'bold 22px monospace';
-        ctx.textAlign   = 'center';
-        ctx.textBaseline= 'middle';
-        ctx.fillText((vid || '?').slice(0,16), 128, 32);
-    }
-    const tex  = new THREE.CanvasTexture(canvas);
-    const mat  = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
-    const spr  = new THREE.Sprite(mat);
-    spr.scale.set(0.01, 0.01, 0.01);  // 3D sprite hidden — 2D overlay handles labels for all views
-    return spr;
-}
+// ── Vehicle data management ───────────────────────────────────────────
+function _clearVehicles() { vehicleData.clear(); }
 
 function loadEvents(events) {
-    // ── Guard: no DB/live data enters the scene while simulation is active ──
-    // This catches async fetches that were in-flight when onSimStateChange(true)
-    // cleared the scene and set feedHeld. Without this, the fetch resolves AFTER
-    // the clear and dumps non-sim vehicles back in.
-    if (simRunning) return;
-
-    const seenIds = new Set();
-    const lats = [], lons = [];
-
-    events.forEach(ev => {
-        const vc = classifyLocal(ev);
-        if (vc.domain !== 'ground') return;
-        // FIX 5: stable vehicleId — prefer DB vehicleId, fallback to "db-{id}",
-        // last resort use "evt-" + hash of lat/lon/speed for anonymous events.
-        const vid = ev.vehicleId
-            || (ev.id   != null ? 'db-' + ev.id : null)
-            || (ev.latitude != null ? 'anon-' + Math.abs((ev.latitude*1000|0) * 37 + (ev.longitude*1000|0)) : null);
+    if (!events || !events.length) return;
+    var now = Date.now();
+    events.forEach(function(ev) {
+        var vid = ev.vehicleId || ev.VehicleId || '';
         if (!vid) return;
-
-        seenIds.add(vid);
-        if (ev.latitude)  lats.push(ev.latitude);
-        if (ev.longitude) lons.push(ev.longitude);
-
-        if (vehicleMap.has(vid)) {
-            // ── Update existing vehicle group's speed/heading ─────────
-            const grp = vehicleMap.get(vid);
-            grp.userData.ev          = ev;
-            // FIX 3: Always refresh _lastSeenMs on update so vehicles from
-            // combined sim+DB refresh don't get pruned by the stale TTL check.
-            grp.userData._lastSeenMs = Date.now();
-            const headingDeg = ev.heading ?? (grp.userData.laneZ < 0 ? 90 : 270);
-            const headingRad = headingDeg * Math.PI / 180;
-            const spd = ((ev.speedMph ?? 55) * 0.018);
-            grp.userData.targetVx    = Math.sin(headingRad) * spd;
-            grp.userData.targetVz    = -Math.cos(headingRad) * spd;
-            grp.userData.speedMph    = ev.speedMph ?? 55;
-            // Rotate the first child (body mesh) to face travel direction
-            const bodyMesh = grp.children[0];
-            const silMesh  = grp.children[1];  // flat top silhouette (child index 1)
-            if (bodyMesh) bodyMesh.rotation.y = headingRad;
-            if (silMesh && silMesh.isMesh)  silMesh.rotation.y = headingRad;
-        } else {
-            // ── Add new vehicle mesh ──────────────────────────────────
-            const mesh = buildVehicleMesh(ev, vid);
-            scene.add(mesh);
-            vehicleMeshes.push(mesh);
-            vehicleMap.set(vid, mesh);
-            vehicleData.push({ ev, vc });
-        }
+        var lat = parseFloat(ev.latitude || ev.Latitude || 0);
+        var lon = parseFloat(ev.longitude || ev.Longitude || 0);
+        if (!lat || !lon) return;
+        var spd = parseFloat(ev.speedMph || ev.SpeedMph || 0);
+        var make = ev.vehicleMake || ev.VehicleMake || ev.make || '';
+        var vc   = classifyVehicle(ev);
+        vehicleData.set(vid, { ev: ev, vc: vc, lat: lat, lon: lon, speedMph: spd, make: make, lastSeen: now });
     });
-
-    // Stale removal: only remove vehicles that haven't appeared in the feed
-    // for more than 60 seconds (gives pool vehicles time between refreshes).
-    // While sim is running we're lenient — vehicles persist until sim stops.
-    const now = Date.now();
-    vehicleMap.forEach((mesh, vid) => {
-        if (!seenIds.has(vid)) {
-            const lastSeen = mesh.userData._lastSeenMs || 0;
-            const staleMs  = simRunning ? 60000 : 30000; // 60s during sim, 30s live
-            if (now - lastSeen > staleMs) {
-                scene.remove(mesh);
-                // Dispose children (group contains mesh + sprite)
-                mesh.traverse(ch => {
-                    if (ch.geometry) ch.geometry.dispose();
-                    if (ch.material) {
-                        if (ch.material.map) ch.material.map.dispose();
-                        ch.material.dispose();
-                    }
-                });
-                vehicleMap.delete(vid);
-                const idx = vehicleMeshes.indexOf(mesh);
-                if (idx >= 0) vehicleMeshes.splice(idx, 1);
-            }
-        } else {
-            // Mark as seen this refresh
-            mesh.userData._lastSeenMs = now;
-        }
+    // Prune stale (>90s old)
+    vehicleData.forEach(function(vd, vid) {
+        if (now - vd.lastSeen > 90000) vehicleData.delete(vid);
     });
-
-    if (lats.length) {
-        midLat = lats.reduce((a,b)=>a+b,0)/lats.length;
-        midLon = lons.reduce((a,b)=>a+b,0)/lons.length;
-        _tryLoadMapTile(); // re-centre map tile on actual vehicle cluster
-    }
-    document.getElementById('statGround').textContent = vehicleMap.size;
+    _updateStatsBar();
 }
 
+function _updateStatsBar() {
+    var el = document.getElementById('statGround');
+    if (el) el.textContent = vehicleData.size;
+}
+
+// ── DB scene refresh ──────────────────────────────────────────────────
 async function refreshScene() {
-    if (feedHeld) return;  // feed is on hold — skip DB poll
+    if (feedHeld) return;
     try {
-        const zq = selectedZoneId   ? `&zoneId=${encodeURIComponent(selectedZoneId)}`   : '';
-        const sq = selectedServerId ? `&serverId=${encodeURIComponent(selectedServerId)}` : '';
-        const r = await fetch(`/api/events/live?highwayId=${HW}&take=100&mode=ground${zq}${sq}`);
+        var zq = selectedZoneId   ? '&zoneId='   + encodeURIComponent(selectedZoneId)   : '';
+        var sq = selectedServerId ? '&serverId=' + encodeURIComponent(selectedServerId) : '';
+        var r = await fetch('/api/events/live?highwayId=' + HW + '&take=100&mode=ground' + zq + sq);
         if (!r.ok) return;
-        // Double-check: sim may have started while we were fetching
         if (feedHeld || simRunning) return;
         loadEvents(await r.json());
     } catch(e) { console.warn('Scene refresh error:', e); }
 }
 
-// ── Camera setup ──────────────────────────────────────────────────────
-const canvas = document.getElementById('mainCanvas');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-renderer.setClearColor(0x000000, 0); // transparent — Leaflet map shows through
-renderer.setPixelRatio(window.devicePixelRatio);
-renderer.setSize(canvas.clientWidth, canvas.clientHeight);
-// Overlay canvas size is synced inside _drawLabelOverlay each frame
-
-// Perspective — looking down the highway at a shallow road-level angle
-const camP = new THREE.PerspectiveCamera(55, canvas.clientWidth/canvas.clientHeight, 0.1, 3000);
-camP.position.set(-220, 55, 120); camP.lookAt(60, 0, 0);
-
-// Side elevation (road cross-section)
-const oW = 240, oH = 90;
-const camS = new THREE.OrthographicCamera(-oW, oW, oH, -oH, 0.1, 2000);
-camS.position.set(0, 0, 500); camS.lookAt(0, 0, 0);
-
-// Top-down (traffic-management bird's-eye view — DEFAULT)
-// Tighter frustum so vehicles fill a readable portion of the screen
-const oTW = 45, oTH = 27;   // tighter default so vehicles are readable on first load
-const camT = new THREE.OrthographicCamera(-oTW, oTW, oTH, -oTH, 0.1, 2000);
-camT.position.set(0, 600, 0); camT.up.set(1, 0, 0); camT.lookAt(0, 0, 0);
-// Pan support for top-down view
-let camTpanX = 0, camTpanZ = 0;
-let _isPanDrag = false, _panStart = {x:0,y:0};
-
-// ── View mode ─────────────────────────────────────────────────────────
-let currentView = 'perspective';
-
-function setViewport(view) {
-    currentView = view;
-    const w = renderer.domElement.clientWidth;
-    const h = renderer.domElement.clientHeight;
-    document.getElementById('labelA').style.display = view === 'split' ? '' : 'none';
-    document.getElementById('labelB').style.display = view === 'split' ? '' : 'none';
-    document.getElementById('labelC').style.display = view === 'split' ? '' : 'none';
-    if (view === 'split') {
-        document.getElementById('labelB').style.left = Math.round(w * 0.43) + 'px';
-        document.getElementById('labelC').style.left = Math.round(w * 0.72) + 'px';
-    }
-    // When switching to top-down, recalculate frustum for current canvas size
-    // so the road always fills a readable portion of the viewport
-    if (view === 'top') {
-        var aspect = h > 0 ? h / w : oTH / oTW;
-        // Only reset if the current frustum is far from default
-        // (avoid resetting if the user has zoomed to their preference)
-        if (camT.right > 200 || camT.right < 8) {
-            var resetW = oTW;
-            camT.left = -resetW; camT.right = resetW;
-            camT.top  =  resetW * aspect; camT.bottom = -resetW * aspect;
-            camT.updateProjectionMatrix();
-        }
-    }
-}
-
-// ── Orbit (perspective) ───────────────────────────────────────────────
-let isDrag = false, prevM = {x:0,y:0}, theta = 0.6, phi = 0.5, radius = 280;
-canvas.addEventListener('mousedown', e => {
-    isDrag = true; prevM = {x:e.clientX, y:e.clientY};
-    if (currentView === 'top') { _isPanDrag = true; _panStart = {x:e.clientX, y:e.clientY}; }
-});
-window.addEventListener('mouseup', () => { isDrag = false; _isPanDrag = false; });
-window.addEventListener('mousemove', e => {
-    if (!isDrag) return;
-    if (currentView === 'perspective') {
-        theta -= (e.clientX - prevM.x) * 0.005;
-        phi    = Math.max(0.05, Math.min(1.4, phi - (e.clientY - prevM.y) * 0.005));
-        prevM  = { x: e.clientX, y: e.clientY };
-    } else if (currentView === 'top' && _isPanDrag) {
-        // Pan: drag moves camera in world X/Z
-        var dx = (e.clientX - prevM.x) * 0.4;
-        var dz = (e.clientY - prevM.y) * 0.4;
-        camTpanX -= dx; camTpanZ -= dz;
-        camTpanX = Math.max(-ROAD_HALF, Math.min(ROAD_HALF, camTpanX));
-        camTpanZ = Math.max(-70, Math.min(70, camTpanZ));
-        camT.position.set(camTpanX, 600, camTpanZ);
-        camT.lookAt(camTpanX, 0, camTpanZ);
-        prevM = {x:e.clientX, y:e.clientY};
-    }
-});
-// Zoom top-down view with wheel — proportional step so it feels consistent at any zoom level
-canvas.addEventListener('wheel', e => {
-    e.preventDefault();
-    var step = e.deltaY > 0 ? 1.12 : 0.88;  // 12% per notch, direction-aware
-    if (currentView === 'top') {
-        var aspect = (renderer && renderer.domElement)
-            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
-            : oTH / oTW;
-        var newW = Math.max(8, Math.min(350, camT.right * step));
-        camT.left = -newW; camT.right = newW;
-        camT.top  =  newW * aspect; camT.bottom = -newW * aspect;
-        camT.updateProjectionMatrix();
-        _syncLeafletZoom();
-    } else if (currentView === 'side') {
-        var aspect2 = (renderer && renderer.domElement)
-            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
-            : oH / oW;
-        var newW2 = Math.max(30, Math.min(400, camS.right * step));
-        camS.left = -newW2; camS.right = newW2;
-        camS.top  =  newW2 * aspect2; camS.bottom = -newW2 * aspect2;
-        camS.updateProjectionMatrix();
-    } else {
-        radius = Math.max(40, Math.min(700, radius * step));
-    }
-}, { passive: false });
-
-canvas.addEventListener('mousemove', e => {
-    if (isDrag) return;
-    const rect = canvas.getBoundingClientRect();
-    mouse2.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-    mouse2.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
-    let cam = camP;
-    if (currentView === 'side') cam = camS;
-    else if (currentView === 'top') cam = camT;
-    raycaster.setFromCamera(mouse2, cam);
-    canvas.style.cursor = raycaster.intersectObjects(vehicleMeshes, false).length ? 'pointer' : '';
-});
-
-// ── Click — vehicle inspector ─────────────────────────────────────────
-canvas.addEventListener('click', e => {
-    var panel = document.getElementById('vehicleDetailPanel');
-    if (panel && panel.contains(e.target)) return;
-    const rect = canvas.getBoundingClientRect();
-    mouse2.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-    mouse2.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
-
-    let cam = camP;
-    if (currentView === 'side') cam = camS;
-    else if (currentView === 'top') cam = camT;
-    else if (currentView === 'split') {
-        const rx = (e.clientX - rect.left) / rect.width;
-        cam = rx < 0.42 ? camP : rx < 0.71 ? camS : camT;
-    }
-
-    raycaster.setFromCamera(mouse2, cam);
-    const hits = raycaster.intersectObjects(vehicleMeshes, false);
-    if (!hits.length) { closeVehicleDetail(); return; }
-    const mesh = hits[0].object;
-    if (selectedVehicleMesh && selectedVehicleMesh !== mesh) clearVehicleHighlight(selectedVehicleMesh);
-    selectedVehicleMesh = mesh;
-    if (mesh.material && mesh.material.emissive) {
-        mesh.material.emissive.setHex(0xf59e0b);
-        mesh.material.emissiveIntensity = 0.55;
-    }
-    showVehicleDetail(mesh.userData, e.clientX, e.clientY);
-    showInspector(mesh.userData);
-});
-
-function showInspector({ ev, vc }) {
-    const conf    = vc.confidence ?? vc.Confidence ?? 0;
-    const confPct = Math.round(conf * 100);
-    const confCls = conf < 0.4 ? 'danger' : conf < 0.65 ? 'warning' : 'success';
-    document.getElementById('inspector').innerHTML = `
-    <table class="table table-sm table-borderless mb-0 small">
-      <tr><td class="text-muted">Vehicle ID</td><td><b>${ev.vehicleId||'—'}</b></td></tr>
-      <tr><td class="text-muted">Category</td><td>
-        <span class="badge" style="background:${vc.color||'#64748b'}">${vc.category}</span>
-      </td></tr>
-      <tr><td class="text-muted">Confidence</td><td>
-        <div class="d-flex align-items-center gap-2">
-          <div class="progress flex-grow-1" style="height:6px">
-            <div class="progress-bar bg-${confCls}" style="width:${confPct}%"></div>
-          </div>
-          <small>${confPct}%</small>
-        </div>
-        ${conf < 0.4 ? '<small class="text-danger">⚠ low confidence</small>' : ''}
-      </td></tr>
-      <tr><td class="text-muted">Speed</td><td>${ev.speedMph!=null?ev.speedMph.toFixed(1)+' mph':'—'}</td></tr>
-      <tr><td class="text-muted">Event</td><td>${ev.eventType||'—'}</td></tr>
-      <tr><td class="text-muted">Zone</td><td>${ev.zoneId||'—'}</td></tr>
-    </table>`;
-}
-
-function clearVehicleHighlight(mesh) {
-    if (!mesh || !mesh.material || !mesh.material.emissive) return;
-    mesh.material.emissive.setHex(0x000000);
-    mesh.material.emissiveIntensity = 0;
-}
-
-function closeVehicleDetail() {
-    clearVehicleHighlight(selectedVehicleMesh);
-    selectedVehicleMesh = null;
-    var panel = document.getElementById('vehicleDetailPanel');
-    if (panel) panel.style.display = 'none';
-}
-
-function vdSwitchTab(tab) {
-    document.getElementById('vdBodyFmt').style.display = tab === 'fmt' ? '' : 'none';
-    document.getElementById('vdBodyRaw').style.display = tab === 'raw' ? '' : 'none';
-    document.getElementById('vdTabFmt').style.background = tab === 'fmt' ? 'rgba(59,130,246,.18)' : 'transparent';
-    document.getElementById('vdTabRaw').style.background = tab === 'raw' ? 'rgba(59,130,246,.18)' : 'transparent';
-    document.getElementById('vdTabFmt').style.color = tab === 'fmt' ? '#60a5fa' : '#64748b';
-    document.getElementById('vdTabRaw').style.color = tab === 'raw' ? '#60a5fa' : '#64748b';
-}
-
-function showVehicleDetail({ ev, vc }, cx, cy) {
-    var wrap  = document.getElementById('sceneWrap');
-    var panel = document.getElementById('vehicleDetailPanel');
-    if (!wrap || !panel) return;
-
-    var conf     = (vc.confidence ?? vc.Confidence ?? 0);
-    var confPct  = Math.round(conf * 100);
-    var confClr  = conf < 0.4 ? '#ef4444' : conf < 0.65 ? '#f59e0b' : '#22c55e';
-    var srcBadge = (ev && ev.vehicleId)
-        ? '<span style="background:#22c55e;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">LIVE</span>'
-        : '<span style="background:#475569;color:#fff;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">AMBIENT</span>';
-
-    document.getElementById('vdTitle').innerHTML = '🚗 ' + (vc.category || 'Vehicle') + srcBadge;
-
-    var confBar = '<div style="display:flex;align-items:center;gap:5px">'
-        + '<div style="flex:1;height:4px;background:rgba(255,255,255,.12);border-radius:2px">'
-        + '<div style="width:' + confPct + '%;height:4px;background:' + confClr + ';border-radius:2px"></div></div>'
-        + '<span style="font-size:.68rem;color:#cbd5e1">' + confPct + '%</span></div>';
-
-    var rows = [
-        ['Vehicle ID', (ev && ev.vehicleId) || '—'],
-        ['Category',   '<span style="background:' + (vc.color||'#64748b') + ';color:#fff;padding:1px 6px;border-radius:3px;font-size:.68rem">' + vc.category + '</span>'],
-        ['Confidence', confPct > 0 ? confBar : '—'],
-        ['Speed',      ev && ev.speedMph != null ? ev.speedMph.toFixed(1) + ' mph' : '—'],
-        ['Event',      (ev && ev.eventType) || '—'],
-        ['Zone',       (ev && ev.zoneId)    || '—'],
-    ];
-    document.getElementById('vdBodyFmt').innerHTML =
-        '<table style="width:100%;border-collapse:collapse;font-size:.72rem">' +
-        rows.map(function(r) {
-            return '<tr><td style="color:#64748b;padding:3px 0;width:40%;vertical-align:top">' + r[0] + '</td>'
-                 + '<td style="color:#e2e8f0;padding:3px 0 3px 8px">' + r[1] + '</td></tr>';
-        }).join('') + '</table>';
-
-    document.getElementById('vdRawPre').textContent = JSON.stringify({ ev: ev, vc: vc }, null, 2);
-    vdSwitchTab('fmt');
-
-    var wrapRect = wrap.getBoundingClientRect();
-    var panW = 304, panH = 240;
-    var px = cx - wrapRect.left + 12;
-    var py = cy - wrapRect.top  + 12;
-    if (px + panW > wrapRect.width)  px = cx - wrapRect.left - panW - 4;
-    if (py + panH > wrapRect.height) py = cy - wrapRect.top  - panH - 4;
-    panel.style.left    = Math.max(0, px) + 'px';
-    panel.style.top     = Math.max(0, py) + 'px';
-    panel.style.display = '';
-}
-
-(function() {
-    var wrap = document.getElementById('sceneWrap');
-    if (!wrap) return;
-    var p = document.createElement('div');
-    p.id = 'vehicleDetailPanel';
-    p.style.cssText =
-        'display:none;position:absolute;top:0;left:0;z-index:20;width:300px;' +
-        'background:rgba(8,12,24,.97);border:1px solid rgba(255,255,255,.14);' +
-        'border-radius:10px;backdrop-filter:blur(8px);' +
-        'box-shadow:0 8px 32px rgba(0,0,0,.6);overflow:hidden;';
-    p.innerHTML =
-        '<div style="padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.09);' +
-            'display:flex;justify-content:space-between;align-items:center">' +
-            '<span id="vdTitle" style="font-size:.8rem;font-weight:700;color:#e2e8f0;' +
-                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px"></span>' +
-            '<button onclick="closeVehicleDetail()" style="background:none;border:none;color:#94a3b8;' +
-                'font-size:1.1rem;cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0">&#215;</button>' +
-        '</div>' +
-        '<div style="display:flex;border-bottom:1px solid rgba(255,255,255,.07)">' +
-            '<button id="vdTabFmt" onclick="vdSwitchTab(\'fmt\')" ' +
-                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
-                'background:rgba(59,130,246,.18);border:none;color:#60a5fa;cursor:pointer">Formatted</button>' +
-            '<button id="vdTabRaw" onclick="vdSwitchTab(\'raw\')" ' +
-                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
-                'background:transparent;border:none;color:#64748b;cursor:pointer">Raw JSON</button>' +
-        '</div>' +
-        '<div id="vdBodyFmt" style="padding:10px 12px;max-height:220px;overflow-y:auto"></div>' +
-        '<div id="vdBodyRaw" style="display:none;padding:10px 12px;max-height:220px;overflow-y:auto">' +
-            '<pre id="vdRawPre" style="font-size:.6rem;color:#94a3b8;white-space:pre-wrap;' +
-                'word-break:break-all;margin:0;line-height:1.5"></pre>' +
-        '</div>';
-    p.addEventListener('click', function(e) { e.stopPropagation(); });
-    wrap.appendChild(p);
-    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeVehicleDetail(); });
-    document.addEventListener('click', function(e) {
-        var panel = document.getElementById('vehicleDetailPanel');
-        if (!panel || panel.style.display === 'none') return;
-        var cont = document.getElementById('sceneWrap');
-        if (cont && !cont.contains(e.target)) closeVehicleDetail();
-    }, true);
-})();
-
-// ── View mode toggle ──────────────────────────────────────────────────
-document.getElementById('viewToggle').querySelectorAll('button').forEach(btn => {
-    btn.addEventListener('click', () => {
-        document.querySelectorAll('#viewToggle button').forEach(b => {
-            b.classList.remove('active','btn-primary');
-            b.classList.add('btn-outline-primary');
-        });
-        btn.classList.add('active','btn-primary');
-        btn.classList.remove('btn-outline-primary');
-        setViewport(btn.dataset.view);
-    });
-});
-
-// ── Feed-mode state machine ────────────────────────────────────────
-//   animationPaused=false → live mode    (button "⏸ Pause",   30s polling ON,  sim injections blocked)
-//   animationPaused=true  → sim-only mode (button "▶ Resume", 30s polling OFF, sim injections allowed)
-// onSimStateChange: sim started → sim-only mode; sim stopped → live mode.
-// FIX 4 cont.: Seed the scene from initial server-rendered events (instant load)
-// then do a live API refresh to catch anything added since the page was rendered.
-// Only seed from initial server events if sim is NOT active — onSimStateChange(true)
-// will clear the scene anyway, but this avoids a flash of non-sim vehicles.
-if (Array.isArray(_INITIAL_EVENTS) && _INITIAL_EVENTS.length
-    && localStorage.getItem('airways_sim_active') !== 'true') {
-    loadEvents(_INITIAL_EVENTS);
-}
-
-// Page-load syncs from localStorage so navigating back from DataInputFormats works.
-let animationPaused = false;
-
-// feedHeld = user explicitly paused the data feed (polls + sim injections blocked)
-// Vehicles already on screen keep moving — only NEW data intake is suspended.
-var feedHeld = false;
-
+// ── Feed hold toggle ──────────────────────────────────────────────────
 function toggleFeed() {
     feedHeld = !feedHeld;
     var btn = document.getElementById('btnAnimToggle');
-    if (btn) {
-        btn.textContent = feedHeld ? '▶ Resume Feed' : '⏸ Hold Feed';
-        btn.className   = feedHeld
-            ? 'btn btn-sm btn-warning'
-            : 'btn btn-sm btn-outline-warning';
-    }
-    // When resuming: immediately pull latest live data
-    if (!feedHeld) {
-        refreshScene();
-        // During sim, sim events flow via BroadcastChannel — no fast poll needed.
-        // refreshScene() is gated by feedHeld so it returns immediately while held.
-    }
+    if (btn) { btn.textContent = feedHeld ? '▶ Resume' : '⏸ Hold Feed';
+               btn.classList.toggle('btn-outline-warning', !feedHeld);
+               btn.classList.toggle('btn-warning', feedHeld); }
 }
 
-// Keep animationPaused as alias so existing code paths still compile
-// (camera tween check at bottom of _simInject uses animationPaused)
-Object.defineProperty(window, 'animationPaused', {
-    get: function() { return feedHeld; },
-    set: function(v) { /* no-op — use toggleFeed() */ }
-});
-
-// ── Sim Data Feed Panel JS ─────────────────────────────────────────────
-var _simPanelOpen = false;
+// ── Sim feed panel ────────────────────────────────────────────────────
 function toggleSimPanel() {
-    _simPanelOpen = !_simPanelOpen;
     var body = document.getElementById('simFeedBody');
     var tog  = document.getElementById('simFeedToggle');
-    if (body) body.style.maxHeight = _simPanelOpen ? '90px' : '0';
-    if (tog)  tog.textContent = _simPanelOpen ? '▲' : '▼';
+    if (!body) return;
+    var open = body.style.maxHeight !== '0px' && body.style.maxHeight !== '';
+    body.style.maxHeight = open ? '0px' : '200px';
+    if (tog) tog.textContent = open ? '▼' : '▲';
 }
-function _updateSimPanel(ev, dbStatus) {
-    var t   = new Date().toLocaleTimeString('en-US', {hour12:false});
-    var spd = (ev.speedMph ?? 0).toFixed(1);
-    var lat = (ev.latitude  ?? 0).toFixed(4);
-    var lon = (ev.longitude ?? 0).toFixed(4);
-    var line = t + '  ·  ' + (ev.vehicleId||'?') + '  ·  '
-             + (ev.vehicleCategory || ev.vehicleMode || 'vehicle') + '  ·  ' + spd + ' mph';
-    var el = document.getElementById('simFeedLine');
-    if (el) {
-        // FIX A: Keep line bright green while sim is active — no fade-to-muted timeout.
-        // Previously faded to #86efac after 800ms on EVERY event, making it look frozen.
-        el.style.color   = '#4ade80';
-        el.textContent   = line;
-        el.style.opacity = '1';
-    }
-    function setEl(id, val) { var x = document.getElementById(id); if (x) x.textContent = val || '–'; }
-    setEl('sfVehicleId', ev.vehicleId);
-    setEl('sfType',      ev.vehicleCategory || ev.vehicleMode || 'vehicle');
-    setEl('sfSpeed',     spd + ' mph');
-    setEl('sfZone',      ev.zoneId || '–');
-    setEl('sfLatLon',    lat + ', ' + lon);
-    if (dbStatus !== undefined) {
-        var dbEl = document.getElementById('sfDbStatus');
-        if (dbEl) { dbEl.textContent = dbStatus;
-                    dbEl.style.color = dbStatus.startsWith('✓') ? '#4ade80' : '#fbbf24'; }
-    }
-    if (!_simPanelOpen) toggleSimPanel();
+
+function _updateSimPanel(ev) {
     var badge = document.getElementById('simFeedBadge');
+    var line  = document.getElementById('simFeedLine');
+    var ts    = new Date().toLocaleTimeString();
+    var vid   = ev.vehicleId || ev.VehicleId || '?';
+    var cat   = (ev.vehicleCategory || ev.vehicleMode || '?').toLowerCase();
+    var spd   = parseFloat(ev.speedMph || ev.SpeedMph || 0).toFixed(1);
     if (badge) badge.style.display = '';
-    // FIX E: increment event counter shown in the LIVE badge for clear liveness signal
-    if (!window._simEventCount) window._simEventCount = 0;
-    window._simEventCount++;
-    if (badge) badge.textContent = '● LIVE #' + window._simEventCount;
+    if (line)  line.textContent = ts + ' · ' + vid + ' · ' + cat + ' · ' + spd + ' mph';
+
+    // Update detail fields
+    ['sfVehicleId','sfType','sfSpeed','sfZone','sfLatLon','sfDbStatus'].forEach(function(id) {
+        var el = document.getElementById(id); if (el) el.textContent = '–';
+    });
+    var sf = function(id, val) { var e = document.getElementById(id); if (e) e.textContent = val; };
+    sf('sfVehicleId', vid + (ev.dbId ? ' [db#' + ev.dbId + ']' : ''));
+    sf('sfType',  cat);
+    sf('sfSpeed', spd + ' mph');
+    sf('sfZone',  ev.zoneId || '–');
+    var lat = parseFloat(ev.latitude || ev.Latitude || 0);
+    var lon = parseFloat(ev.longitude || ev.Longitude || 0);
+    sf('sfLatLon', lat.toFixed(4) + ', ' + lon.toFixed(4));
+    sf('sfDbStatus', ev.dbId ? '✓ db#' + ev.dbId + ' · vid ' + vid : 'pending...');
+
+    // Flash live label
+    var lbl = document.getElementById('simLiveLabel');
+    if (lbl) { lbl.style.opacity = '1'; setTimeout(function() { lbl.style.opacity = '0'; }, 1800); }
 }
 
-// simRunning:     sim is broadcasting (drives fast poll)
-// _simIntervalMs: interval the DIF sim is posting at (received via BroadcastChannel)
-//                 Default 30 s; updated whenever a sim_started or sim_vehicle message arrives.
-var simRunning      = false;
-var _fastPollTimer  = null;
-var _simIntervalMs  = 30000;   // synced with DIF post interval on first message
+// ── Simulation BroadcastChannel listener ─────────────────────────────
+var _bc = null;
+try { _bc = new BroadcastChannel('airways_simulation'); } catch(e) {}
 
-function onSimStateChange(isRunning) {
-    simRunning = isRunning;
-    var btn = document.getElementById('simFeedBadge');
-    if (btn) btn.style.display = isRunning ? '' : 'none';
-
-    // When sim starts, auto-apply the sim's highway/zone/server to the 3D dropdowns
-    if (isRunning) _t3dApplySimContext();
-
-    if (_fastPollTimer) { clearInterval(_fastPollTimer); _fastPollTimer = null; }
-
-    if (isRunning) {
-        // ── Sim started → clear all existing live vehicles + hold DB feed ──
-        // Only sim-injected data should be visible — no pre-existing DB events.
-        _clearScene();
-        vehicleMap.clear();
-        feedHeld = true;
-        var _btn = document.getElementById('btnFeedToggle');
-        if (_btn) {
-            _btn.textContent = '▶ Resume Feed';
-            _btn.className   = 'btn btn-sm btn-warning';
-        }
-        // No fast poll timer — sim events arrive via BroadcastChannel instantly.
-        // refreshScene() is gated by feedHeld so no DB fetch happens during sim.
-    } else {
-        // ── Sim stopped → resume live DB feed ──
-        feedHeld = false;
-        var _btn2 = document.getElementById('btnFeedToggle');
-        if (_btn2) {
-            _btn2.textContent = '⏸ Hold Feed';
-            _btn2.className   = 'btn btn-sm btn-outline-warning';
-        }
+function _onSimMsg(data) {
+    if (!data) return;
+    if (data.type === 'sim_event') {
+        var ev = data.payload || data;
+        simRunning = true; feedHeld = true;
+        _simHwId  = ev.highwayId  || _simHwId;
+        _simZoneId = ev.zoneId   || _simZoneId;
+        _simSrvId  = ev.serverId || _simSrvId;
+        _updateSimPanel(ev);
+        loadEvents([ev]);
+        // Update badge count
+        if (!window._simEventCount) window._simEventCount = 0;
+        window._simEventCount++;
+        var badge = document.getElementById('simFeedBadge');
+        if (badge) badge.textContent = '● LIVE #' + window._simEventCount;
+    } else if (data.type === 'sim_stop' || data.type === 'sim_stopped') {
+        simRunning = false; feedHeld = false;
+        var badge = document.getElementById('simFeedBadge');
+        if (badge) badge.style.display = 'none';
         refreshScene();
-        var _feedEl = document.getElementById('simFeedLine');
-        if (_feedEl) {
-            _feedEl.style.color = '#475569';
-            _feedEl.textContent = 'Sim stopped — viewing live data.';
-        }
-        window._simEventCount = 0;
-        var _badge2 = document.getElementById('simFeedBadge');
-        if (_badge2) { _badge2.style.display = 'none'; _badge2.textContent = '● LIVE'; }
     }
 }
 
-// ── Auto-select sim's highway/zone/server in the 3D scene ─────────────────
-// Reads airways_sim_context (written by DIF on every tick) and pre-selects
-// the matching dropdowns, then clears+refreshes the scene so vehicles from
-// the sim's zone appear immediately without the user touching anything.
-function _t3dApplySimContext() {
-    try {
-        var raw = localStorage.getItem('airways_sim_context');
-        if (!raw) return;
-        var ctx = JSON.parse(raw);
-        var changed = false;
+if (_bc) _bc.onmessage = function(e) { _onSimMsg(e.data); };
 
-        // Apply highway: navigate to the sim's highway page if different
-        var curHW = typeof HW !== 'undefined' ? HW : '';
-        if (ctx.hwId && ctx.hwId !== curHW) {
-            // Redirect to the same page with the sim's highway pre-selected
-            window.location.href = '/Traffic3D?highwayId=' + encodeURIComponent(ctx.hwId);
+// Also listen via localStorage (cross-tab)
+window.addEventListener('storage', function(e) {
+    if (e.key !== 'airways_last_sim_event') return;
+    try { _onSimMsg(JSON.parse(e.newValue || '{}')); } catch(_) {}
+});
+
+// ── Simulation state restore on page load ────────────────────────────
+async function _simRestoreState() {
+    var ls = localStorage.getItem('airways_sim_state');
+    if (!ls) return;
+    var st;
+    try { st = JSON.parse(ls); } catch(_) { return; }
+    if (!st.running) return;
+    // Verify DB still thinks sim is running
+    try {
+        var r = await fetch('/DataInputFormats/SimulationStatus');
+        if (!r.ok) { console.warn('Sim status check failed'); return; }
+        var dbStatus = await r.json();
+        if (dbStatus.stale || !dbStatus.isRunning) {
+            localStorage.removeItem('airways_sim_state');
             return;
         }
-
-        // Apply zone dropdown
-        if (ctx.zoneId) {
-            var zSel = document.getElementById('t3dZoneSel');
-            if (zSel && zSel.value !== ctx.zoneId) {
-                // Find option (may be empty string if zone not in list)
-                var zOpt = zSel.querySelector('option[value="' + ctx.zoneId + '"]');
-                if (zOpt) {
-                    zSel.value      = ctx.zoneId;
-                    selectedZoneId  = ctx.zoneId;
-                    changed = true;
-                    // Show only servers for this zone
-                    var srvSel = document.getElementById('t3dServerSel');
-                    if (srvSel) {
-                        srvSel.querySelectorAll('option').forEach(function(o) {
-                            o.style.display = (!o.dataset.zone || o.dataset.zone === ctx.zoneId) ? '' : 'none';
-                        });
-                    }
-                }
-            }
-        }
-
-        // Apply server dropdown
-        if (ctx.serverId) {
-            var sSel = document.getElementById('t3dServerSel');
-            if (sSel && sSel.value !== ctx.serverId) {
-                var sOpt = sSel.querySelector('option[value="' + ctx.serverId + '"]');
-                if (sOpt) {
-                    sSel.value       = ctx.serverId;
-                    selectedServerId = ctx.serverId;
-                    changed = true;
-                }
-            }
-        }
-
-        // Refresh the scene with the newly applied filter
-        if (changed) {
-            _clearScene();
-            refreshScene();
-        }
-    } catch(e) {}
+        simRunning = true; feedHeld = true;
+        var badge = document.getElementById('simFeedBadge');
+        if (badge) { badge.style.display = ''; badge.textContent = '● LIVE #' + (dbStatus.totalPosted || 0); }
+    } catch(e) { console.warn('Status check failed:', e); }
 }
 
-
-// ── Zoom buttons (work for all view modes) ────────────────────────────
-let _zoomTween = null;
-
-function t3dZoomIn() {
-    if (currentView === 'perspective') {
-        radius = Math.max(40, radius * 0.78);
-    } else if (currentView === 'top') {
-        // Use actual canvas aspect ratio for correct proportions
-        var aspect = (renderer && renderer.domElement)
-            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
-            : oTH / oTW;
-        var newW = Math.max(8, camT.right * 0.78);  // min 8 units — tight vehicle view
-        camT.left = -newW; camT.right = newW;
-        camT.top  =  newW * aspect; camT.bottom = -newW * aspect;
-        camT.updateProjectionMatrix();
-    } else if (currentView === 'side') {
-        var aspect2 = (renderer && renderer.domElement)
-            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
-            : oH / oW;
-        var newW2 = Math.max(30, camS.right * 0.78);
-        camS.left = -newW2; camS.right = newW2;
-        camS.top  =  newW2 * aspect2; camS.bottom = -newW2 * aspect2;
-        camS.updateProjectionMatrix();
-    }
-    // Sync Leaflet map zoom to match new Three.js frustum
-    _syncLeafletZoom();
+// ── Inspector (click vehicle) ─────────────────────────────────────────
+function showInspector(vd) {
+    var el = document.getElementById('inspector');
+    if (!el) return;
+    el.innerHTML = '<div style="font-size:.75rem;line-height:1.6;color:#94a3b8">' +
+        '<div><span style="color:#4ade80">ID:</span> ' + (vd.ev.vehicleId || '–') + '</div>' +
+        '<div><span style="color:#4ade80">Type:</span> ' + (vd.vc.category || '–') + '</div>' +
+        '<div><span style="color:#4ade80">Speed:</span> ' + (vd.speedMph || 0).toFixed(1) + ' mph</div>' +
+        '<div><span style="color:#4ade80">Lat/Lon:</span> ' + (vd.lat||0).toFixed(4) + ', ' + (vd.lon||0).toFixed(4) + '</div>' +
+        '</div>';
 }
 
-function t3dZoomOut() {
-    if (currentView === 'perspective') {
-        radius = Math.min(700, radius * 1.28);
-    } else if (currentView === 'top') {
-        var aspect = (renderer && renderer.domElement)
-            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
-            : oTH / oTW;
-        var newW = Math.min(350, camT.right * 1.28);
-        camT.left = -newW; camT.right = newW;
-        camT.top  =  newW * aspect; camT.bottom = -newW * aspect;
-        camT.updateProjectionMatrix();
-    } else if (currentView === 'side') {
-        var aspect2 = (renderer && renderer.domElement)
-            ? renderer.domElement.clientHeight / renderer.domElement.clientWidth
-            : oH / oW;
-        var newW2 = Math.min(400, camS.right * 1.28);
-        camS.left = -newW2; camS.right = newW2;
-        camS.top  =  newW2 * aspect2; camS.bottom = -newW2 * aspect2;
-        camS.updateProjectionMatrix();
-    }
-    // Sync Leaflet map zoom to match new Three.js frustum
-    _syncLeafletZoom();
-}
-
-// ── Animate loop ──────────────────────────────────────────────────────
-const ROAD_HALF = 680; // wrap boundary along X axis
-let tick = 0, camTween = null;
-// ── 2D label overlay — drawn on top of Three.js canvas ──────────────────
-// This gives sharp, readable labels at any zoom level without 3D sprite issues.
-const _overlayCanvas = document.getElementById('t3d-label-overlay');
-const _overlayCtx    = _overlayCanvas ? _overlayCanvas.getContext('2d') : null;
-const _catColors2D = { sedan:'#1d4ed8', suv:'#15803d', truck:'#b45309',
-                        motorcycle:'#7e22ce', van:'#334155' };
-
-function _drawLabelOverlay(camera) {
-    if (!_overlayCtx || !_overlayCanvas) return;
-    const oc = _overlayCanvas;
-    // Ensure canvas dimensions match rendered output
-    var rw = renderer.domElement.clientWidth  || renderer.domElement.width;
-    var rh = renderer.domElement.clientHeight || renderer.domElement.height;
-    if (oc.width !== rw || oc.height !== rh) { oc.width = rw; oc.height = rh; }
-    _overlayCtx.clearRect(0, 0, oc.width, oc.height);
-    if (!vehicleMeshes.length) return;
-
-    vehicleMeshes.forEach(function(grp) {
-        if (!grp.userData || grp.userData.vx === undefined) return;
-        const ud   = grp.userData;
-        const vid  = (ud.vid || '').trim();
-        const cat  = ud.vc ? (ud.vc.category || 'sedan') : 'sedan';
-        const make = ud.ev ? (ud.ev.vehicleMake || ud.ev.make || ud.ev.VehicleMake || '') : '';
-
-        // Project 3D group world position → NDC → screen pixels
-        const wp  = new THREE.Vector3();
-        grp.getWorldPosition(wp);
-        const ndc = wp.clone().project(camera);
-        const sx  = ( ndc.x * 0.5 + 0.5) * oc.width;
-        const sy  = (1 - (ndc.y * 0.5 + 0.5)) * oc.height;
-
-        // Cull off-screen labels (with generous margin)
-        if (sx < -80 || sx > oc.width + 80 || sy < -50 || sy > oc.height + 50) return;
-
-        // ── Label layout ──────────────────────────────────────────────
-        var hasLogo = make && BRAND_LOGO_IMAGES[make] &&
-                      BRAND_LOGO_IMAGES[make].complete &&
-                      BRAND_LOGO_IMAGES[make].naturalWidth > 0;
-        var badge   = make ? BRAND_BADGES[make] : null;
-        var pillW = 148, pillH = 36;
-        var pillX = Math.max(2, Math.min(oc.width - pillW - 2, sx - pillW / 2));
-        var pillY = sy - 60;  // float 60px above the vehicle screen position
-        if (pillY < 2) pillY = sy + 10; // flip below if near top edge
-
-        // ── Background pill ───────────────────────────────────────────
-        _overlayCtx.save();
-        _overlayCtx.shadowColor   = 'rgba(0,0,0,0.7)';
-        _overlayCtx.shadowBlur    = 6;
-        _overlayCtx.shadowOffsetY = 2;
-        _overlayCtx.fillStyle     = _catColors2D[cat] || '#1e3a5f';
-        _overlayCtx.beginPath();
-        _overlayCtx.roundRect(pillX, pillY, pillW, pillH, 7);
-        _overlayCtx.fill();
-        _overlayCtx.restore();
-        // White border ring
-        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.25)';
-        _overlayCtx.lineWidth   = 1;
-        _overlayCtx.beginPath();
-        _overlayCtx.roundRect(pillX + 0.5, pillY + 0.5, pillW - 1, pillH - 1, 7);
-        _overlayCtx.stroke();
-
-        // ── Left side: brand logo OR initials badge ───────────────────
-        var logoDrawn = false;
-        if (hasLogo) {
-            try {
-                _overlayCtx.save();
-                _overlayCtx.beginPath();
-                _overlayCtx.arc(pillX + 18, pillY + pillH / 2, 14, 0, Math.PI * 2);
-                _overlayCtx.clip();
-                _overlayCtx.drawImage(BRAND_LOGO_IMAGES[make], pillX + 4, pillY + 4, 28, 28);
-                _overlayCtx.restore();
-                logoDrawn = true;
-            } catch(e) { logoDrawn = false; }
-        }
-        if (!logoDrawn && badge) {
-            // Circle with brand initials
-            _overlayCtx.beginPath();
-            _overlayCtx.arc(pillX + 18, pillY + pillH / 2, 14, 0, Math.PI * 2);
-            _overlayCtx.fillStyle = badge.color;
-            _overlayCtx.fill();
-            _overlayCtx.strokeStyle = 'rgba(255,255,255,0.4)';
-            _overlayCtx.lineWidth = 1.5;
-            _overlayCtx.stroke();
-            _overlayCtx.fillStyle    = '#fff';
-            _overlayCtx.font         = badge.initials.length > 2 ? 'bold 8px Arial' : 'bold 12px Arial';
-            _overlayCtx.textAlign    = 'center';
-            _overlayCtx.textBaseline = 'middle';
-            _overlayCtx.fillText(badge.initials, pillX + 18, pillY + pillH / 2 + 1);
-            logoDrawn = true;
-        }
-
-        // ── Right side: vehicle ID + make name ───────────────────────
-        var textX = logoDrawn ? pillX + 37 : pillX + 8;
-        _overlayCtx.fillStyle    = '#ffffff';
-        _overlayCtx.font         = 'bold 12px monospace';
-        _overlayCtx.textAlign    = 'left';
-        _overlayCtx.textBaseline = 'top';
-        _overlayCtx.fillText((vid || '–').slice(0, 13), textX, pillY + 6);
-        _overlayCtx.fillStyle    = 'rgba(255,255,255,0.75)';
-        _overlayCtx.font         = '10px Arial';
-        _overlayCtx.textBaseline = 'bottom';
-        _overlayCtx.fillText(
-            (make ? make.slice(0,11) + '  ' : '') + cat,
-            textX, pillY + pillH - 5
-        );
-
-        // ── Connector line: pill → vehicle position (clear identification) ─
-        var lineFromX = pillX + pillW / 2;
-        var lineFromY = (pillY < sy) ? pillY + pillH : pillY;
-        // Draw a thick semi-transparent line with a bright core
-        _overlayCtx.strokeStyle = 'rgba(0,0,0,0.6)';
-        _overlayCtx.lineWidth   = 3.5;
-        _overlayCtx.beginPath();
-        _overlayCtx.moveTo(lineFromX, lineFromY);
-        _overlayCtx.lineTo(sx, sy);
-        _overlayCtx.stroke();
-        // Bright core line on top
-        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.85)';
-        _overlayCtx.lineWidth   = 1.5;
-        _overlayCtx.setLineDash([4, 3]);
-        _overlayCtx.beginPath();
-        _overlayCtx.moveTo(lineFromX, lineFromY);
-        _overlayCtx.lineTo(sx, sy);
-        _overlayCtx.stroke();
-        _overlayCtx.setLineDash([]);
-        // Ring at vehicle position for clear identification
-        _overlayCtx.beginPath();
-        _overlayCtx.arc(sx, sy, 6, 0, Math.PI * 2);
-        _overlayCtx.strokeStyle = 'rgba(255,255,255,0.9)';
-        _overlayCtx.lineWidth   = 2;
-        _overlayCtx.stroke();
-        _overlayCtx.beginPath();
-        _overlayCtx.arc(sx, sy, 3, 0, Math.PI * 2);
-        _overlayCtx.fillStyle = _catColors2D[cat] || '#1e3a5f';
-        _overlayCtx.fill();
-        _overlayCtx.strokeStyle = '#ffffff';
-        _overlayCtx.lineWidth = 1;
-        _overlayCtx.stroke();
+_oc.addEventListener('click', function(e) {
+    if (!_map || !_mapReady) return;
+    var rect = _oc.getBoundingClientRect();
+    var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    var origin = _map.getPixelOrigin();
+    var closestVid = null, closestDist = 30;
+    vehicleData.forEach(function(vd, vid) {
+        var mapPt = _map.project([vd.lat, vd.lon], _map.getZoom());
+        var sx = mapPt.x - origin.x, sy = mapPt.y - origin.y;
+        var d = Math.hypot(cx - sx, cy - sy);
+        if (d < closestDist) { closestDist = d; closestVid = vid; }
     });
-}
+    if (closestVid) showInspector(vehicleData.get(closestVid));
+});
 
-function animate() {
-    requestAnimationFrame(animate); tick++;
-    if (camTween) camTween();
-
-    // Perspective orbit follows the road (x-axis)
-    camP.position.x = -220 + radius * 0.4 * Math.sin(theta * 0.3);
-    camP.position.y = Math.max(20, radius * Math.sin(phi));
-    camP.position.z = 120 + radius * 0.25 * Math.cos(theta * 0.3);
-    camP.lookAt(60, 0, 0);
-
-    // Vehicle forward motion — vehicleMeshes contains THREE.Group objects
-    vehicleMeshes.forEach(m => {
-        const ud = m.userData;
-        if (!ud || ud.vx === undefined) return; // skip non-vehicle scene objects
-        // Smooth velocity interpolation (gradual speed transitions between DB refreshes)
-        ud.vx += (ud.targetVx - ud.vx) * 0.04;
-        ud.vz += (ud.targetVz - ud.vz) * 0.04;
-        // Slight traffic-flow jitter (±6% speed variation per vehicle)
-        const jitter = 1 + Math.sin(tick * 0.03 + ud.phase) * 0.06;
-        m.position.x += ud.vx * jitter;
-        // Lane keeping: soft Z correction so vehicles ease back to lane centre
-        m.position.z += (ud.laneZ - m.position.z) * 0.05;
-        // Suspension bounce: amplitude scales with speed (faster = bigger bumps)
-        const spd = Math.abs(ud.vx) + 0.01;
-        m.position.y = ud.baseY + Math.sin(tick * 0.22 + ud.phase) * spd * 0.14;
-        // Body roll: lean slightly into lane drift correction — rotate the group
-        m.rotation.z = (ud.laneZ - m.position.z) * 0.012;
-        // Label always faces camera (sprite handles this automatically)
-        // Wrap at road ends
-        if (m.position.x >  ROAD_HALF) m.position.x = -ROAD_HALF;
-        if (m.position.x < -ROAD_HALF) m.position.x =  ROAD_HALF;
-    });
-
-    const cw = renderer.domElement.clientWidth;
-    const ch = renderer.domElement.clientHeight;
-    renderer.setSize(cw, ch, false);
-
-    if (currentView === 'split') {
-        renderer.setViewport(0, 0, cw*0.42, ch);
-        renderer.setScissor(0, 0, cw*0.42, ch);
-        renderer.setScissorTest(true);
-        renderer.render(scene, camP);
-        renderer.setViewport(cw*0.43, 0, cw*0.28, ch);
-        renderer.setScissor(cw*0.43, 0, cw*0.28, ch);
-        renderer.render(scene, camS);
-        renderer.setViewport(cw*0.72, 0, cw*0.28, ch);
-        renderer.setScissor(cw*0.72, 0, cw*0.28, ch);
-        renderer.render(scene, camT);
-        renderer.setScissorTest(false);
-        // 2D label overlay over top-view panel in split mode
-        _drawLabelOverlay(camT);
-    } else {
-        renderer.setViewport(0, 0, cw, ch);
-        const cam = currentView === 'side' ? camS : currentView === 'top' ? camT : camP;
-        if (cam.isPerspectiveCamera) { cam.aspect = cw/ch; cam.updateProjectionMatrix(); }
-        renderer.render(scene, cam);
-        // Draw 2D labels AFTER Three.js render (overlay is on top)
-        _drawLabelOverlay(cam);
-    }
-}
-
-// ── Leaflet mini-map initialization ─────────────────────────────────────
-var _miniMap = null;
-var _miniMapLayer = null;
-var _miniMapMarkers = [];
-
-function _leafletZoomFromFrustum() {
-    // Compute Leaflet zoom from Three.js top camera frustum half-width.
-    // Uses floor (not round) so small frustum tweaks don't trigger integer zoom jumps
-    // that cause Leaflet to tear down and reload the entire tile layer.
-    var halfW = (camT && camT.right) ? camT.right : 45;
-    var km    = (halfW / XZ_SCALE) * 111;
-    var lz    = Math.floor(15 - Math.log2(km / 0.18));
-    return Math.max(10, Math.min(18, lz));
-}
-
-function _initMiniMap(lat, lon) {
-    var el = document.getElementById('t3dMiniMap');
-    if (!el || typeof L === 'undefined') return;
-    if (_miniMap) { _miniMap.remove(); _miniMap = null; _miniMapMarkers = []; }
-    var initZoom = _leafletZoomFromFrustum();
-    _miniMap = L.map('t3dMiniMap', {
-        zoomControl: false, attributionControl: false,
-        dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
-        keyboard: false, boxZoom: false, touchZoom: false
-    }).setView([lat, lon], initZoom);
-    // CRITICAL: invalidateSize fixes black tile gaps when the container was
-    // not yet fully painted when L.map() was called.
-    // Two-pass: first at 80ms (layout), second at 300ms (after tile fetch starts).
-    setTimeout(function() {
-        if (_miniMap) _miniMap.invalidateSize(true);
-    }, 80);
-    setTimeout(function() {
-        if (_miniMap) { _miniMap.invalidateSize(true); _populateMiniMap(); }
-    }, 300);
-    // Prevent Leaflet from stealing mouse events — 3D canvas handles interaction
-    _miniMap.getContainer().style.pointerEvents = 'none';
-    _miniMapLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19, subdomains: 'abc',
-        attribution: '',
-        maxRetries: 1,
-        retryDelay: 500
-    }).addTo(_miniMap);
-    var _leafletFallbackTimer = setTimeout(function() {
-        if (!_miniMap._cspFallback) {
-            _miniMap._cspFallback = true;
-            _miniMapLayer.remove();
-            var mapEl = document.getElementById('t3dMiniMap');
-            if (mapEl) mapEl.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 100%)';
-        }
-    }, 3000); // 3 seconds — fast fallback to dark gradient when DNS/tiles unreachable
-    var _tileErrorCount = 0;
-    _miniMap.on('tileerror', function() {
-        if (_miniMap._cspFallback) return;
-        _tileErrorCount++;
-        // Only trigger fallback after 3 consecutive tile errors — a single
-        // tile 404 (e.g. ocean, boundary tile) should not blank the whole map.
-        if (_tileErrorCount >= 3) {
-            _miniMap._cspFallback = true;
-            clearTimeout(_leafletFallbackTimer);
-            _miniMapLayer.remove();
-            var mapEl = document.getElementById('t3dMiniMap');
-            if (mapEl) mapEl.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 100%)';
-        }
-    });
-    _miniMap.on('tileload', function() {
-        _tileErrorCount = 0; // reset on success — only consecutive errors trigger fallback
-        clearTimeout(_leafletFallbackTimer);
-    });
-}
-
-function _updateMiniMap(lat, lon, zoom) {
-    if (!_miniMap) { _initMiniMap(lat, lon); return; }
-    var z = zoom !== undefined ? zoom : _leafletZoomFromFrustum();
-    // Use panTo (no zoom change) unless zoom level actually differs — prevents tile blanking
-    var currentZ = _miniMap.getZoom();
-    if (Math.abs(currentZ - z) >= 1.0) {
-        // Zoom level changed — do a non-animated setView to avoid tile teardown
-        _miniMap.setView([lat, lon], z, { animate: false });
-        setTimeout(function() { if (_miniMap) _miniMap.invalidateSize(true); }, 30);
-    } else {
-        // Same zoom — just pan smoothly without touching tiles
-        _miniMap.panTo([lat, lon], { animate: false });
-    }
-}
-
-// Sync Leaflet zoom to match Three.js camera — called after any zoom button press
-function _syncLeafletZoom() {
-    if (!_miniMap) return;
-    var z = _leafletZoomFromFrustum();
-    // Only change zoom when the integer tile level shifts — avoids tile teardown
-    // on every small frustum adjustment. animate:false prevents tile layer blanking.
-    if (Math.abs(_miniMap.getZoom() - z) >= 1.0) {
-        _miniMap.setZoom(z, { animate: false });
-        // Re-validate container size after zoom so Leaflet doesn't leave blank gaps
-        setTimeout(function() {
-            if (_miniMap) _miniMap.invalidateSize(true);
-        }, 30);
-    }
-}
-
-function _addMiniMapMarker(lat, lon, label, color, isServer) {
-    if (!_miniMap || !lat || !lon) return;
-    var icon = L.divIcon({
-        className: '',
-        html: '<div style="width:' + (isServer ? 10 : 14) + 'px;height:' + (isServer ? 10 : 14) +
-              'px;border-radius:50%;background:' + color +
-              ';border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.6)"></div>',
-        iconSize: [isServer ? 10 : 14, isServer ? 10 : 14]
-    });
-    var m = L.marker([lat, lon], { icon: icon }).addTo(_miniMap);
-    m.bindPopup(label);
-    _miniMapMarkers.push(m);
-}
-
-function _clearMiniMapMarkers() {
-    _miniMapMarkers.forEach(function(m) { _miniMap.removeLayer(m); });
-    _miniMapMarkers = [];
-}
-
-// Populate mini-map with zone and server markers from server data
-function _populateMiniMap() {
-    if (!_miniMap || typeof T3D_ZONES === 'undefined') return;
-    _clearMiniMapMarkers();
-    // Zone markers (blue circles)
-    T3D_ZONES.forEach(function(z) {
-        if (z.lat && z.lon) _addMiniMapMarker(z.lat, z.lon,
-            'Zone: ' + z.zoneName, '#3b82f6', false);
-    });
-    // Server markers (amber dots) — placed at their zone coordinates with small offset
-    if (typeof T3D_SERVERS !== 'undefined') {
-        T3D_SERVERS.forEach(function(s) {
-            // Find the zone for this server to get coordinates
-            var zone = T3D_ZONES.find(function(z) { return z.zoneId === s.zoneId; });
-            if (zone && zone.lat && zone.lon) {
-                // Offset server marker slightly from zone center
-                _addMiniMapMarker(zone.lat + 0.002, zone.lon + 0.002,
-                    'Server: ' + s.serverName, '#f59e0b', true);
-            }
-        });
-    }
-}
-
-// ── Boot — default to top-down traffic view ───────────────────────────
-(async () => {
-    await refreshScene();
-    _tryLoadMapTile(); // load navigation map tile for zone centre
-    _initMiniMap(_mapTileLat, _mapTileLon);
-    // NOTE: _initMiniMap already calls setView with _leafletZoomFromFrustum() —
-    // do NOT call setZoom here again; a second immediate zoom blanks the tile layer.
-    _populateMiniMap();
-    animate();
-    // Activate top-down as default (clearest road/traffic view)
-    setViewport('top');
-    document.querySelectorAll('#viewToggle button').forEach(b => {
-        b.classList.remove('active','btn-primary');
-        b.classList.add('btn-outline-primary');
-    });
-    const topBtn = document.querySelector('#viewToggle [data-view="top"]');
-    if (topBtn) { topBtn.classList.add('active','btn-primary'); topBtn.classList.remove('btn-outline-primary'); }
-})();
-
-// FIX 5: 30s slow poll — gated to run only when sim is NOT active and feed is NOT held.
-// When sim is running, the 3s fast poll (started by onSimStateChange) handles refreshes.
-// Running both concurrently causes double-fetches and mesh flicker.
-setInterval(function() {
-    if (!simRunning && !feedHeld) refreshScene();
-}, 30000);
-
-// ── Window resize: keep Leaflet in sync with container ──────────────────
+// ── Window resize ─────────────────────────────────────────────────────
 window.addEventListener('resize', function() {
-    if (_miniMap) {
-        setTimeout(function() { _miniMap.invalidateSize(true); }, 50);
-    }
+    if (_map) setTimeout(function() { if (_map) _map.invalidateSize(true); }, 50);
 });
 
-// ── Live simulation feed ───────────────────────────────────────────────
-function _simNorm(evObj, cl) {
-    var ev = Object.assign({}, evObj);
-    if (cl) {
-        ev.vehicleCategory  = cl.category;
-        ev.vehicleMode      = cl.domain;
-        ev.altitudeMeters   = (cl.altitudeM  != null) ? cl.altitudeM  : (evObj.altitude_m  ?? 0);
-        ev.speedMph         = (cl.speedMph   != null) ? cl.speedMph   : (evObj.speed_mph   ?? 0);
-        ev.vehicleClassJson = JSON.stringify(cl);
-    } else {
-        ev.altitudeMeters = evObj.altitude_m  ?? 0;
-        ev.speedMph       = evObj.speed_mph   ?? 0;
-    }
-    // FIX 4: Exhaustive field alias normalisation — sim payloads use varying field names.
-    // Priority: explicit latitude/longitude > lat/lon > lat_deg/lon_deg > default.
-    ev.latitude  = evObj.latitude  ?? evObj.lat      ?? evObj.lat_deg  ?? evObj.Latitude  ?? 32.7767;
-    ev.longitude = evObj.longitude ?? evObj.lon      ?? evObj.lon_deg  ?? evObj.Longitude ?? -96.7970;
-    ev.speedMph  = evObj.speedMph  ?? evObj.speed_mph ?? evObj.SpeedMph ?? evObj.speed ?? ev.speedMph ?? 0;
-    // Use vehicle_id from payload (set by SimulationPost as "SIM-{guid8}").
-    // If missing, build a DETERMINISTIC id from speed+lat+lon so the same
-    // physical vehicle maps to the same mesh across consecutive sim events.
-    if (evObj.vehicle_id) {
-        ev.vehicleId = evObj.vehicle_id;
-    } else {
-        var _h = Math.abs(
-            ((evObj.speed_mph ?? 0) * 1000 | 0) * 73856093 ^
-            ((evObj.latitude  ?? 0) * 10000 | 0) * 19349663 ^
-            ((evObj.longitude ?? 0) * 10000 | 0) * 83492791
-        ) % 99999;
-        ev.vehicleId = 'SIM-' + _h.toString(16).toUpperCase().padStart(5,'0');
-    }
-    ev.eventType = evObj.event_type || 'detection';
-    ev.zoneId    = evObj.zone_id    || '';
+// ── Boot sequence ─────────────────────────────────────────────────────
+(async function boot() {
+    // 1. Init Leaflet map centred on zone GPS
+    _initMap();
 
-    // FIX C: Map 'direction' field (SimulationPost payload key) to 'heading'
-    // The controller sends "direction" not "heading" — ev.heading was always undefined,
-    // causing all sim vehicles to use the laneZ-based default (90 or 270 deg).
-    // Extract vehicle_make for brand badge display
-    ev.vehicleMake = evObj.vehicle_make || evObj.vehicleMake || null;
+    // 2. Start 2D canvas render loop
+    _renderLoop();
 
-    ev.heading = evObj.heading ?? evObj.direction ?? evObj.headingDeg ?? evObj.directionDeg ?? null;
-
-    // FIX B+D: Update midLat/midLon from this event's coordinates immediately.
-    // Previously only loadEvents() updated midLat/midLon — sim-spawned vehicles used
-    // the stale page-load default (32.75, -97.0), then teleported when DB poll updated it.
-    // Now every sim event nudges the centre toward the actual vehicle cluster.
-    if (ev.latitude && ev.longitude) {
-        midLat = midLat * 0.85 + ev.latitude  * 0.15;
-        midLon = midLon * 0.85 + ev.longitude * 0.15;
-    }
-
-    return ev;
-}
-
-function _simInject(evObj, cl) {
-    // Sim events ALWAYS flow while sim is running — feedHeld blocks DB refresh,
-    // NOT sim injects. The inverted check was blocking sim data when it should
-    // have been blocking live data.
-    if (!simRunning) return;
-    var ev = _simNorm(evObj, cl);
-    var vc = classifyLocal(ev);
-    if (vc.domain !== 'ground') return;
-
-    // FIX 1: Zone/server filter for sim injections.
-    // Only filter when ev.zoneId is actually set by the sim payload (non-empty).
-    // If the sim doesn't send a zone_id, pass through — _t3dApplySimContext() already
-    // aligned the dropdowns to the sim's zone before events started flowing.
-    if (selectedZoneId && ev.zoneId) {
-        if (ev.zoneId !== selectedZoneId) return;
-    }
-
-    // Server filter: only apply when both server and event zone are known
-    if (selectedServerId && ev.zoneId) {
-        var _srv = T3D_SERVERS.find(function(s){ return s.serverId === selectedServerId; });
-        if (_srv && _srv.zoneId && ev.zoneId !== _srv.zoneId) return;
-    }
-
-    _updateSimPanel(ev, '⏳ saving…');
-
-    // FIX 3: Immediate visual update — update existing OR spawn new mesh right away
-    // (no DB round-trip needed; refreshScene() later keeps DB and scene in sync)
-    if (ev.vehicleId && vehicleMap.has(ev.vehicleId)) {
-        // ── Update existing vehicle group speed/heading ─────────────────
-        var _grp = vehicleMap.get(ev.vehicleId);
-        // FIX C3: heading alias — payload sends 'direction' not 'heading'
-        var _hDeg = ev.heading ?? ev.direction ?? ev.directionDeg ?? ev.headingDeg
-                    ?? (_grp.userData.laneZ < 0 ? 90 : 270);
-        var _hRad = _hDeg * Math.PI / 180;
-        var _ivSec7 = Math.max(2, _simIntervalMs / 1000);
-        var _spd    = ((Math.max(0, ev.speedMph ?? 55)) / 55) * (136 / (_ivSec7 * 60));
-        _grp.userData.targetVx   = Math.sin(_hRad) * _spd;
-        _grp.userData.targetVz   = -Math.cos(_hRad) * _spd;
-        _grp.userData.ev         = ev;
-        _grp.userData._lastSeenMs= Date.now();
-        var _bodyMesh = _grp.children[0];
-        var _silMesh  = _grp.children[1];
-        if (_bodyMesh) _bodyMesh.rotation.y = _hRad;
-        if (_silMesh && _silMesh.isMesh) _silMesh.rotation.y = _hRad;
-    } else if (ev.vehicleId) {
-        // ── Spawn new vehicle group immediately (no DB round-trip needed) ─
-        var _newGrp = buildVehicleMesh(ev, ev.vehicleId);
-        _newGrp.userData._lastSeenMs = Date.now();
-        scene.add(_newGrp);
-        vehicleMeshes.push(_newGrp);
-        vehicleMap.set(ev.vehicleId, _newGrp);
-        vehicleData.push({ ev: ev, vc: classifyLocal(ev) });
-        var _sc = document.getElementById('statGround');
-        if (_sc) _sc.textContent = vehicleMap.size;
-    }
-
-    // ── Always save to DB + refresh (works in both live and sim-only modes) ──
-    fetch('/api/sim/event', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            vehicleId:      ev.vehicleId,
-            highwayId:      HW || '',
-            zoneId:         ev.zoneId || selectedZoneId || '',
-            vehicleType:    vc.category || null,
-            srcType:        'physical',
-            isAirFlyCar:    'N',
-            speedMph:       ev.speedMph,
-            latitude:       ev.latitude,
-            longitude:      ev.longitude,
-            altitudeMeters: ev.altitudeMeters ?? 0
-        })
-    }).then(function(r) {
-        return r.json().then(function(j) {
-            if (r.ok) {
-                _updateSimPanel(ev, '✓ db#' + j.id + ' · vid ' + (ev.vehicleId || '?'));
-                var sfVid = document.getElementById('sfVehicleId');
-                if (sfVid && ev.vehicleId) sfVid.textContent = ev.vehicleId + ' [db#' + j.id + ']';
-                // FIX 2: Trigger a scene refresh AFTER the DB write completes (not before).
-                // 500ms delay lets SQLite flush the row so /api/events/live returns it.
-                // This replaces relying solely on the 3s fast poll timer which could fire
-                // before the write committed (race condition → mesh spawned then removed).
-                if (!feedHeld) setTimeout(function() { refreshScene(); }, 500);
-            } else {
-                _updateSimPanel(ev, '✗ ' + (j.error || r.status));
-            }
+    // 3. Default to Top view (2D overlay + Leaflet map)
+    setViewport('top');
+    var topBtn = document.querySelector('#viewToggle [data-view="top"]');
+    if (topBtn) {
+        document.querySelectorAll('#viewToggle button').forEach(function(b) {
+            b.classList.remove('active','btn-primary'); b.classList.add('btn-outline-primary');
         });
-    }).catch(function(err) {
-        _updateSimPanel(ev, '✗ ' + (err.message || 'network error'));
-    });
-
-    var lbl = document.getElementById('simLiveLabel');
-    if (lbl) { lbl.style.opacity = '1'; setTimeout(function(){ lbl.style.opacity = '0'; }, 2500); }
-
-    if (!animationPaused) return; // camera tween only in sim-only mode
-    var startR = radius, startP = phi;
-    var targR  = Math.max(18, startR * 0.12);
-    var targP  = Math.max(0.15, Math.min(0.55, startP));
-    var frames = 0, phase = 'in';
-    var FIN = 55, FHOLD = 100, FOUT = 70;
-    camTween = function() {
-        var t, ease;
-        if (phase === 'in') {
-            frames++;
-            t = Math.min(1, frames / FIN);
-            ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
-            radius = startR + (targR - startR) * ease;
-            phi    = startP + (targP - startP) * ease;
-            if (frames >= FIN) { frames = 0; phase = 'hold'; }
-        } else if (phase === 'hold') {
-            frames++;
-            if (frames >= FHOLD) { frames = 0; phase = 'out'; }
-        } else {
-            frames++;
-            t = Math.min(1, frames / FOUT);
-            ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
-            radius = targR + (startR - targR) * ease;
-            phi    = targP + (startP - targP) * ease;
-            if (frames >= FOUT) { camTween = null; radius = startR; phi = startP; }
-        }
-    };
-}
-
-// Bug Fix 2: BroadcastChannel — only call onSimStateChange for lifecycle events,
-// NOT for every sim_vehicle message (which caused Pause↔Resume flicker)
-if (typeof BroadcastChannel !== 'undefined') {
-    var _simBc = new BroadcastChannel('airways_sim');
-    _simBc.onmessage = function(e) {
-        if (!e.data) return;
-
-        // Sync poll interval to the DIF post interval whenever it arrives
-        if (e.data.intervalSec && e.data.intervalSec > 0) {
-            var newMs = e.data.intervalSec * 1000;
-            if (newMs !== _simIntervalMs) {
-                _simIntervalMs = newMs;
-                // If poll is already running, restart it at the new interval immediately
-                // No fast poll timer during sim — sim injects directly via BroadcastChannel.
-                // feedHeld gates refreshScene() so DB fetches don't happen.
-            }
-        }
-
-        if (e.data.type === 'sim_vehicle' && e.data.payload && e.data.srcType !== 'airflycar')
-            _simInject(e.data.payload, e.data.classification);
-        if (e.data.type === 'sim_started') {
-            if (!animationPaused) refreshScene();
-            onSimStateChange(true);
-        }
-        if (e.data.type === 'sim_stopped') onSimStateChange(false);
-    };
-}
-
-// Bug Fix 4: Separate storage listener for airways_sim_active (sim lifecycle state)
-// and airways_sim_last_event (vehicle payloads). Previously mixed → dead sim_started check.
-window.addEventListener('storage', function(e) {
-    if (e.key === 'airways_sim_active') { onSimStateChange(e.newValue === 'true'); return; }
-    if (e.key === 'airways_sim_heartbeat' && e.newValue) return; // heartbeat tick — sim is alive
-    if (e.key === 'airways_sim_context' && simRunning) { _t3dApplySimContext(); return; }
-    if (e.key !== 'airways_sim_last_event' || !e.newValue) return;
-    try {
-        var msg = JSON.parse(e.newValue);
-        // Sync poll interval from localStorage fallback path too
-        if (msg.intervalSec && msg.intervalSec > 0) {
-            var newMs = msg.intervalSec * 1000;
-            if (newMs !== _simIntervalMs) {
-                _simIntervalMs = newMs;
-                // No fast poll timer during sim — sim injects directly.
-            }
-        }
-        if (msg.type === 'sim_vehicle' && msg.payload && msg.srcType !== 'airflycar')
-            _simInject(msg.payload, msg.classification);
-    } catch(ex) {}
-});
-// Restore sim feed state from localStorage on page load.
-// The simulation is user-controlled: it's active if the user clicked Start
-// and hasn't clicked Stop. No heartbeat check — the sim persists across
-// page navigation. Exit sim mode only when sim_stopped is received.
-(function() {
-    if (localStorage.getItem('airways_sim_active') === 'true') {
-        _t3dApplySimContext();
-        onSimStateChange(true);
+        topBtn.classList.add('active','btn-primary'); topBtn.classList.remove('btn-outline-primary');
     }
+
+    // 4. Load pre-fetched events instantly (no waiting for first poll)
+    if (_INITIAL_EVENTS && _INITIAL_EVENTS.length) loadEvents(_INITIAL_EVENTS);
+
+    // 5. Check if sim was running (cross-tab restore)
+    await _simRestoreState();
+
+    // 6. Initial DB fetch
+    await refreshScene();
 })();
+
+// ── Slow poll: 30s, live mode only ───────────────────────────────────
+setInterval(function() { if (!simRunning && !feedHeld) refreshScene(); }, 30000);
+
 </script>
