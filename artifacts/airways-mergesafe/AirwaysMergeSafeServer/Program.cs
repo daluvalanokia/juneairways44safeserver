@@ -286,6 +286,18 @@ try
                     IpAddress   TEXT,
                     CreatedDate TEXT NOT NULL DEFAULT (datetime('now'))
                 )",
+                // SimulationStatus — single-row table tracking sim state across restarts
+                @"CREATE TABLE IF NOT EXISTS SimulationStatuses (
+                    Id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    IsRunning     INTEGER NOT NULL DEFAULT 0,
+                    HighwayId     TEXT,
+                    ZoneId        TEXT,
+                    ServerId      TEXT,
+                    SourceType    TEXT,
+                    TotalPosted   INTEGER NOT NULL DEFAULT 0,
+                    LastHeartbeat TEXT NOT NULL DEFAULT (datetime('now')),
+                    StoppedAt     TEXT
+                )",
             };
 
             foreach (var sql in createTables)
@@ -437,6 +449,57 @@ try
                 // duplicate-column errors on re-start are expected and harmless.
                 logger.LogDebug("Startup guard skipped (already applied): {Preview}",
                     sql.Split('\n')[0].Trim()[..Math.Min(70, sql.Split('\n')[0].Trim().Length)]);
+            }
+        }
+
+        // ── Step 2b: Clean up stale simulation state ──────────────────────
+        // On startup, check the SimulationStatuses table. If a simulation was
+        // marked as running but the last heartbeat is older than 2 minutes,
+        // the previous session died without calling SimulationStop.  Mark it
+        // as stopped and clean up orphaned simulation telemetry.
+        if (!isPostgres)
+        {
+            try
+            {
+                var simStatus = await db.SimulationStatuses
+                    .OrderByDescending(s => s.Id)
+                    .FirstOrDefaultAsync();
+
+                if (simStatus != null && simStatus.IsRunning)
+                {
+                    var heartbeatAge = DateTime.UtcNow - simStatus.LastHeartbeat;
+                    if (heartbeatAge.TotalMinutes > 2)
+                    {
+                        logger.LogWarning("Startup: Stale simulation detected — last heartbeat {Age:0.0} min ago. "
+                            + "Cleaning up simulation telemetry.", heartbeatAge.TotalMinutes);
+
+                        // Mark as stopped
+                        simStatus.IsRunning = false;
+                        simStatus.StoppedAt  = DateTime.UtcNow;
+                        db.SimulationStatuses.Update(simStatus);
+
+                        // Clean up orphaned simulation data
+                        var simPayloads = db.SamplePayloads
+                            .Where(p => p.Label != null && p.Label.StartsWith("Simulation ["));
+                        db.SamplePayloads.RemoveRange(simPayloads);
+
+                        var simEvents = db.VehicleEvents
+                            .Where(v => v.VehicleId != null && v.VehicleId.StartsWith("SIM-"));
+                        db.VehicleEvents.RemoveRange(simEvents);
+
+                        await db.SaveChangesAsync();
+                        logger.LogInformation("Startup: Stale simulation cleaned up — DB is ready.");
+                    }
+                    else
+                    {
+                        logger.LogInformation("Startup: Simulation was recently active (heartbeat {Age:0.0} min ago) "
+                            + "— leaving as-is for client to resume.", heartbeatAge.TotalMinutes);
+                    }
+                }
+            }
+            catch (Exception exSim)
+            {
+                logger.LogError(exSim, "Startup: Simulation status check failed — continuing.");
             }
         }
 
