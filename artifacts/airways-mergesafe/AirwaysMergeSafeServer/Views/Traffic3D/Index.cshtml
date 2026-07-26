@@ -941,6 +941,14 @@ try { _bc = new BroadcastChannel('airways_sim'); } catch(e) {}
 
 function _onSimMsg(data) {
     if (!data) return;
+    if (data.type === 'sim_started') {
+        // Sim started on another tab — immediately clear all live DB vehicles
+        simRunning = true; feedHeld = true;
+        _clearVehicles();
+        var badge = document.getElementById('simFeedBadge');
+        if (badge) { badge.style.display = ''; badge.textContent = '● LIVE'; }
+        return;
+    }
     if (data.type === 'sim_vehicle' || data.type === 'sim_event') {
         var ev = data.payload || data;
         var _wasFirst = !simRunning;
@@ -982,8 +990,28 @@ if (_bc) _bc.onmessage = function(e) { _onSimMsg(e.data); };
 
 // Also listen via localStorage (cross-tab)
 window.addEventListener('storage', function(e) {
-    if (e.key !== 'airways_sim_last_event') return;
-    try { _onSimMsg(JSON.parse(e.newValue || '{}')); } catch(_) {}
+    if (e.key === 'airways_sim_last_event') {
+        try { _onSimMsg(JSON.parse(e.newValue || '{}')); } catch(_) {}
+    } else if (e.key === 'airways_sim_state') {
+        // Sim state changed in another tab — check if sim started
+        try {
+            var st = JSON.parse(e.newValue || '{}');
+            if (st.running && !simRunning) {
+                // Sim just started — clear and switch to sim mode
+                simRunning = true; feedHeld = true;
+                _clearVehicles();
+                var badge = document.getElementById('simFeedBadge');
+                if (badge) { badge.style.display = ''; badge.textContent = '● LIVE'; }
+            } else if (!st.running && simRunning) {
+                // Sim just stopped — resume live DB feed
+                simRunning = false; feedHeld = false;
+                var badge2 = document.getElementById('simFeedBadge');
+                if (badge2) badge2.style.display = 'none';
+                _clearVehicles();
+                refreshScene();
+            }
+        } catch(_) {}
+    }
 });
 
 // ── Simulation state restore on page load ────────────────────────────
@@ -1003,6 +1031,8 @@ async function _simRestoreState() {
             return;
         }
         simRunning = true; feedHeld = true;
+        // Clear pre-existing live DB vehicles — sim data takes priority
+        _clearVehicles();
         var badge = document.getElementById('simFeedBadge');
         if (badge) { badge.style.display = ''; badge.textContent = '● LIVE #' + (dbStatus.totalPosted || 0); }
     } catch(e) { console.warn('Status check failed:', e); }
@@ -1059,13 +1089,13 @@ window.addEventListener('resize', function() {
         topBtn.classList.add('active','btn-primary'); topBtn.classList.remove('btn-outline-primary');
     }
 
-    // 4. Load pre-fetched events instantly (no waiting for first poll)
-    if (_INITIAL_EVENTS && _INITIAL_EVENTS.length) loadEvents(_INITIAL_EVENTS);
-
-    // 5. Check if sim was running (cross-tab restore)
+    // 4. Check if sim was running (cross-tab restore) — BEFORE loading DB events
     await _simRestoreState();
 
-    // 6. Initial DB fetch
+    // 5. Load pre-fetched events only if sim is NOT running
+    if (!simRunning && _INITIAL_EVENTS && _INITIAL_EVENTS.length) loadEvents(_INITIAL_EVENTS);
+
+    // 6. Initial DB fetch (skipped if sim is running — feedHeld is true)
     await refreshScene();
 })();
 
