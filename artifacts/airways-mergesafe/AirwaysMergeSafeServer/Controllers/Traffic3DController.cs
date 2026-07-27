@@ -293,7 +293,7 @@ public class Traffic3DController : Controller
     public async Task<IActionResult> ValidateVehicleCoordinates(
         [FromBody] VehicleCoordRequest req)
     {
-        highwayId ??= HttpContext.Session.GetString("HighwayId") ?? req.HighwayId ?? "";
+        var highwayId = req.HighwayId ?? HttpContext.Session.GetString("HighwayId") ?? "";
         if (string.IsNullOrEmpty(highwayId))
             return Json(new { valid = true, lat = req.Lat, lon = req.Lon, snapped = false });
 
