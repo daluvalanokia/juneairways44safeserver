@@ -348,6 +348,18 @@ function _initMap() {
         _tileErrors = 0;
         clearTimeout(_fallbackTimer);
     });
+
+    // ── Keep _leafletZoom in sync so the overlay road-width scales correctly ──
+    _map.on('zoomend', function() {
+        _leafletZoom = _map.getZoom();
+    });
+    // ── Keep _mapCtrLat/Lon in sync when the map is panned (e.g. auto-pan) ──
+    _map.on('moveend', function() {
+        if (_map) {
+            var c = _map.getCenter();
+            _mapCtrLat = c.lat; _mapCtrLon = c.lng;
+        }
+    });
 }
 
 function _applyTileFallback() {
@@ -384,94 +396,98 @@ document.getElementById('t3dMiniMap').addEventListener('wheel', function(e) {
     if (e.deltaY < 0) t3dZoomIn(); else t3dZoomOut();
 }, { passive: false });
 
-// ── Highway overlay: draw a semi-transparent road strip over the real road ──
-// Uses the selected zone's heading or defaults to North–South
-// Highway coordinates — the actual GPS line of the selected zone's road
-// Updated whenever zone/server changes via _setHighwayCoords()
-var _hwyLat1 = _mapCtrLat - 0.02, _hwyLon1 = _mapCtrLon;
-var _hwyLat2 = _mapCtrLat + 0.02, _hwyLon2 = _mapCtrLon;
-var _hwyHeading = 0;  // radians, 0 = North
+// ── Highway overlay: GPS-locked road strip aligned to the real highway ──
+// _hwyLat/Lon: the exact centreline GPS coordinate of the selected zone.
+// _hwyIsEW:    true for E-W highways (I-20, I-10, I-30), false for N-S.
+// The overlay is redrawn every animation frame using Leaflet projection,
+// so it automatically tracks zoom + pan without any extra re-computation.
+var _hwyLat   = 0, _hwyLon = 0;
+var _hwyIsEW  = true;
 
-function _setHighwayCoords(lat, lon, heading) {
-    // heading: 'EW' for east-west highways (I-20, I-10, I-30)
-    //          'NS' for north-south highways (I-35, I-45)
-    //          default: auto-detect from highway name or assume EW
-    var hw = (typeof HW === 'string') ? HW.toUpperCase() : '';
-    // I-20, I-10, I-30, I-40, I-80 are east-west; I-35, I-45, I-25 are north-south
-    var isEW = (heading === 'EW') ||
-               (heading !== 'NS' && (
-                   hw.indexOf('I20') >= 0 || hw.indexOf('I-20') >= 0 ||
-                   hw.indexOf('I10') >= 0 || hw.indexOf('I-10') >= 0 ||
-                   hw.indexOf('I30') >= 0 || hw.indexOf('I-30') >= 0 ||
-                   hw.indexOf('I40') >= 0 || hw.indexOf('I-40') >= 0 ||
-                   hw.indexOf('I80') >= 0 || hw.indexOf('I-80') >= 0
-               ));
-    // If no explicit heading and no E-W pattern match, check for N-S patterns
-    if (!isEW && heading !== 'EW' && heading !== 'NS') {
-        var isNS = hw.indexOf('I35') >= 0 || hw.indexOf('I-35') >= 0 ||
-                   hw.indexOf('I45') >= 0 || hw.indexOf('I-45') >= 0 ||
-                   hw.indexOf('I25') >= 0 || hw.indexOf('I-25') >= 0;
-        if (!isNS) isEW = true;  // Default to E-W if unknown
-    }
+function _isEWHighway(hwId) {
+    // Classify highway by ID string — used by both _setHighwayCoords and vehicle parser.
+    var h = (hwId || '').toUpperCase();
+    // Explicit N-S check first
+    if (h.indexOf('I35') >= 0 || h.indexOf('I-35') >= 0 ||
+        h.indexOf('I45') >= 0 || h.indexOf('I-45') >= 0 ||
+        h.indexOf('I25') >= 0 || h.indexOf('I-25') >= 0) return false;
+    // Everything else (I-20, I-10, I-30, I-40, I-80, unknown) → E-W
+    return true;
+}
 
-    if (isEW) {
-        // East-West highway: extend along longitude axis (±0.05° ≈ 5km at this latitude)
-        _hwyLat1 = lat;       _hwyLon1 = lon - 0.03;
-        _hwyLat2 = lat;       _hwyLon2 = lon + 0.03;
-    } else {
-        // North-South highway: extend along latitude axis
-        _hwyLat1 = lat - 0.03; _hwyLon1 = lon;
-        _hwyLat2 = lat + 0.03; _hwyLon2 = lon;
-    }
-    _hwyHeading = isEW ? 'EW' : 'NS';
+function _setHighwayCoords(lat, lon, hwId) {
+    // lat/lon: exact GPS centreline of the selected zone (from DB seed).
+    // hwId:    highway identifier string (e.g. "I20-TX", "I35-TX").
+    // Store the centreline point — the draw function extends it to fill the viewport.
+    _hwyLat  = lat;
+    _hwyLon  = lon;
+    _hwyIsEW = _isEWHighway(hwId);
+    _hwyHeading = _hwyIsEW ? 'EW' : 'NS';
 
-    // Rotate the 3D road group to align with the highway heading
-    // E-W: road stays along X axis (no rotation)
-    // N-S: road rotates 90° to align with Z axis
+    // Sync 3D road group rotation
     if (typeof roadGroup3 !== 'undefined') {
-        roadGroup3.rotation.y = isEW ? 0 : Math.PI / 2;
+        roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
     }
 }
 
 function _drawHighwayOverlay() {
     if (!_oc || !_octx) return;
+    if (!_hwyLat || !_hwyLon) return;
     var cw = _oc.width, ch = _oc.height;
     if (cw < 2 || ch < 2) return;
 
-    var x1, y1, x2, y2, zoomFactor;
+    // ── Project highway centreline through Leaflet every frame ──────────
+    // This gives exact pixel alignment at any zoom level / pan position.
+    // We compute TWO points on the highway axis using the stored centreline
+    // lat/lon plus a large enough delta so the line always spans the screen.
+    var zoomFactor, sx, sy, ex, ey;
+
     if (_map && _mapReady) {
-        // Primary: Leaflet projection
+        var z      = _map.getZoom();
         var origin = _map.getPixelOrigin();
-        var z = _map.getZoom();
-        var p1 = _map.project([_hwyLat1, _hwyLon1], z);
-        var p2 = _map.project([_hwyLat2, _hwyLon2], z);
-        x1 = p1.x - origin.x; y1 = p1.y - origin.y;
-        x2 = p2.x - origin.x; y2 = p2.y - origin.y;
+        // Degree span that covers more than the viewport at the current zoom.
+        // At zoom 10, 1° lon ≈ 113px — span 8° gives 900px coverage.
+        // At zoom 15, 1° lon ≈ 3630px — span 0.25° covers 900px.
+        // Formula: need > screen_px / px_per_deg.
+        // Use 5 / zoomFactor so it shrinks as zoom increases but always enough.
+        var span = Math.max(0.25, 5 / Math.pow(2, z - 10));
+
+        var lat1, lon1, lat2, lon2;
+        if (_hwyIsEW) {
+            // E-W highway: same lat, extend longitude both directions
+            lat1 = _hwyLat; lon1 = _hwyLon - span;
+            lat2 = _hwyLat; lon2 = _hwyLon + span;
+        } else {
+            // N-S highway: same lon, extend latitude both directions
+            lat1 = _hwyLat - span; lon1 = _hwyLon;
+            lat2 = _hwyLat + span; lon2 = _hwyLon;
+        }
+
+        var p1 = _map.project([lat1, lon1], z);
+        var p2 = _map.project([lat2, lon2], z);
+        sx = p1.x - origin.x; sy = p1.y - origin.y;
+        ex = p2.x - origin.x; ey = p2.y - origin.y;
         zoomFactor = Math.pow(2, z - 15);
     } else {
-        // Fallback: linear projection
+        // Fallback: linear projection from map centre
         var zfb = _leafletZoom || 15;
         var pxPerDeg = Math.pow(2, zfb) * 256 / 360;
-        x1 = cw/2 + (_hwyLon1 - _mapCtrLon) * pxPerDeg;
-        y1 = ch/2 - (_hwyLat1 - _mapCtrLat) * pxPerDeg;
-        x2 = cw/2 + (_hwyLon2 - _mapCtrLon) * pxPerDeg;
-        y2 = ch/2 - (_hwyLat2 - _mapCtrLat) * pxPerDeg;
+        var span2 = Math.max(0.25, 5 / Math.pow(2, zfb - 10));
+        if (_hwyIsEW) {
+            sx = cw/2 + (-span2) * pxPerDeg + (_hwyLon - _mapCtrLon) * pxPerDeg;
+            ex = cw/2 + ( span2) * pxPerDeg + (_hwyLon - _mapCtrLon) * pxPerDeg;
+            sy = ey = ch/2 - (_hwyLat - _mapCtrLat) * pxPerDeg;
+        } else {
+            sx = ex = cw/2 + (_hwyLon - _mapCtrLon) * pxPerDeg;
+            sy = ch/2 + span2 * pxPerDeg - (_hwyLat - _mapCtrLat) * pxPerDeg;
+            ey = ch/2 - span2 * pxPerDeg - (_hwyLat - _mapCtrLat) * pxPerDeg;
+        }
         zoomFactor = Math.pow(2, zfb - 15);
     }
 
-    // Road width in pixels — scales with Leaflet zoom (tight coupling with map)
-    var roadPx = Math.max(24, Math.round(48 * zoomFactor));
-
-    // Draw road as a thick line from p1 to p2 (the "bridge" over the highway)
-    var dx = x2 - x1, dy = y2 - y1;
+    var dx = ex - sx, dy = ey - sy;
     var len = Math.hypot(dx, dy);
-    if (len < 2) return;  // endpoints collapsed — nothing to draw
-
-    // Extend the line beyond the endpoints to fill the screen
-    var extLen = Math.max(cw, ch);
-    var ux = dx / len, uy = dy / len;  // unit vector along road
-    var sx = x1 - ux * extLen, sy = y1 - uy * extLen;
-    var ex = x2 + ux * extLen, ey = y2 + uy * extLen;
+    if (len < 2) return;
 
     // Road surface (semi-transparent asphalt)
     // NOTE: do NOT clearRect here — _renderLoop already clears the canvas.
