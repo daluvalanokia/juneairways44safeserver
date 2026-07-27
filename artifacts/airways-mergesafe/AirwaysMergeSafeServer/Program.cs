@@ -123,7 +123,7 @@ try
         }
         catch { }
     }
-    TraceLogger.OnInAppTrace = (level, message) => _traceSvc.AddLine(level, message);
+    TraceLogger.OnInAppTrace = (level, module, method, message) => _traceSvc.AddLine(level, module, method, message);
 
     // ── C5 / FIX: MigrateAsync for BOTH SQLite and PostgreSQL ────────────
     // ROOT CAUSE FIX (SqliteException: no such column FailedLoginAttempts):
