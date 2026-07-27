@@ -311,7 +311,7 @@ function _initMap() {
     _map = L.map('t3dMiniMap', {
         zoomControl: false,
         attributionControl: false,
-        dragging: false,
+        dragging: true,
         scrollWheelZoom: false,
         doubleClickZoom: false,
         keyboard: false, boxZoom: false, touchZoom: false
@@ -325,8 +325,9 @@ function _initMap() {
     setTimeout(function() { if (_map) _map.invalidateSize(true); }, 80);
     setTimeout(function() { if (_map) _map.invalidateSize(true); }, 300);
 
-    // Block map from stealing mouse events (3D canvas handles interaction)
-    _map.getContainer().style.pointerEvents = 'none';
+    // Allow map to receive mouse events for dragging
+    // The 2D overlay canvas (z-index:2) already has pointer-events:none
+    _map.getContainer().style.pointerEvents = 'auto';
 
     _tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19, subdomains: 'abc', attribution: '', maxRetries: 1
@@ -488,6 +489,10 @@ function _drawHighwayOverlay() {
     var dx = ex - sx, dy = ey - sy;
     var len = Math.hypot(dx, dy);
     if (len < 2) return;
+
+    // Unit vector along the road + road width in pixels
+    var ux = dx / len, uy = dy / len;
+    var roadPx = Math.max(24, Math.round(48 * zoomFactor));
 
     // Road surface (semi-transparent asphalt)
     // NOTE: do NOT clearRect here — _renderLoop already clears the canvas.
@@ -1053,9 +1058,10 @@ function loadEvents(events) {
         // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
         var vid = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '';
         if (!vid) return;
-        // Skip vehicles whose zone doesn't belong to any zone in the current view
+        // Skip vehicles whose zone doesn't belong to the current view
+        // BUT allow events with no zone_id (sim may not always include it)
         var evZoneCheck = ev.zone_id || ev.zoneId || ev.ZoneId || '';
-        if (evZoneCheck && selectedZoneId && evZoneCheck !== selectedZoneId) return;
+        if (evZoneCheck && selectedZoneId && evZoneCheck !== selectedZoneId && !simRunning) return;
         var lat = parseFloat(ev.latitude  || ev.Latitude  || 0);
         var lon = parseFloat(ev.longitude || ev.Longitude || 0);
         var spd  = parseFloat(ev.speed_mph || ev.speedMph || ev.SpeedMph || 0);
@@ -1344,7 +1350,14 @@ window.addEventListener('resize', function() {
 (async function boot() {
     // 1. Init Leaflet map centred on zone GPS
     _initMap();
-    _setHighwayCoords(_mapCtrLat, _mapCtrLon);
+    // Set highway coords from the initial selected zone (not just map centre)
+    var _bootZone = T3D_ZONES.find(function(z){ return z.lat && z.lon; });
+    if (_bootZone) {
+        _mapCtrLat = _bootZone.lat; _mapCtrLon = _bootZone.lon;
+        _setHighwayCoords(_bootZone.lat, _bootZone.lon, _bootZone.highwayId);
+    } else {
+        _setHighwayCoords(_mapCtrLat, _mapCtrLon, HW);
+    }
 
     // 2. Start 2D canvas render loop
     _renderLoop();
