@@ -272,6 +272,18 @@ public class Traffic3DController : Controller
             ? zones.OrderBy(z => z.lon).ToList()
             : zones.OrderBy(z => z.lat).ToList();
 
+        // 7. Fetch switch servers for this highway (for dropdown rebuild)
+        var zoneIds = zones.Select(z => z.zoneId).ToList();
+        var servers = await _db.SwitchServers.AsNoTracking()
+            .Where(s => s.ZoneId != null && zoneIds.Contains(s.ZoneId))
+            .OrderBy(s => s.ZoneId).ThenBy(s => s.ServerName)
+            .Select(s => new {
+                serverId   = s.ServerId,
+                serverName = s.ServerName,
+                zoneId     = s.ZoneId ?? ""
+            })
+            .ToListAsync();
+
         return Json(new
         {
             highwayCoords = sortedZones,
@@ -281,6 +293,7 @@ public class Traffic3DController : Controller
             highwayId = highwayId,
             selectedZoneId = zoneId ?? "",
             selectedServerId = serverId ?? "",
+            servers = servers,
             generatedAt = DateTime.UtcNow
         });
     }
