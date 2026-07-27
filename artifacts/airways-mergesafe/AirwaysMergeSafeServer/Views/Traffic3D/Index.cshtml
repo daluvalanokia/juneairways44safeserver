@@ -1166,7 +1166,7 @@ function t3dZoneChanged() {
     });
     var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
     if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); _setHighwayCoords(z.lat, z.lon, z.highwayId); }
-    _clearVehicles(); refreshScene();
+    _clearVehicles(); _serverBounds = null; refreshScene();
 }
 
 function t3dServerChanged() {
@@ -1180,7 +1180,7 @@ function t3dServerChanged() {
         var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
         if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); _setHighwayCoords(z.lat, z.lon, z.highwayId); }
     }
-    _clearVehicles(); refreshScene();
+    _clearVehicles(); _serverBounds = null; refreshScene();
 }
 
 // ── Vehicle data management ───────────────────────────────────────────
@@ -1409,17 +1409,61 @@ function _updateStatsBar() {
 }
 
 // ── DB scene refresh ──────────────────────────────────────────────────
+// ── Server-side animation data fetch ────────────────────────────────
+// Polls the controller's GetAnimationData endpoint for pre-validated
+// vehicle coordinates + highway zone coordinates.
+var _serverBounds = null;
+
 async function refreshScene() {
     if (feedHeld) return;
     try {
-        var zq = selectedZoneId   ? '&zoneId='   + encodeURIComponent(selectedZoneId)   : '';
-        var sq = selectedServerId ? '&serverId=' + encodeURIComponent(selectedServerId) : '';
-        var r = await fetch('/api/events/live?highwayId=' + HW + '&take=100&mode=ground' + zq + sq);
+        var params = 'highwayId=' + encodeURIComponent(HW);
+        if (selectedZoneId)   params += '&zoneId='   + encodeURIComponent(selectedZoneId);
+        if (selectedServerId) params += '&serverId=' + encodeURIComponent(selectedServerId);
+        params += '&mode=ground';
+        var r = await fetch('/Traffic3D/GetAnimationData?' + params);
         if (!r.ok) return;
         if (feedHeld || simRunning) return;
-        loadEvents(await r.json());
+        var data = await r.json();
+        // Update highway path from server-provided zone coordinates
+        if (data.highwayCoords && data.highwayCoords.length > 0) {
+            _hwyPath = data.highwayCoords.map(function(z) {
+                return { lat: z.lat, lon: z.lon, zoneId: z.zoneId };
+            });
+            _hwyIsEW = data.isEW;
+            _hwyLat  = _hwyPath[0].lat;
+            _hwyLon  = _hwyPath[0].lon;
+            if (typeof roadGroup3 !== 'undefined') {
+                roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
+            }
+        }
+        // Store bounds from server
+        if (data.bounds) {
+            _serverBounds = data.bounds;
+        }
+        // Load validated vehicles
+        if (data.vehicles && data.vehicles.length > 0) {
+            loadEvents(data.vehicles);
+        } else if (!simRunning) {
+            _clearVehicles();
+        }
     } catch(e) { console.warn('Scene refresh error:', e); }
 }
+
+// Override _getSelectedBounds to use server-provided bounds
+var _getSelectedBoundsOrig = _getSelectedBounds;
+_getSelectedBounds = function() {
+    if (_serverBounds) {
+        return {
+            minLat: _serverBounds.minLat, maxLat: _serverBounds.maxLat,
+            minLon: _serverBounds.minLon, maxLon: _serverBounds.maxLon,
+            tight: _serverBounds.tight,
+            centerLat: (_serverBounds.minLat + _serverBounds.maxLat) / 2,
+            centerLon: (_serverBounds.minLon + _serverBounds.maxLon) / 2
+        };
+    }
+    return _getSelectedBoundsOrig();
+};
 
 // ── Feed hold toggle ──────────────────────────────────────────────────
 function toggleFeed() {
@@ -1507,6 +1551,17 @@ function _onSimMsg(data) {
             if (zsel) zsel.value = _simZoneId;
         }
         _updateSimPanel(ev);
+        // Validate sim event coordinates against selected bounds before loading
+        var _simLat = parseFloat(ev.latitude || ev.Latitude || ev.lat || 0);
+        var _simLon = parseFloat(ev.longitude || ev.Longitude || ev.lon || 0);
+        if (_simLat && _simLon) {
+            var _sb = _getSelectedBounds();
+            if (_sb && !_isWithinBounds(_simLat, _simLon)) {
+                var _sc = _clampToBounds(_simLat, _simLon);
+                ev.latitude  = _sc.lat;
+                ev.longitude = _sc.lon;
+            }
+        }
         loadEvents([ev]);
         // Update badge count
         if (!window._simEventCount) window._simEventCount = 0;
@@ -1634,11 +1689,10 @@ window.addEventListener('resize', function() {
     // 4. Check if sim was running (cross-tab restore) — BEFORE loading DB events
     await _simRestoreState();
 
-    // 5. Load pre-fetched events only if sim is NOT running
-    if (!simRunning && _INITIAL_EVENTS && _INITIAL_EVENTS.length) loadEvents(_INITIAL_EVENTS);
-
-    // 6. Initial DB fetch (skipped if sim is running — feedHeld is true)
-    await refreshScene();
+    // 5. Initial server-side data fetch (skipped if sim is running)
+    if (!simRunning) {
+        await refreshScene();
+    }
 })();
 
 // ── Slow poll: 30s, live mode only ───────────────────────────────────
