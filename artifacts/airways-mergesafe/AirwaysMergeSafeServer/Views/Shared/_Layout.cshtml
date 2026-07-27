@@ -212,12 +212,12 @@
                     ticker.innerHTML = '<div class="mss-trace-line mss-trace-muted">Waiting for trace data…</div>';
                 } else {
                     ticker.innerHTML = lines.map(function(l) {
-                        var cls = l.Level === 'ERROR' ? 'mss-lvl-error' :
-                                  l.Level === 'WARN'  ? 'mss-lvl-warning' : 'mss-lvl-info';
+                        var cls = l.level === 'ERROR' ? 'mss-lvl-error' :
+                                  l.level === 'WARN'  ? 'mss-lvl-warning' : 'mss-lvl-info';
                         return '<div class="mss-trace-line">' +
-                            '<span class="mss-ts">' + l.Timestamp + '</span> ' +
-                            '<span class="' + cls + '">[' + l.Level + ']</span> ' +
-                            '<span class="mss-msg">' + escapeHtml(l.Message) + '</span>' +
+                            '<span class="mss-ts">' + l.timestamp + '</span> ' +
+                            '<span class="' + cls + '">[' + l.level + ']</span> ' +
+                            '<span class="mss-msg">' + escapeHtml(l.message) + '</span>' +
                         '</div>';
                     }).join('');
                 }
@@ -232,12 +232,12 @@
                             body.innerHTML = allLines.length === 0
                                 ? '<div class="mss-trace-line mss-trace-muted">No trace data yet.</div>'
                                 : allLines.map(function(l) {
-                                    var cls = l.Level === 'ERROR' ? 'mss-lvl-error' :
-                                              l.Level === 'WARN'  ? 'mss-lvl-warning' : 'mss-lvl-info';
+                                    var cls = l.level === 'ERROR' ? 'mss-lvl-error' :
+                                              l.level === 'WARN'  ? 'mss-lvl-warning' : 'mss-lvl-info';
                                     return '<div class="mss-trace-line">' +
-                                        '<span class="mss-ts">' + l.Timestamp + '</span> ' +
-                                        '<span class="' + cls + '">[' + l.Level + ']</span> ' +
-                                        '<span class="mss-msg">' + escapeHtml(l.Message) + '</span>' +
+                                        '<span class="mss-ts">' + l.timestamp + '</span> ' +
+                                        '<span class="' + cls + '">[' + l.level + ']</span> ' +
+                                        '<span class="mss-msg">' + escapeHtml(l.message) + '</span>' +
                                     '</div>';
                                 }).join('');
                         }).catch(function(){});
