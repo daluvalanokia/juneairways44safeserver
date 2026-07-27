@@ -36,8 +36,13 @@ public class SettingsController : Controller
             {
                 var d = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
                     System.IO.File.ReadAllText(InAppTracePath));
-                var en = d?.GetValueOrDefault("enabled", new JsonElement(false)).GetBoolean() ?? false;
-                var lv = d?.GetValueOrDefault("level", new JsonElement("info")).GetString() ?? "info";
+                bool en = false;
+                string lv = "info";
+                if (d != null)
+                {
+                    if (d.TryGetValue("enabled", out var eEl) && eEl.ValueKind == JsonValueKind.True) en = true;
+                    if (d.TryGetValue("level",   out var lEl) && lEl.ValueKind == JsonValueKind.String) lv = lEl.GetString() ?? "info";
+                }
                 return (en, lv);
             }
         }
