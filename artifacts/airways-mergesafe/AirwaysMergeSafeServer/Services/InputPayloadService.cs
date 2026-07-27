@@ -49,6 +49,58 @@ public class InputPayloadService
         { "air_vertiport", new[] { "Wisk" } },
     };
 
+    // ── Lane GPS helpers ──────────────────────────────────────────────────────
+    // Road half-width offset in degrees:
+    //   ~17m perpendicular = 0.000153° lat  (1°lat ≈ 111,000m)
+    //   ~17m at 32.7°N     = 0.000182° lon  (1°lon ≈ 93,300m at this lat)
+    private const double LaneHalfLat = 0.000155;  // half-road-width in lat degrees
+    private const double LaneHalfLon = 0.000185;  // half-road-width in lon degrees
+    private const double LaneJitter  = 0.000080;  // within-lane jitter (±9m)
+    private const double LongJitter  = 0.025;     // along-road scatter (±2.5km)
+
+    private static double GenerateLaneLat(double zoneLat, double zoneLon,
+        string? highwayId, Random rng)
+    {
+        var hw = (highwayId ?? "").ToUpperInvariant();
+        bool isNS = hw.Contains("I35") || hw.Contains("I-35") ||
+                    hw.Contains("I45") || hw.Contains("I-45") ||
+                    hw.Contains("I25") || hw.Contains("I-25");
+        if (isNS)
+        {
+            // N-S highway: scatter lat along the road segment
+            return Math.Round(zoneLat + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
+        }
+        else
+        {
+            // E-W highway: eastbound on north side (+), westbound on south side (-)
+            // Randomly assign direction then offset, plus tiny within-lane jitter
+            double side = (rng.Next(2) == 0) ? LaneHalfLat : -LaneHalfLat;
+            double jitter = (rng.NextDouble() - 0.5) * LaneJitter * 2;
+            return Math.Round(zoneLat + side + jitter, 6);
+        }
+    }
+
+    private static double GenerateLaneLon(double zoneLat, double zoneLon,
+        string? highwayId, Random rng)
+    {
+        var hw = (highwayId ?? "").ToUpperInvariant();
+        bool isNS = hw.Contains("I35") || hw.Contains("I-35") ||
+                    hw.Contains("I45") || hw.Contains("I-45") ||
+                    hw.Contains("I25") || hw.Contains("I-25");
+        if (isNS)
+        {
+            // N-S highway: northbound on west side (-), southbound on east side (+)
+            double side = (rng.Next(2) == 0) ? -LaneHalfLon : LaneHalfLon;
+            double jitter = (rng.NextDouble() - 0.5) * LaneJitter * 2;
+            return Math.Round(zoneLon + side + jitter, 6);
+        }
+        else
+        {
+            // E-W highway: scatter lon along the road segment
+            return Math.Round(zoneLon + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
+        }
+    }
+
     /// <summary>
     /// Returns a direction in degrees aligned with the highway axis.
     /// E-W highways (I-20, I-10, I-30, I-40, I-80): 90° (east) or 270° (west), chosen randomly.
@@ -113,11 +165,15 @@ public class InputPayloadService
                 "vehicle_id"      => $"VEH-{rng.Next(1, 21):D3}",
                 "timestamp"       => DateTime.UtcNow.ToString("o"),
                 "speed_mph"       => isAirVehicle ? rng.Next(80, 180) : rng.Next(20, 100),
-                // Use zone GPS if provided — scatter ALONG the highway corridor
-                // Tight cross-axis spread (±0.002° ≈ ±220m) for road width
-                // Wide along-axis spread (±0.015° ≈ ±1.5km) for highway length
-                "latitude"        => Math.Round((zoneLat ?? 32.7767) + (rng.NextDouble() - 0.5) * 0.004, 6),
-                "longitude"       => Math.Round((zoneLon ?? -96.7970) + (rng.NextDouble() - 0.5) * 0.030, 6),
+                // Direction-aware lane placement:
+                // E-W highways: eastbound (90°) vehicles on north side (+lat),
+                //               westbound (270°) vehicles on south side (-lat).
+                // N-S highways: northbound (0°) on west side (-lon),
+                //               southbound (180°) on east side (+lon).
+                // Cross-axis spread is tight (±0.00008° ≈ ±9m within-lane jitter).
+                // Along-axis spread is wide (±0.025° ≈ ±2.5km highway segment).
+                "latitude"        => GenerateLaneLat(zoneLat ?? 32.7767, zoneLon ?? -96.7970, highwayId, rng),
+                "longitude"       => GenerateLaneLon(zoneLat ?? 32.7767, zoneLon ?? -96.7970, highwayId, rng),
                 "altitude_m"      => altitudeM,
                 "altitude_ft"     => Math.Round(altitudeM * 3.28084, 1),
                 "vehicle_type"    => vehicleType,
@@ -224,9 +280,11 @@ public class InputPayloadService
         string destPad      = DestPads[rng.Next(DestPads.Length)];
         string rotorHealth  = RotorHealthStates[rng.Next(RotorHealthStates.Length)];
 
-        // Lat/lon centred on DFW area, spread across corridors
-        double lat = Math.Round(32.7767 + (rng.NextDouble() - 0.5) * 0.4, 6);
-        double lon = Math.Round(-96.7970 + (rng.NextDouble() - 0.5) * 0.4, 6);
+        // Lat/lon: use zone coords if provided (so air vehicles stay near selected highway)
+        double baseLat = 32.7767, baseLon = -96.7970;
+        // highwayId passed in from the outer Generate() call via the overload
+        double lat = Math.Round(GenerateLaneLat(baseLat, baseLon, highwayId, rng), 6);
+        double lon = Math.Round(GenerateLaneLon(baseLat, baseLon, highwayId, rng), 6);
 
         string eventType = conflictFlag ? "conflict"
             : flightPhase == "approach" ? "merge"
