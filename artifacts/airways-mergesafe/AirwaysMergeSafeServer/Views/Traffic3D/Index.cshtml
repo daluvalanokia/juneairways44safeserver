@@ -456,6 +456,16 @@ function _setHighwayCoords(lat, lon, hwId) {
     }
 }
 
+function _forceBridgeRedraw() {
+    if (T3D_ZONES.length > 0) {
+        var z0 = T3D_ZONES.find(function(z){ return z.lat && z.lon; }) || T3D_ZONES[0];
+        _setHighwayCoords(z0.lat, z0.lon, HW);
+    }
+    _bridgeDirty = true;
+    if (_map) _map.invalidateSize();
+    console.log('[T3D] Bridge redraw forced: path=' + _hwyPath.length + ' isEW=' + _hwyIsEW);
+}
+
 function _projectLatLng(lat, lon) {
     // Project a GPS coordinate to screen-relative pixel coords.
     if (_map && _mapReady) {
@@ -1283,11 +1293,9 @@ async function t3dHighwayChanged(newHighwayId) {
         if (data.vehicles && data.vehicles.length > 0) {
             loadEvents(data.vehicles);
         }
-        // Force bridge redraw
-        _bridgeDirty = true;
-        // Invalidate map size to ensure tiles reload
-        if (_map) setTimeout(function() { if (_map) _map.invalidateSize(true); }, 100);
-    } catch(e) { console.warn('Highway change error:', e); }
+        _forceBridgeRedraw();
+        if (_map) setTimeout(function() { if (_map) { _map.invalidateSize(true); _forceBridgeRedraw(); } }, 200);
+    } catch(e) { console.warn('[T3D] Highway change error:', e); }
     _validateSelectionState();
 }
 
@@ -1314,9 +1322,7 @@ async function t3dZoneChanged() {
     if (z && z.lat && z.lon) {
         _panMapTo(z.lat, z.lon);
     }
-    // Force bridge to re-project with new bounds
-    _bridgeDirty = true;
-    if (_map) _map.invalidateSize();
+    _forceBridgeRedraw();
     _validateSelectionState();
 }
 
@@ -1348,9 +1354,7 @@ async function t3dServerChanged() {
     if (z && z.lat && z.lon) {
         _panMapTo(z.lat, z.lon);
     }
-    // Force bridge to re-project with new bounds
-    _bridgeDirty = true;
-    if (_map) _map.invalidateSize();
+    _forceBridgeRedraw();
     _validateSelectionState();
 }
 
@@ -1642,8 +1646,7 @@ async function refreshScene() {
         } else if (!simRunning) {
             _clearVehicles();
         }
-        _bridgeDirty = true;
-        if (_map) _map.invalidateSize();
+        _forceBridgeRedraw();
     } catch(e) { console.warn('[T3D] Scene refresh error:', e); }
 }
 
