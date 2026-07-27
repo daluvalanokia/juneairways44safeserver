@@ -660,16 +660,27 @@ function _updateVehiclePositions() {
         vd.lat += ms * Math.cos(rad) * dt * latPerM;
         vd.lon += ms * Math.sin(rad) * dt * lonPerM;
 
-        // Keep vehicles within the highway corridor
+        // Axis-aware corridor clamping — keeps vehicles on the road surface
+        // E-W highway: clamp lat tightly (±0.002° = ±220m road width),
+        //              wrap lon within ±0.025° (±2.5km highway segment)
+        // N-S highway: clamp lon tightly, wrap lat within ±0.025°
         if (vd.zoneLat && vd.zoneLon) {
-            var maxOffset = 0.005;
             var dLat = vd.lat - vd.zoneLat;
             var dLon = vd.lon - vd.zoneLon;
-            var dist = Math.sqrt(dLat * dLat + dLon * dLon);
-            if (dist > maxOffset) {
-                var scale = maxOffset / dist;
-                vd.lat = vd.zoneLat + dLat * scale;
-                vd.lon = vd.zoneLon + dLon * scale;
+            if (vd.isNSHwy) {
+                // N-S highway: tight lon clamping, wrap lat
+                if (Math.abs(dLon) > 0.002) vd.lon = vd.zoneLon + (dLon > 0 ? 0.002 : -0.002);
+                if (Math.abs(dLat) > 0.025) {
+                    // Wrap to other end of segment to simulate continuous traffic
+                    vd.lat = vd.zoneLat - (dLat > 0 ? 0.024 : -0.024);
+                }
+            } else {
+                // E-W highway: tight lat clamping, wrap lon
+                if (Math.abs(dLat) > 0.002) vd.lat = vd.zoneLat + (dLat > 0 ? 0.002 : -0.002);
+                if (Math.abs(dLon) > 0.025) {
+                    // Wrap to other end of segment to simulate continuous traffic
+                    vd.lon = vd.zoneLon - (dLon > 0 ? 0.024 : -0.024);
+                }
             }
         }
     });
@@ -898,11 +909,13 @@ function _snapToZone(zoneId) {
                hw.indexOf('I25') >= 0 || hw.indexOf('I-25') >= 0;
     var latJitter, lonJitter;
     if (isNS) {
-        latJitter = (Math.random() - 0.5) * 0.030; // ±1.5km along highway (N-S)
-        lonJitter = (Math.random() - 0.5) * 0.004; // ±220m road width
+        // N-S highway: spread along latitude (along-road), tight longitude (road width)
+        latJitter = (Math.random() - 0.5) * 0.030;  // ±1.5km along road
+        lonJitter = (Math.random() - 0.5) * 0.0015; // ±165m road width (tighter)
     } else {
-        latJitter = (Math.random() - 0.5) * 0.004; // ±220m road width
-        lonJitter = (Math.random() - 0.5) * 0.030; // ±1.5km along highway (E-W)
+        // E-W highway: spread along longitude (along-road), tight latitude (road width)
+        latJitter = (Math.random() - 0.5) * 0.0015; // ±165m road width (tighter)
+        lonJitter = (Math.random() - 0.5) * 0.030;  // ±1.5km along road
     }
     return { lat: z.lat + latJitter, lon: z.lon + lonJitter, zone: z };
 }
@@ -953,10 +966,27 @@ function loadEvents(events) {
             }
         }
 
-        var dir = parseFloat(ev.direction || ev.Direction || ev.heading || ev.Heading || 0);
-        if (isNaN(dir)) dir = 0;
+        var dir = parseFloat(ev.direction || ev.Direction || ev.heading || ev.Heading || -1);
+        if (isNaN(dir) || dir < 0) dir = -1;
+        // Snap direction to highway axis — prevents vehicles moving perpendicular to road
+        var hwId = (ev.highway_id || ev.highwayId || ev.HighwayId || '').toUpperCase();
+        var isNSHwy = hwId.indexOf('I35') >= 0 || hwId.indexOf('I-35') >= 0 ||
+                      hwId.indexOf('I45') >= 0 || hwId.indexOf('I-45') >= 0 ||
+                      hwId.indexOf('I25') >= 0 || hwId.indexOf('I-25') >= 0;
+        // If direction is missing or not aligned with highway axis, assign highway-correct direction
+        var isAligned;
+        if (isNSHwy) {
+            // N-S highway: valid dirs are 0±30 or 180±30
+            isAligned = dir >= 0 && (dir <= 30 || dir >= 150 && dir <= 210 || dir >= 330);
+            if (!isAligned) dir = (Math.random() > 0.5) ? 0 : 180;
+        } else {
+            // E-W highway (default): valid dirs are 90±30 or 270±30
+            isAligned = dir >= 60 && dir <= 120 || dir >= 240 && dir <= 300;
+            if (!isAligned) dir = (Math.random() > 0.5) ? 90 : 270;
+        }
         vehicleData.set(vid, { ev: ev, vc: vc, lat: lat, lon: lon, speedMph: spd, make: make,
                                direction: dir,
+                               isNSHwy: isNSHwy,
                                zoneLat: zone ? zone.lat : null,
                                zoneLon: zone ? zone.lon : null,
                                lastSeen: now });
