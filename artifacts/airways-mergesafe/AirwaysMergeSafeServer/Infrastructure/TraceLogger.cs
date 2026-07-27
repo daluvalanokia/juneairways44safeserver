@@ -20,7 +20,7 @@ public static class TraceLogger
     /// every Write() also pushes the line to the in-app ring buffer for the
     /// floating bottom panel.
     /// </summary>
-    internal static Action<string, string, string>? OnInAppTrace;
+    internal static Action<string, string>? OnInAppTrace;
 
     /// <summary>
     /// Call once in Program.cs before the host is built.
