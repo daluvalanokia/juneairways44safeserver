@@ -3,6 +3,7 @@ using AirwaysMergeSafeServer.Models;
 using AirwaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
@@ -14,18 +15,21 @@ public class MergeZonesController : Controller
 
     public async Task<IActionResult> Index(string? highwayId)
     {
+        TraceLogger.Enter("MergeZones", nameof(Index));
         var highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
         highwayId ??= HttpContext.Session.GetString("HighwayId") ?? highways.FirstOrDefault()?.HighwayId;
         if (highwayId != null) HttpContext.Session.SetString("HighwayId", highwayId);
 
         var zones = await _db.MergeZones.AsNoTracking()
             .Where(z => z.HighwayId == highwayId).OrderBy(z => z.MileMarker).ToListAsync();
+        TraceLogger.Exit("MergeZones", nameof(Index));
         return View(new MergeZoneViewModel { Highways = highways, SelectedHighwayId = highwayId, Zones = zones });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(MergeZone model)
     {
+        TraceLogger.Enter("MergeZones", nameof(Create));
         if (!ModelState.IsValid) // C4 FIX
         {
             if (IsAjax) return Json(new { ok = false, errors = ModelStateErrors() });
@@ -34,12 +38,14 @@ public class MergeZonesController : Controller
         _db.MergeZones.Add(model);
         await _db.SaveChangesAsync();
         if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
+        TraceLogger.Exit("MergeZones", nameof(Create));
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Edit(MergeZone model)
     {
+        TraceLogger.Enter("MergeZones", nameof(Edit));
         if (!ModelState.IsValid) // C4 FIX
         {
             if (IsAjax) return Json(new { ok = false, errors = ModelStateErrors() });
@@ -48,15 +54,18 @@ public class MergeZonesController : Controller
         _db.MergeZones.Update(model);
         await _db.SaveChangesAsync();
         if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
+        TraceLogger.Exit("MergeZones", nameof(Edit));
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Delete(int id, string? highwayId)
     {
+        TraceLogger.Enter("MergeZones", nameof(Delete));
         var z = await _db.MergeZones.FindAsync(id);
         if (z != null) { _db.MergeZones.Remove(z); await _db.SaveChangesAsync(); }
         if (IsAjax) return Json(new { ok = true });
+        TraceLogger.Exit("MergeZones", nameof(Delete));
         return RedirectToAction(nameof(Index), new { highwayId });
     }
 
