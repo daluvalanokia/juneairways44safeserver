@@ -1,6 +1,7 @@
 using AirwaysMergeSafeServer.Data;
 using AirwaysMergeSafeServer.Filters;
 using AirwaysMergeSafeServer.Models;
+using AirwaysMergeSafeServer.Services;
 using AirwaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -15,12 +16,34 @@ public class SettingsController : Controller
     private readonly IConfiguration _cfg;
     private readonly IWebHostEnvironment _env;
     private readonly ILogger<SettingsController> _logger;
+    private readonly InAppTraceService _trace;
 
-    public SettingsController(AppDbContext db, IConfiguration cfg, IWebHostEnvironment env, ILogger<SettingsController> logger)
-    { _db = db; _cfg = cfg; _env = env; _logger = logger; }
+    public SettingsController(AppDbContext db, IConfiguration cfg, IWebHostEnvironment env,
+        ILogger<SettingsController> logger, InAppTraceService trace)
+    { _db = db; _cfg = cfg; _env = env; _logger = logger; _trace = trace; }
 
     private static string PurgeSettingsPath =>
         Path.Combine(AppContext.BaseDirectory, "purgesettings.json");
+
+    private static string InAppTracePath =>
+        Path.Combine(AppContext.BaseDirectory, "inapptrace.json");
+
+    private static (bool enabled, string level) LoadInAppTraceSettings()
+    {
+        try
+        {
+            if (System.IO.File.Exists(InAppTracePath))
+            {
+                var d = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                    System.IO.File.ReadAllText(InAppTracePath));
+                var en = d?.GetValueOrDefault("enabled", new JsonElement(false)).GetBoolean() ?? false;
+                var lv = d?.GetValueOrDefault("level", new JsonElement("info")).GetString() ?? "info";
+                return (en, lv);
+            }
+        }
+        catch { }
+        return (false, "info");
+    }
 
     private static string AirSceneAlertsPath =>
         Path.Combine(AppContext.BaseDirectory, "airscenealerts.json");
@@ -58,13 +81,16 @@ public class SettingsController : Controller
     public async Task<IActionResult> Index()
     {
         var (maxDays, maxCount) = LoadPurgeSettings();
+        var (traceEnabled, traceLevel) = LoadInAppTraceSettings();
         return View(new SettingsViewModel
         {
             Highways           = await _db.Highways.AsNoTracking().OrderBy(h => h.Name).ToListAsync(),
             TomTomApiKey       = _cfg["TomTomApiKey"] ?? "",
             PurgeMaxDays       = maxDays,
             PurgeMaxCount      = maxCount,
-            AirSceneAlertsJson = LoadAirSceneAlertsJson()
+            AirSceneAlertsJson = LoadAirSceneAlertsJson(),
+            InAppTraceEnabled  = traceEnabled,
+            InAppTraceLevel    = traceLevel
         });
     }
 
@@ -96,6 +122,32 @@ public class SettingsController : Controller
         System.IO.File.WriteAllText(AirSceneAlertsPath, json);
         TempData["AlertSaved"] = "true";
         return RedirectToAction(nameof(Index));
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public IActionResult SaveInAppTrace(bool enabled, string level)
+    {
+        level = level is "info" or "warning" or "error" ? level : "info";
+        var json = JsonSerializer.Serialize(new { enabled, level },
+            new JsonSerializerOptions { WriteIndented = true });
+        System.IO.File.WriteAllText(InAppTracePath, json);
+
+        // Apply immediately to the running service
+        _trace.Enabled = enabled;
+        _trace.Level    = level;
+        if (!enabled) _trace.Clear();
+
+        _logger.LogInformation("Settings: In-App Trace {State} — level={Level}", enabled ? "enabled" : "disabled", level);
+        TempData["TraceSaved"] = "true";
+        return RedirectToAction(nameof(Index));
+    }
+
+    [SkipSessionAuth]
+    [HttpGet("Settings/TraceLatest")]
+    public IActionResult TraceLatest(int count = 2)
+    {
+        var lines = _trace.GetRecent(count);
+        return Ok(new { enabled = _trace.Enabled, level = _trace.Level, lines });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
