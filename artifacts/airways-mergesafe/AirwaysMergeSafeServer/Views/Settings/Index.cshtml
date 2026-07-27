@@ -225,6 +225,51 @@
     </div>
 </div>
 
+
+<div class="mss-card mb-4">
+    <div class="mss-card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-terminal me-1"></i> In-App Trace</span>
+        @if (TempData["TraceSaved"] != null)
+        { <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Saved</span> }
+    </div>
+    <div class="mss-card-body">
+        <p class="text-muted small mb-3">
+            Enable a floating trace panel at the bottom of every page that shows the last
+            trace lines. Useful when the app is reading data but can't continue to load
+            a view or process functions.
+        </p>
+        <form method="post" asp-action="SaveInAppTrace" class="row g-3 align-items-end">
+            @Html.AntiForgeryToken()
+            <div class="col-sm-4">
+                <div class="form-check form-switch">
+                    <input type="checkbox" class="form-check-input" name="enabled" id="traceEnabled"
+                           value="true" @(Model.InAppTraceEnabled ? "checked" : "") />
+                    <label class="form-check-label small fw-semibold" for="traceEnabled">Enable In-App Trace</label>
+                    <div class="form-text text-muted" style="font-size:.68rem">
+                        Shows a floating panel with the last 2 trace lines at the bottom of every page.
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-4">
+                <label class="form-label small fw-semibold">Log Level</label>
+                <select name="level" class="form-select form-select-sm" id="traceLevel">
+                    <option value="info"     selected="@(Model.InAppTraceLevel == "info")">Info — all trace lines</option>
+                    <option value="warning"  selected="@(Model.InAppTraceLevel == "warning")">Warning — warnings & errors</option>
+                    <option value="error"    selected="@(Model.InAppTraceLevel == "error")">Error — errors only</option>
+                </select>
+                <div class="form-text text-muted" style="font-size:.68rem">
+                    Filter the trace panel to only show lines at or above this severity.
+                </div>
+            </div>
+            <div class="col-sm-4 d-flex align-items-end">
+                <button type="submit" class="btn btn-primary btn-sm">
+                    <i class="bi bi-save me-1"></i>Save Trace Settings
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <div class="mss-card">
     <div class="mss-card-header"><i class="bi bi-sign-intersection me-1"></i> Highways</div>
     <div class="table-responsive">
