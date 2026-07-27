@@ -412,6 +412,7 @@ var _hwyIsEW  = true;
 // Array of {lat, lon} for ALL zones on the current highway — used to draw
 // a multi-segment polyline that follows the actual road curvature.
 var _hwyPath  = [];
+var _bridgeDirty = true;
 var _bridgeDirty = true;  // forces full bridge re-projection on next frame
 
 function _isEWHighway(hwId) {
@@ -568,6 +569,7 @@ function _drawHighwayOverlay() {
     if (!_hwyPath.length) return;
     var cw = _oc.width, ch = _oc.height;
     if (cw < 2 || ch < 2) return;
+    if (_bridgeDirty && _map) { _map.invalidateSize(); _bridgeDirty = false; }
     // If bridge is dirty, force map re-projection
     if (_bridgeDirty && _map) {
         _map.invalidateSize();
@@ -1015,6 +1017,7 @@ function _updateVehiclePositions() {
 }
 
 var _animFrame = null;
+var _renderErrors = 0;
 function _renderLoop() {
     _animFrame = requestAnimationFrame(_renderLoop);
     try {
@@ -1031,8 +1034,8 @@ function _renderLoop() {
             _drawVehicles();
         }
     } catch(e) {
-        // Don't let a projection error kill the render loop
-        console.warn('Render loop error:', e);
+        _renderErrors++;
+        if (_renderErrors <= 5) console.warn('[T3D] Render error #' + _renderErrors + ':', e);
     }
 }
 
@@ -1457,7 +1460,8 @@ function _clampToBounds(lat, lon) {
 }
 
 function loadEvents(events) {
-    if (!events || !events.length) return;
+    if (!events || !events.length) { console.log('[T3D] loadEvents: none'); return; }
+    console.log('[T3D] loadEvents:', events.length);
     var now = Date.now();
     events.forEach(function(ev) {
         // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
@@ -1606,15 +1610,16 @@ function _updateStatsBar() {
 var _serverBounds = null;
 
 async function refreshScene() {
-    // Allow refresh even during sim — the server filters by highway/zone
     try {
         var params = 'highwayId=' + encodeURIComponent(HW);
         if (selectedZoneId)   params += '&zoneId='   + encodeURIComponent(selectedZoneId);
         if (selectedServerId) params += '&serverId=' + encodeURIComponent(selectedServerId);
         params += '&mode=ground';
+        console.log('[T3D] refreshScene:', params);
         var r = await fetch('/Traffic3D/GetAnimationData?' + params);
-        if (!r.ok) return;
+        if (!r.ok) { console.warn('[T3D] refreshScene HTTP', r.status); return; }
         var data = await r.json();
+        console.log('[T3D] refreshScene: zones=' + ((data.highwayCoords||[]).length) + ' vehicles=' + ((data.vehicles||[]).length));
         // Update highway path from server-provided zone coordinates
         if (data.highwayCoords && data.highwayCoords.length > 0) {
             _hwyPath = data.highwayCoords.map(function(z) {
@@ -1632,6 +1637,9 @@ async function refreshScene() {
             if (typeof roadGroup3 !== 'undefined') {
                 roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
             }
+        } else if (data.isEW !== undefined) {
+            _hwyIsEW = data.isEW;
+            if (typeof roadGroup3 !== 'undefined') roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
         }
         // Store bounds from server
         if (data.bounds) {
@@ -1647,7 +1655,19 @@ async function refreshScene() {
         _bridgeDirty = true;
         // Ensure map updates tile layout
         if (_map) _map.invalidateSize();
-    } catch(e) { console.warn('Scene refresh error:', e); }
+        _bridgeDirty = true;
+        if (_map) _map.invalidateSize();
+    } catch(e) { console.warn('[T3D] Scene refresh error:', e); }
+}
+
+function _validateSelectionState() {
+    var issues = [];
+    var hwSel = document.getElementById('hwSel');
+    if (hwSel && hwSel.value && HW && hwSel.value !== HW) issues.push('HW mismatch');
+    if (!_serverBounds) issues.push('No server bounds');
+    if (!_hwyPath || _hwyPath.length === 0) issues.push('No highway path');
+    if (issues.length > 0) console.warn('[T3D Validation] ' + issues.join('; '));
+    return issues.length === 0;
 }
 
 // ── Validate that dropdown selection is reflected in animation state ──
@@ -1895,8 +1915,9 @@ window.addEventListener('resize', function() {
 
 // ── Boot sequence ─────────────────────────────────────────────────────
 (async function boot() {
-    // 1. Init Leaflet map centred on zone GPS
+    console.log('[T3D] Boot: HW=' + HW + ' zones=' + T3D_ZONES.length);
     _initMap();
+    console.log('[T3D] Boot: map ready=' + _mapReady);
     // Set highway coords from the initial selected zone (not just map centre)
     var _bootZone = T3D_ZONES.find(function(z){ return z.lat && z.lon; });
     if (_bootZone) {
@@ -1924,8 +1945,11 @@ window.addEventListener('resize', function() {
 
     // 5. Initial server-side data fetch (skipped if sim is running)
     if (!simRunning) {
+        console.log('[T3D] Boot: fetching initial data');
         await refreshScene();
+        console.log('[T3D] Boot: vehicles=' + vehicleData.size);
     }
+    console.log('[T3D] Boot complete: vehicles=' + vehicleData.size);
 })();
 
 // ── Slow poll: 30s, live mode only ───────────────────────────────────
