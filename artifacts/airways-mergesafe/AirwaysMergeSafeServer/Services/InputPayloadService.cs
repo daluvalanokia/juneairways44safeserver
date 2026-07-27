@@ -49,6 +49,24 @@ public class InputPayloadService
         { "air_vertiport", new[] { "Wisk" } },
     };
 
+    /// <summary>
+    /// Returns a direction in degrees aligned with the highway axis.
+    /// E-W highways (I-20, I-10, I-30, I-40, I-80): 90° (east) or 270° (west), chosen randomly.
+    /// N-S highways (I-35, I-45, I-25): 0° (north) or 180° (south), chosen randomly.
+    /// Unknown highways default to E-W.
+    /// </summary>
+    private static int HighwayDirectionDeg(string? highwayId, Random rng)
+    {
+        var hw = (highwayId ?? "").ToUpperInvariant();
+        bool isNS = hw.Contains("I35") || hw.Contains("I-35") ||
+                    hw.Contains("I45") || hw.Contains("I-45") ||
+                    hw.Contains("I25") || hw.Contains("I-25");
+        if (isNS)
+            return rng.Next(2) == 0 ? 0 : 180;    // north or south
+        else
+            return rng.Next(2) == 0 ? 90 : 270;   // east or west (default for E-W + unknown)
+    }
+
     public string Generate(
         string               sourceType,
         IEnumerable<string>  enabledFields,
@@ -104,13 +122,15 @@ public class InputPayloadService
                 "altitude_ft"     => Math.Round(altitudeM * 3.28084, 1),
                 "vehicle_type"    => vehicleType,
                 "vehicle_make"    => vehicleMake,
-                "direction"       => rng.Next(0, 360),
+                // Highway-aware direction: E-W highways travel east(90°) or west(270°)
+                //                          N-S highways travel north(0°) or south(180°)
+                "direction"       => HighwayDirectionDeg(highwayId, rng),
                 "lane"            => isAirVehicle ? rng.Next(10, 20) : rng.Next(1, 5),
                 "event_type"      => new[] { "detection","merge","speeding","conflict","fault" }[rng.Next(5)],
                 "zone_id"         => !string.IsNullOrEmpty(zoneId) ? zoneId : $"ZONE-{rng.Next(1, 10):D3}",
                 "highway_id"      => !string.IsNullOrEmpty(highwayId) ? highwayId : "I20-TX",
                 "signal_strength" => sourceType == "telecom" ? rng.Next(-80, -30) : rng.Next(-95, -40),
-                "heading"         => rng.Next(0, 360),
+                "heading"         => HighwayDirectionDeg(highwayId, rng),
                 "satellite_count" => rng.Next(4, 16),
                 "hdop"            => Math.Round(rng.NextDouble() * 2.5, 2),
                 "rsrp"            => rng.Next(-120, -70),
@@ -223,7 +243,7 @@ public class InputPayloadService
                 "longitude"            => lon,
                 "altitude_m"           => altM,
                 "speed_mph"            => Math.Round(speedMph, 1),
-                "heading"              => rng.Next(0, 360),
+                "heading"              => HighwayDirectionDeg(highwayId, rng),
                 "vehicle_type"         => vehicleType,
                 "vehicle_make"         => vehicleMake,
                 "flight_phase"         => flightPhase,
