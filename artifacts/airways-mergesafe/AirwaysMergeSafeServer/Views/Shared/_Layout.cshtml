@@ -123,5 +123,156 @@
 <script src="~/js/site.js"></script>
 <script>startLiveClock('liveClock');</script>
 @await RenderSectionAsync("Scripts", required: false)
+
+<!-- ══ In-App Trace Floating Panel ═════════════════════════════════ -->
+<div id="inAppTracePanel" class="mss-trace-panel" style="display:none">
+    <div class="mss-trace-header" onclick="toggleTracePanel()">
+        <span class="mss-trace-title">
+            <i class="bi bi-terminal-fill me-1"></i>In-App Trace
+            <span id="mssTraceLevel" class="badge bg-secondary ms-1" style="font-size:.6rem">info</span>
+        </span>
+        <span class="mss-trace-toggle">
+            <i class="bi bi-chevron-up" id="traceChevron"></i>
+        </span>
+    </div>
+    <div id="mssTraceBody" class="mss-trace-body" style="display:none">
+        <div id="mssTraceLines">
+            <div class="mss-trace-line mss-trace-muted">No trace data yet.</div>
+        </div>
+        <button class="btn btn-outline-secondary btn-sm mt-1" onclick="clearTracePanel()">
+            <i class="bi bi-eraser me-1"></i>Clear
+        </button>
+    </div>
+    <div id="mssTraceTicker" class="mss-trace-ticker"></div>
+</div>
+
+<style>
+.mss-trace-panel {
+    position: fixed; bottom: 0; right: 0; z-index: 9999;
+    width: 520px; max-width: 100vw;
+    background: rgba(17, 24, 39, 0.97);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 8px 0 0 0;
+    box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 11px;
+}
+.mss-trace-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 12px; cursor: pointer;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.mss-trace-title { color: #93c5fd; font-weight: 600; font-size: 12px; }
+.mss-trace-toggle { color: rgba(255,255,255,0.5); }
+.mss-trace-body {
+    padding: 6px 12px; max-height: 200px; overflow-y: auto;
+}
+.mss-trace-line {
+    padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: #cbd5e1;
+}
+.mss-trace-line .mss-ts { color: #64748b; }
+.mss-trace-line .mss-lvl-info { color: #60a5fa; }
+.mss-trace-line .mss-lvl-warning { color: #fbbf24; }
+.mss-trace-line .mss-lvl-error { color: #f87171; font-weight: 600; }
+.mss-trace-line .mss-msg { color: #e2e8f0; }
+.mss-trace-muted { color: #64748b; font-style: italic; }
+.mss-trace-ticker {
+    padding: 4px 12px; min-height: 28px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+.mss-trace-ticker .mss-trace-line {
+    font-size: 10.5px; line-height: 1.3;
+}
+</style>
+
+<script>
+(function() {
+    var _traceEnabled = false;
+    var _traceLevel = 'info';
+    var _traceExpanded = false;
+    var _pollHandle = null;
+
+    function pollTrace() {
+        fetch('/Settings/TraceLatest?count=2')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d || !d.enabled) {
+                    document.getElementById('inAppTracePanel').style.display = 'none';
+                    if (_pollHandle) { clearInterval(_pollHandle); _pollHandle = null; }
+                    return;
+                }
+                document.getElementById('inAppTracePanel').style.display = '';
+                document.getElementById('mssTraceLevel').textContent = d.level || 'info';
+
+                // Render the ticker (last 2 lines, always visible)
+                var ticker = document.getElementById('mssTraceTicker');
+                var lines = d.lines || [];
+                if (lines.length === 0) {
+                    ticker.innerHTML = '<div class="mss-trace-line mss-trace-muted">Waiting for trace data…</div>';
+                } else {
+                    ticker.innerHTML = lines.map(function(l) {
+                        var cls = l.Level === 'ERROR' ? 'mss-lvl-error' :
+                                  l.Level === 'WARN'  ? 'mss-lvl-warning' : 'mss-lvl-info';
+                        return '<div class="mss-trace-line">' +
+                            '<span class="mss-ts">' + l.Timestamp + '</span> ' +
+                            '<span class="' + cls + '">[' + l.Level + ']</span> ' +
+                            '<span class="mss-msg">' + escapeHtml(l.Message) + '</span>' +
+                        '</div>';
+                    }).join('');
+                }
+
+                // Also render the expanded body if open
+                if (_traceExpanded) {
+                    fetch('/Settings/TraceLatest?count=50')
+                        .then(function(r) { return r.json(); })
+                        .then(function(d2) {
+                            var body = document.getElementById('mssTraceLines');
+                            var allLines = d2.lines || [];
+                            body.innerHTML = allLines.length === 0
+                                ? '<div class="mss-trace-line mss-trace-muted">No trace data yet.</div>'
+                                : allLines.map(function(l) {
+                                    var cls = l.Level === 'ERROR' ? 'mss-lvl-error' :
+                                              l.Level === 'WARN'  ? 'mss-lvl-warning' : 'mss-lvl-info';
+                                    return '<div class="mss-trace-line">' +
+                                        '<span class="mss-ts">' + l.Timestamp + '</span> ' +
+                                        '<span class="' + cls + '">[' + l.Level + ']</span> ' +
+                                        '<span class="mss-msg">' + escapeHtml(l.Message) + '</span>' +
+                                    '</div>';
+                                }).join('');
+                        }).catch(function(){});
+                }
+            })
+            .catch(function() {
+                // Network error — don't spam console
+            });
+    }
+
+    function escapeHtml(s) {
+        if (!s) return '';
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // Start polling on page load
+    pollTrace();
+    _pollHandle = setInterval(pollTrace, 2000);
+
+    // Expose toggle for the onclick handler
+    window.toggleTracePanel = function() {
+        _traceExpanded = !_traceExpanded;
+        var body = document.getElementById('mssTraceBody');
+        var chev = document.getElementById('traceChevron');
+        body.style.display = _traceExpanded ? '' : 'none';
+        chev.className = _traceExpanded ? 'bi bi-chevron-down' : 'bi bi-chevron-up';
+    };
+
+    window.clearTracePanel = function() {
+        fetch('/Settings/TraceLatest?count=0').then(function() {
+            document.getElementById('mssTraceLines').innerHTML =
+                '<div class="mss-trace-line mss-trace-muted">Cleared.</div>';
+        });
+    };
+})();
+</script>
 </body>
 </html>
