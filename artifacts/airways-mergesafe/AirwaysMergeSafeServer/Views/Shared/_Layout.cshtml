@@ -173,6 +173,7 @@
 }
 .mss-trace-line .mss-ts { color: #64748b; margin-right: 4px; }
 .mss-trace-line .mss-lvl { margin-right: 4px; }
+.mss-trace-line .mss-mod { color: #93c5fd; font-weight: 500; }
 .mss-trace-line .mss-msg {
     color: #e2e8f0; display: block;
     padding-left: 8px; word-break: break-word;
@@ -219,9 +220,11 @@
                     ticker.innerHTML = lines.map(function(l) {
                         var cls = l.level === 'ERROR' ? 'mss-lvl-error' :
                                   l.level === 'WARN'  ? 'mss-lvl-warning' : 'mss-lvl-info';
+                        var mod = l.module ? '<span class="mss-mod">' + escapeHtml(l.module) + '.' + escapeHtml(l.method || '') + '</span> ' : '';
                         return '<div class="mss-trace-line">' +
                             '<div><span class="mss-ts">' + l.timestamp + '</span>' +
-                            '<span class="' + cls + ' mss-lvl">[' + l.level + ']</span></div>' +
+                            '<span class="' + cls + ' mss-lvl">[' + l.level + ']</span> ' +
+                            mod + '</div>' +
                             '<span class="mss-msg">' + escapeHtml(l.message) + '</span>' +
                         '</div>';
                     }).join('');
@@ -239,9 +242,11 @@
                                 : allLines.map(function(l) {
                                     var cls = l.level === 'ERROR' ? 'mss-lvl-error' :
                                               l.level === 'WARN'  ? 'mss-lvl-warning' : 'mss-lvl-info';
+                                    var mod = l.module ? '<span class="mss-mod">' + escapeHtml(l.module) + '.' + escapeHtml(l.method || '') + '</span> ' : '';
                                     return '<div class="mss-trace-line">' +
                                         '<div><span class="mss-ts">' + l.timestamp + '</span>' +
-                                        '<span class="' + cls + ' mss-lvl">[' + l.level + ']</span></div>' +
+                                        '<span class="' + cls + ' mss-lvl">[' + l.level + ']</span> ' +
+                                        mod + '</div>' +
                                         '<span class="mss-msg">' + escapeHtml(l.message) + '</span>' +
                                     '</div>';
                                 }).join('');
