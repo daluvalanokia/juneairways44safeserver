@@ -110,9 +110,13 @@ public class Traffic3DController : Controller
     public async Task<IActionResult> GetAnimationData(
         string? highwayId, string? zoneId, string? serverId, string? mode = "ground")
     {
+        TraceLogger.Enter("Traffic3D", nameof(GetAnimationData), $"hw={highwayId} z={zoneId} s={serverId}");
         highwayId ??= HttpContext.Session.GetString("HighwayId") ?? "";
         if (string.IsNullOrEmpty(highwayId))
-            return Json(new { highwayCoords = Array.Empty<object>(), vehicles = Array.Empty<object>(), bounds = (object?)null, isEW = true });
+        {
+            TraceLogger.Info("Traffic3D", nameof(GetAnimationData), "No highwayId");
+            return Json(new { highwayCoords = Array.Empty<object>(), vehicles = Array.Empty<object>(), bounds = (object?)null, isEW = true, servers = Array.Empty<object>() });
+        }
 
         // 1. Fetch ALL zones for this highway (for bridge path)
         var zones = await _db.MergeZones.AsNoTracking()
@@ -130,7 +134,11 @@ public class Traffic3DController : Controller
             .ToListAsync();
 
         if (zones.Count == 0)
-            return Json(new { highwayCoords = Array.Empty<object>(), vehicles = Array.Empty<object>(), bounds = (object?)null, isEW = true });
+        {
+            TraceLogger.Info("Traffic3D", nameof(GetAnimationData), $"No zones for hw={highwayId}");
+            return Json(new { highwayCoords = Array.Empty<object>(), vehicles = Array.Empty<object>(), bounds = (object?)null, isEW = true, servers = Array.Empty<object>() });
+        }
+        TraceLogger.Info("Traffic3D", nameof(GetAnimationData), $"Highway={highwayId} zones={zones.Count} isEW={isEW}");
 
         // 2. Determine if highway is E-W or N-S
         bool isEW = !highwayId.Contains("I35") && !highwayId.Contains("I45") && !highwayId.Contains("I25");
