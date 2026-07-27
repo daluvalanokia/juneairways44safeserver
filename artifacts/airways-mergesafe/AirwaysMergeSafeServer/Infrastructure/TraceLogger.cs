@@ -89,8 +89,8 @@ public static class TraceLogger
             var line = $"[{DateTime.UtcNow:HH:mm:ss.fff}] [{level}] [{module}.{method}] {message}";
             // File write only if writer is available
             if (_writer != null) lock (_lock) { _writer.WriteLine(line); }
-            // ALWAYS push to in-app trace — works even without file logging
-            try { OnInAppTrace?.Invoke(level, line); } catch { }
+            // ALWAYS push to in-app trace — pass module+method+clean message
+            try { OnInAppTrace?.Invoke(level, module, method, message); } catch { }
         }
         catch { /* never throw from the trace logger */ }
     }
