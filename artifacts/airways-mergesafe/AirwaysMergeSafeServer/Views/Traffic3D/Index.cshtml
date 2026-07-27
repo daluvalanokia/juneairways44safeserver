@@ -550,8 +550,27 @@ function _drawVehicles() {
         _octx.lineWidth = 1.5;
         _octx.stroke();
 
-        // Speed indicator ring (arc proportional to speed)
+        // Heading arrow — shows direction of travel
+        var dir = vd.direction || 0;
         var spd = vd.speedMph || 0;
+        if (dir && spd > 0) {
+            var arrowRad = (dir - 90) * Math.PI / 180;
+            var arrowLen = dotR + 8;
+            var ax = sx + Math.cos(arrowRad) * arrowLen;
+            var ay = sy + Math.sin(arrowRad) * arrowLen;
+            _octx.beginPath();
+            _octx.moveTo(sx, sy);
+            _octx.lineTo(ax, ay);
+            _octx.strokeStyle = 'rgba(255,255,255,0.85)';
+            _octx.lineWidth = 2.5;
+            _octx.stroke();
+            _octx.beginPath();
+            _octx.arc(ax, ay, 3, 0, Math.PI * 2);
+            _octx.fillStyle = 'rgba(255,255,255,0.85)';
+            _octx.fill();
+        }
+
+        // Speed indicator ring (arc proportional to speed)
         var arc = (Math.min(spd, 120) / 120) * Math.PI * 2;
         _octx.beginPath();
         _octx.arc(sx, sy, dotR + 4, -Math.PI / 2, -Math.PI / 2 + arc);
@@ -616,6 +635,46 @@ function _drawVehicles() {
 }
 
 // ── Animation loop: runs at 60fps, redraws overlay on every frame ─────
+
+// ── Per-frame vehicle movement ──────────────────────────────────────
+// Moves each vehicle along its heading at its speed (mph → deg/s).
+// 1 mph ≈ 0.447 m/s; 1° lat ≈ 111,000 m; 1° lon at 32.7°N ≈ 93,100 m.
+var _lastMoveTime = Date.now();
+function _updateVehiclePositions() {
+    var now = Date.now();
+    var dt = (now - _lastMoveTime) / 1000;
+    if (dt > 0.5) dt = 0.5;
+    _lastMoveTime = now;
+    if (dt <= 0) return;
+
+    var refLat = _mapCtrLat || 32.78;
+    var latPerM = 1 / 111000;
+    var lonPerM = 1 / (111000 * Math.cos(refLat * Math.PI / 180));
+
+    vehicleData.forEach(function(vd, vid) {
+        var spd = vd.speedMph || 0;
+        if (spd < 1) return;
+        var dir = vd.direction || 0;
+        var rad = dir * Math.PI / 180;
+        var ms = spd * 0.44704;
+        vd.lat += ms * Math.cos(rad) * dt * latPerM;
+        vd.lon += ms * Math.sin(rad) * dt * lonPerM;
+
+        // Keep vehicles within the highway corridor
+        if (vd.zoneLat && vd.zoneLon) {
+            var maxOffset = 0.005;
+            var dLat = vd.lat - vd.zoneLat;
+            var dLon = vd.lon - vd.zoneLon;
+            var dist = Math.sqrt(dLat * dLat + dLon * dLon);
+            if (dist > maxOffset) {
+                var scale = maxOffset / dist;
+                vd.lat = vd.zoneLat + dLat * scale;
+                vd.lon = vd.zoneLon + dLon * scale;
+            }
+        }
+    });
+}
+
 var _animFrame = null;
 function _renderLoop() {
     _animFrame = requestAnimationFrame(_renderLoop);
@@ -628,6 +687,7 @@ function _renderLoop() {
         }
         if (_octx && _oc) {
             _octx.clearRect(0, 0, _oc.width, _oc.height);
+            _updateVehiclePositions();
             _drawHighwayOverlay();
             _drawVehicles();
         }
@@ -708,8 +768,10 @@ function _sync3DMeshes() {
             var p = norm(vd.lat || midLat, vd.lon || midLon);
             var lane = (Math.random() - 0.5) * 20;
             mesh.position.set(p.x, 0.7, lane);
-            mesh.userData = { vid: vid, vx: (vd.speedMph || 30) * 0.015 * (Math.random() > 0.5 ? 1 : -1),
-                              laneZ: lane, baseY: 0.7, phase: Math.random() * Math.PI * 2 };
+            var spd3 = vd.speedMph || 30;
+            var dir3v = vd.direction || 0;
+            var vx3 = spd3 * 0.015 * (Math.cos(dir3v * Math.PI / 180) >= 0 ? 1 : -1);
+            mesh.userData = { vid: vid, vx: vx3, laneZ: lane, baseY: 0.7, phase: Math.random() * Math.PI * 2 };
             scene3.add(mesh);
             vehicleMeshes3.push(mesh);
         }
@@ -891,7 +953,13 @@ function loadEvents(events) {
             }
         }
 
-        vehicleData.set(vid, { ev: ev, vc: vc, lat: lat, lon: lon, speedMph: spd, make: make, lastSeen: now });
+        var dir = parseFloat(ev.direction || ev.Direction || ev.heading || ev.Heading || 0);
+        if (isNaN(dir)) dir = 0;
+        vehicleData.set(vid, { ev: ev, vc: vc, lat: lat, lon: lon, speedMph: spd, make: make,
+                               direction: dir,
+                               zoneLat: zone ? zone.lat : null,
+                               zoneLon: zone ? zone.lon : null,
+                               lastSeen: now });
     });
     // Prune stale (>90s old)
     vehicleData.forEach(function(vd, vid) {
