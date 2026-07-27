@@ -1177,7 +1177,11 @@ async function t3dHighwayChanged(newHighwayId) {
     var zsel = document.getElementById('t3dZoneSel');
     var ssel = document.getElementById('t3dServerSel');
     if (zsel) zsel.value = '';
-    if (ssel) ssel.value = '';
+    if (ssel) {
+        ssel.value = '';
+        // Reset all server options visible
+        ssel.querySelectorAll('option').forEach(function(o) { o.style.display = ''; });
+    }
     // Fetch new zones for this highway from server
     try {
         var r = await fetch('/Traffic3D/GetAnimationData?highwayId=' + encodeURIComponent(newHighwayId) + '&mode=ground');
@@ -1212,6 +1216,17 @@ async function t3dHighwayChanged(newHighwayId) {
         }
         // Store bounds
         if (data.bounds) _serverBounds = data.bounds;
+        // Rebuild server dropdown from server data
+        if (data.servers && ssel) {
+            ssel.innerHTML = '<option value="">(All Servers)</option>';
+            data.servers.forEach(function(s) {
+                var opt = document.createElement('option');
+                opt.value = s.serverId;
+                opt.textContent = s.serverName || s.serverId;
+                opt.dataset.zone = s.zoneId;
+                ssel.appendChild(opt);
+            });
+        }
         // Load vehicles
         _clearVehicles();
         if (data.vehicles && data.vehicles.length > 0) {
@@ -1222,35 +1237,73 @@ async function t3dHighwayChanged(newHighwayId) {
         // Invalidate map size to ensure tiles reload
         if (_map) setTimeout(function() { if (_map) _map.invalidateSize(true); }, 100);
     } catch(e) { console.warn('Highway change error:', e); }
+    _validateSelectionState();
 }
 
-function t3dZoneChanged() {
+async function t3dZoneChanged() {
     selectedZoneId = document.getElementById('t3dZoneSel').value;
     selectedServerId = '';
     document.getElementById('t3dServerSel').value = '';
     var srvSel = document.getElementById('t3dServerSel');
+    // Filter server dropdown to show only servers for the selected zone
     srvSel.querySelectorAll('option').forEach(function(o) {
         o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
     });
+    // Pan map to selected zone center
     var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-    if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); }
-    _clearVehicles(); _bridgeDirty = true;
-    refreshScene().then(function() { _bridgeDirty = true; });
+    if (z && z.lat && z.lon) {
+        midLat = z.lat; midLon = z.lon;
+        _panMapTo(z.lat, z.lon);
+    }
+    // Clear vehicles immediately so old ones don't linger
+    _clearVehicles();
+    _bridgeDirty = true;
+    // Fetch validated data from server
+    await refreshScene();
+    // After server data arrives, re-center map to ensure correct position
+    if (z && z.lat && z.lon) {
+        _panMapTo(z.lat, z.lon);
+    }
+    // Force bridge to re-project with new bounds
+    _bridgeDirty = true;
+    if (_map) _map.invalidateSize();
+    _validateSelectionState();
 }
 
-function t3dServerChanged() {
+async function t3dServerChanged() {
     selectedServerId = document.getElementById('t3dServerSel').value;
     var opt = document.querySelector('#t3dServerSel option[value="' + selectedServerId + '"]');
+    // Sync zone dropdown with the server's zone
     if (opt && opt.dataset.zone) {
         document.getElementById('t3dZoneSel').value = opt.dataset.zone;
         selectedZoneId = opt.dataset.zone;
+        // Filter server dropdown to show only servers for this zone
+        var srvSel = document.getElementById('t3dServerSel');
+        if (srvSel) {
+            srvSel.querySelectorAll('option').forEach(function(o) {
+                o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+            });
+        }
     }
-    if (selectedZoneId) {
-        var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-        if (z && z.lat && z.lon) { midLat = z.lat; midLon = z.lon; _panMapTo(z.lat, z.lon); }
+    // Pan map to the zone center
+    var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+    if (z && z.lat && z.lon) {
+        midLat = z.lat; midLon = z.lon;
+        _panMapTo(z.lat, z.lon);
     }
-    _clearVehicles(); _bridgeDirty = true;
-    refreshScene().then(function() { _bridgeDirty = true; });
+    // Clear vehicles immediately so old ones don't linger
+    _clearVehicles();
+    _bridgeDirty = true;
+    // Fetch validated data from server
+    await refreshScene();
+    // After server data arrives, re-center map
+    if (z && z.lat && z.lon) {
+        _panMapTo(z.lat, z.lon);
+    }
+    // Force bridge to re-project with new bounds
+    _bridgeDirty = true;
+    if (_map) _map.invalidateSize();
+    _validateSelectionState();
 }
 
 // ── Vehicle data management ───────────────────────────────────────────
@@ -1505,6 +1558,12 @@ async function refreshScene() {
             if (typeof roadGroup3 !== 'undefined') {
                 roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
             }
+        } else if (data.isEW !== undefined) {
+            // No zones but server told us the highway orientation
+            _hwyIsEW = data.isEW;
+            if (typeof roadGroup3 !== 'undefined') {
+                roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
+            }
         }
         // Store bounds from server
         if (data.bounds) {
@@ -1521,6 +1580,39 @@ async function refreshScene() {
         // Ensure map updates tile layout
         if (_map) _map.invalidateSize();
     } catch(e) { console.warn('Scene refresh error:', e); }
+}
+
+// ── Validate that dropdown selection is reflected in animation state ──
+// Called after any dropdown change to verify the scene matches the selection.
+function _validateSelectionState() {
+    var issues = [];
+    // Check HW matches dropdown
+    var hwSel = document.getElementById('hwSel');
+    if (hwSel && hwSel.value && HW && hwSel.value !== HW) {
+        issues.push('HW mismatch: dropdown=' + hwSel.value + ' state=' + HW);
+    }
+    // Check zone matches dropdown
+    var zSel = document.getElementById('t3dZoneSel');
+    if (zSel && zSel.value !== selectedZoneId) {
+        issues.push('Zone mismatch: dropdown=' + zSel.value + ' state=' + selectedZoneId);
+    }
+    // Check server matches dropdown
+    var sSel = document.getElementById('t3dServerSel');
+    if (sSel && sSel.value !== selectedServerId) {
+        issues.push('Server mismatch: dropdown=' + sSel.value + ' state=' + selectedServerId);
+    }
+    // Check bounds exist
+    if (!_serverBounds) {
+        issues.push('No server bounds set');
+    }
+    // Check highway path exists
+    if (!_hwyPath || _hwyPath.length === 0) {
+        issues.push('No highway path for bridge');
+    }
+    if (issues.length > 0) {
+        console.warn('[T3D Validation] ' + issues.join('; '));
+    }
+    return issues.length === 0;
 }
 
 // Override _getSelectedBounds to use server-provided bounds
