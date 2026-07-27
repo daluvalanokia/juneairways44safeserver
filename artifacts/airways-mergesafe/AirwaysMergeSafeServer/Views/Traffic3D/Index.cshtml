@@ -823,6 +823,33 @@ function t3dServerChanged() {
 // ── Vehicle data management ───────────────────────────────────────────
 function _clearVehicles() { vehicleData.clear(); }
 
+// ── Zone GPS lookup helper ────────────────────────────────────────
+// Returns a point snapped onto the highway corridor of the given zone:
+//   EW highways: tight lat spread (±0.002°/220m), wide lon spread (±0.015°/1.5km)
+//   NS highways: wide lat spread (±0.015°/1.5km), tight lon spread (±0.002°/220m)
+function _snapToZone(zoneId) {
+    var z = T3D_ZONES.find(function(zz) { return zz.zoneId === zoneId; });
+    if (!z || !z.lat || !z.lon) return null;
+    var hw = (z.highwayId || '').toUpperCase();
+    var isNS = hw.indexOf('I35') >= 0 || hw.indexOf('I-35') >= 0 ||
+               hw.indexOf('I45') >= 0 || hw.indexOf('I-45') >= 0 ||
+               hw.indexOf('I25') >= 0 || hw.indexOf('I-25') >= 0;
+    var latJitter, lonJitter;
+    if (isNS) {
+        latJitter = (Math.random() - 0.5) * 0.030; // ±1.5km along highway (N-S)
+        lonJitter = (Math.random() - 0.5) * 0.004; // ±220m road width
+    } else {
+        latJitter = (Math.random() - 0.5) * 0.004; // ±220m road width
+        lonJitter = (Math.random() - 0.5) * 0.030; // ±1.5km along highway (E-W)
+    }
+    return { lat: z.lat + latJitter, lon: z.lon + lonJitter, zone: z };
+}
+
+// ── Distance in degrees between two GPS points ────────────────────
+function _gpsDist(lat1, lon1, lat2, lon2) {
+    return Math.sqrt((lat1 - lat2) * (lat1 - lat2) + (lon1 - lon2) * (lon1 - lon2));
+}
+
 function loadEvents(events) {
     if (!events || !events.length) return;
     var now = Date.now();
@@ -830,18 +857,40 @@ function loadEvents(events) {
         // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
         var vid = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '';
         if (!vid) return;
+        // Skip vehicles whose zone doesn't belong to any zone in the current view
+        var evZoneCheck = ev.zone_id || ev.zoneId || ev.ZoneId || '';
+        if (evZoneCheck && selectedZoneId && evZoneCheck !== selectedZoneId) return;
         var lat = parseFloat(ev.latitude  || ev.Latitude  || 0);
         var lon = parseFloat(ev.longitude || ev.Longitude || 0);
-        if (isNaN(lat) || isNaN(lon)) return;
         var spd  = parseFloat(ev.speed_mph || ev.speedMph || ev.SpeedMph || 0);
         var make = ev.vehicle_make || ev.vehicleMake || ev.VehicleMake || ev.make || '';
         var vc   = classifyVehicle(ev);
-        // Use real GPS coordinates — the map will pan to show them.
-        // Only fall back to zone centre if coordinates are 0,0 (unparsed).
-        if ((lat === 0 && lon === 0) || isNaN(lat) || isNaN(lon)) {
-            lat = _mapCtrLat + (Math.random() - 0.5) * 0.004;
-            lon = _mapCtrLon + (Math.random() - 0.5) * 0.004;
+
+        // Resolve the zone this vehicle belongs to
+        var evZoneId = ev.zone_id || ev.zoneId || ev.ZoneId || '';
+        var zone = T3D_ZONES.find(function(zz) { return zz.zoneId === evZoneId; });
+
+        // Validate GPS — snap to zone highway if missing or way out-of-range
+        var needsSnap = false;
+        if (!lat || !lon || isNaN(lat) || isNaN(lon) || (lat === 0 && lon === 0)) {
+            needsSnap = true;
+        } else if (zone && zone.lat && zone.lon) {
+            // If the GPS is more than 0.08° (~8km) from zone centre it's bogus — snap it
+            var dist = _gpsDist(lat, lon, zone.lat, zone.lon);
+            if (dist > 0.08) needsSnap = true;
         }
+
+        if (needsSnap) {
+            var snapped = zone ? _snapToZone(evZoneId) : null;
+            if (snapped) {
+                lat = snapped.lat; lon = snapped.lon;
+            } else {
+                // No zone — use current map centre with tiny jitter
+                lat = _mapCtrLat + (Math.random() - 0.5) * 0.008;
+                lon = _mapCtrLon + (Math.random() - 0.5) * 0.020;
+            }
+        }
+
         vehicleData.set(vid, { ev: ev, vc: vc, lat: lat, lon: lon, speedMph: spd, make: make, lastSeen: now });
     });
     // Prune stale (>90s old)
@@ -850,17 +899,19 @@ function loadEvents(events) {
     });
     _updateStatsBar();
     
-    // Auto-pan map to include the newest vehicle if it's off-screen
-    if (_map && _mapReady && events.length > 0) {
+    // Auto-pan: only during active simulation and only if the vehicle is
+    // more than 50% outside the visible bounds (avoid map drift on DB events)
+    if (simRunning && _map && _mapReady && events.length > 0) {
         var lastEv = events[events.length - 1];
         var lastLat = parseFloat(lastEv.latitude || lastEv.Latitude || 0);
         var lastLon = parseFloat(lastEv.longitude || lastEv.Longitude || 0);
         if (lastLat && lastLon) {
             var bounds = _map.getBounds();
             if (!bounds.contains([lastLat, lastLon])) {
+                // Only pan slightly — don't chase every vehicle aggressively
                 var curCtr = _map.getCenter();
-                var newLat = curCtr.lat + (lastLat - curCtr.lat) * 0.3;
-                var newLon = curCtr.lng + (lastLon - curCtr.lng) * 0.3;
+                var newLat = curCtr.lat + (lastLat - curCtr.lat) * 0.1;
+                var newLon = curCtr.lng + (lastLon - curCtr.lng) * 0.1;
                 _map.panTo([newLat, newLon], { animate: false });
                 _mapCtrLat = newLat; _mapCtrLon = newLon;
             }
