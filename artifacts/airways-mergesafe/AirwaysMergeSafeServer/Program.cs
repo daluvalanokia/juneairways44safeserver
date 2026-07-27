@@ -97,7 +97,31 @@ try
     // D6 / E5: Heartbeat monitor — auto-marks stale devices offline
     builder.Services.AddHostedService<HeartbeatMonitorService>();
 
-    var app = builder.Build();
+    // ── In-App Trace Service (singleton ring buffer for floating panel) ──
+builder.Services.AddSingleton<InAppTraceService>();
+
+// Wire the InAppTraceService into the static TraceLogger so every
+// trace line is also pushed to the in-app ring buffer for the panel.
+var _traceSvc = builder.Services.BuildServiceProvider().GetService<InAppTraceService>();
+if (_traceSvc != null)
+{
+    // Load saved settings from inapptrace.json
+    var tracePath = Path.Combine(AppContext.BaseDirectory, "inapptrace.json");
+    if (File.Exists(tracePath))
+    {
+        try
+        {
+            var tj = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
+                File.ReadAllText(tracePath));
+            _traceSvc.Enabled = tj?.GetValueOrDefault("enabled", new System.Text.Json.JsonElement(false)).GetBoolean() ?? false;
+            _traceSvc.Level   = tj?.GetValueOrDefault("level",   new System.Text.Json.JsonElement("info")).GetString() ?? "info";
+        }
+        catch { }
+    }
+    Infrastructure.TraceLogger.OnInAppTrace = (level, message) => _traceSvc.AddLine(level, message);
+}
+
+var app = builder.Build();
 
     // ── C5 / FIX: MigrateAsync for BOTH SQLite and PostgreSQL ────────────
     // ROOT CAUSE FIX (SqliteException: no such column FailedLoginAttempts):
