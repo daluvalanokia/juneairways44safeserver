@@ -424,6 +424,13 @@ function _setHighwayCoords(lat, lon, heading) {
         _hwyLat2 = lat + 0.03; _hwyLon2 = lon;
     }
     _hwyHeading = isEW ? 'EW' : 'NS';
+
+    // Rotate the 3D road group to align with the highway heading
+    // E-W: road stays along X axis (no rotation)
+    // N-S: road rotates 90° to align with Z axis
+    if (typeof roadGroup3 !== 'undefined') {
+        roadGroup3.rotation.y = isEW ? 0 : Math.PI / 2;
+    }
 }
 
 function _drawHighwayOverlay() {
@@ -724,22 +731,24 @@ scene3.add(new THREE.AmbientLight(0xffffff, 0.45));
 var dir3 = new THREE.DirectionalLight(0xffffff, 1.2);
 dir3.position.set(120, 200, 80); scene3.add(dir3);
 
-// Road for 3D view
+// Road for 3D view — parent group so we can rotate by highway heading
+var roadGroup3 = new THREE.Group();
+scene3.add(roadGroup3);
 var roadGeo3 = new THREE.PlaneGeometry(1400, 48);
 roadGeo3.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-scene3.add(new THREE.Mesh(roadGeo3, new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.9, transparent: true })));
+roadGroup3.add(new THREE.Mesh(roadGeo3, new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.9, transparent: true })));
 // Centre line
 var clGeo = new THREE.PlaneGeometry(1400, 1.5);
 clGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
 var clMesh = new THREE.Mesh(clGeo, new THREE.MeshPhongMaterial({ color: 0xfde047 }));
-clMesh.position.y = 0.02; scene3.add(clMesh);
+clMesh.position.y = 0.02; roadGroup3.add(clMesh);
 // Lane dashes
 for (var di = -13; di <= 13; di++) {
     var dg = new THREE.PlaneGeometry(14, 0.5);
     dg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
     var dm = new THREE.Mesh(dg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
-    dm.position.set(di * 40, 0.02, -10); scene3.add(dm.clone());
-    dm.position.z = 10; scene3.add(dm);
+    dm.position.set(di * 40, 0.02, -10); roadGroup3.add(dm.clone());
+    dm.position.z = 10; roadGroup3.add(dm);
 }
 
 // Cameras
@@ -781,8 +790,21 @@ function _sync3DMeshes() {
             mesh.position.set(p.x, 0.7, lane);
             var spd3 = vd.speedMph || 30;
             var dir3v = vd.direction || 0;
-            var vx3 = spd3 * 0.015 * (Math.cos(dir3v * Math.PI / 180) >= 0 ? 1 : -1);
-            mesh.userData = { vid: vid, vx: vx3, laneZ: lane, baseY: 0.7, phase: Math.random() * Math.PI * 2 };
+            var isNS = vd.isNSHwy || false;
+            var vx3, vz3, laneX;
+            if (isNS) {
+                vz3 = spd3 * 0.015 * (Math.cos(dir3v * Math.PI / 180) >= 0 ? 1 : -1);
+                vx3 = 0;
+                laneX = (Math.random() - 0.5) * 20;  // lateral spread along X
+                mesh.position.set(laneX, 0.7, p.x);
+            } else {
+                vx3 = spd3 * 0.015 * (Math.cos(dir3v * Math.PI / 180) >= 0 ? 1 : -1);
+                vz3 = 0;
+                laneX = 0;
+            }
+            mesh.userData = { vid: vid, vx: vx3, vz: vz3, isNS: isNS,
+                              laneZ: isNS ? 0 : lane, laneX: isNS ? laneX : 0,
+                              baseY: 0.7, phase: Math.random() * Math.PI * 2 };
             scene3.add(mesh);
             vehicleMeshes3.push(mesh);
         }
@@ -801,11 +823,21 @@ function _animate3D() {
     camP3.lookAt(60, 0, 0);
     vehicleMeshes3.forEach(function(m) {
         var ud = m.userData;
-        m.position.x += ud.vx;
-        m.position.z += (ud.laneZ - m.position.z) * 0.05;
-        m.position.y = ud.baseY + Math.sin(_tick3 * 0.22 + ud.phase) * Math.abs(ud.vx) * 0.14;
-        if (m.position.x >  680) m.position.x = -680;
-        if (m.position.x < -680) m.position.x =  680;
+        if (ud.isNS) {
+            // N-S highway: travel along Z axis
+            m.position.z += ud.vz;
+            m.position.x += (ud.laneX - m.position.x) * 0.05;
+            m.position.y = ud.baseY + Math.sin(_tick3 * 0.22 + ud.phase) * Math.abs(ud.vz) * 0.14;
+            if (m.position.z >  680) m.position.z = -680;
+            if (m.position.z < -680) m.position.z =  680;
+        } else {
+            // E-W highway: travel along X axis (default)
+            m.position.x += ud.vx;
+            m.position.z += (ud.laneZ - m.position.z) * 0.05;
+            m.position.y = ud.baseY + Math.sin(_tick3 * 0.22 + ud.phase) * Math.abs(ud.vx) * 0.14;
+            if (m.position.x >  680) m.position.x = -680;
+            if (m.position.x < -680) m.position.x =  680;
+        }
     });
     var cw = _3dCanvas.clientWidth, ch = _3dCanvas.clientHeight;
     renderer.setSize(cw, ch, false);
