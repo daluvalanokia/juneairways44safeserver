@@ -4,6 +4,7 @@ using AirwaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
@@ -38,6 +39,7 @@ public class DashboardController : Controller
 
     public async Task<IActionResult> Index(string? highwayId)
     {
+        TraceLogger.Enter("Dashboard", nameof(Index));
         var highways = await _db.Highways.AsNoTracking()
             .Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
 
@@ -68,6 +70,7 @@ public class DashboardController : Controller
             await foreach (var e in _eventsQuery(_db, highwayId))  events.Add(e);
         }
 
+        TraceLogger.Exit("Dashboard", nameof(Index));
         return View(new DashboardViewModel
         {
             Highways          = highways,
@@ -82,6 +85,7 @@ public class DashboardController : Controller
     [HttpGet, OutputCache(PolicyName = "ShortLive")]
     public async Task<IActionResult> MapMarkers(string? highwayId)
     {
+        TraceLogger.Enter("Dashboard", nameof(MapMarkers));
         highwayId ??= HttpContext.Session.GetString("HighwayId") ?? "";
 
         var zones = await _db.MergeZones.AsNoTracking()
@@ -94,6 +98,7 @@ public class DashboardController : Controller
             .Select(d => new { d.DeviceName, d.DeviceId, d.DeviceType, d.Status, lat = d.Latitude, lon = d.Longitude })
             .ToListAsync();
 
+        TraceLogger.Exit("Dashboard", nameof(MapMarkers));
         return Json(new { zones, sensors });
     }
 }
