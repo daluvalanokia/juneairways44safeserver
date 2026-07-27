@@ -3,6 +3,7 @@ using AirwaysMergeSafeServer.Models;
 using AirwaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
@@ -26,6 +27,7 @@ public class VehicleEventsController : Controller
 
     public async Task<IActionResult> Index(string? highwayId, string filterType = "all")
     {
+        TraceLogger.Enter("VehicleEvents", nameof(Index));
         var highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
         highwayId ??= HttpContext.Session.GetString("HighwayId") ?? highways.FirstOrDefault()?.HighwayId;
         if (highwayId != null) HttpContext.Session.SetString("HighwayId", highwayId);
@@ -34,6 +36,7 @@ public class VehicleEventsController : Controller
         await foreach (var ev in _eventsQuery(_db, highwayId ?? "", filterType))
             events.Add(ev);
 
+        TraceLogger.Exit("VehicleEvents", nameof(Index));
         return View(new EventsViewModel
         {
             Highways          = highways,
@@ -47,7 +50,9 @@ public class VehicleEventsController : Controller
     [HttpGet]
     public async Task<IActionResult> Feed(string? highwayId, string filterType = "all", int take = 50)
     {
+        TraceLogger.Enter("VehicleEvents", nameof(Feed));
         if (HttpContext.Session.GetString("UserId") is not { Length: > 0 })
+        TraceLogger.Exit("VehicleEvents", nameof(Feed));
             return Unauthorized(new { error = "Session required." });
 
         highwayId ??= HttpContext.Session.GetString("HighwayId") ?? "";
@@ -63,12 +68,14 @@ public class VehicleEventsController : Controller
                 e.CreatedDate
             })
             .ToListAsync();
+        TraceLogger.Exit("VehicleEvents", nameof(Feed));
         return Json(events);
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> InjectDemo(string zoneId, string highwayId, string eventType, double speedMph)
     {
+        TraceLogger.Enter("VehicleEvents", nameof(InjectDemo));
         var rng = Random.Shared; // A1/A2 FIX: use Random.Shared
         _db.VehicleEvents.Add(new VehicleEvent
         {
@@ -83,6 +90,7 @@ public class VehicleEventsController : Controller
             CreatedDate = DateTime.UtcNow
         });
         await _db.SaveChangesAsync();
+        TraceLogger.Exit("VehicleEvents", nameof(InjectDemo));
         return RedirectToAction(nameof(Index), new { highwayId });
     }
 }
