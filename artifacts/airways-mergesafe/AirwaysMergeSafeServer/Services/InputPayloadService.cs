@@ -119,6 +119,61 @@ public class InputPayloadService
             return rng.Next(2) == 0 ? 90 : 270;   // east or west (default for E-W + unknown)
     }
 
+    /// <summary>
+    /// Validates and snaps a vehicle's GPS coordinates to the selected
+    /// highway/zone corridor. Called before any record is returned for
+    /// animation rendering.
+    /// Returns (lat, lon, snapped) — snapped=true if coordinates were corrected.
+    /// </summary>
+    public static (double lat, double lon, bool snapped) ValidateCoordinates(
+        double lat, double lon,
+        double? zoneLat, double? zoneLon,
+        string? highwayId,
+        string? zoneId = null,
+        double maxDistDeg = 0.08)
+    {
+        bool snapped = false;
+
+        if (lat == 0 && lon == 0 || double.IsNaN(lat) || double.IsNaN(lon))
+        {
+            snapped = true;
+            lat = zoneLat ?? 32.7767;
+            lon = zoneLon ?? -96.7970;
+        }
+
+        if (zoneLat.HasValue && zoneLon.HasValue)
+        {
+            double dist = Math.Sqrt(
+                Math.Pow(lat - zoneLat.Value, 2) + Math.Pow(lon - zoneLon.Value, 2));
+            if (dist > maxDistDeg)
+            {
+                snapped = true;
+                lat = zoneLat.Value;
+                lon = zoneLon.Value;
+            }
+        }
+
+        if (snapped && zoneLat.HasValue && zoneLon.HasValue)
+        {
+            var rng = Random.Shared;
+            var hw = (highwayId ?? "").ToUpperInvariant();
+            bool isNS = hw.Contains("I35") || hw.Contains("I45") || hw.Contains("I25");
+
+            if (isNS)
+            {
+                lat = Math.Round(zoneLat.Value + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
+                lon = Math.Round(zoneLon.Value + (rng.NextDouble() - 0.5) * LaneJitter * 2, 6);
+            }
+            else
+            {
+                lat = Math.Round(zoneLat.Value + (rng.NextDouble() - 0.5) * LaneJitter * 2, 6);
+                lon = Math.Round(zoneLon.Value + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
+            }
+        }
+
+        return (Math.Round(lat, 6), Math.Round(lon, 6), snapped);
+    }
+
     public string Generate(
         string               sourceType,
         IEnumerable<string>  enabledFields,
