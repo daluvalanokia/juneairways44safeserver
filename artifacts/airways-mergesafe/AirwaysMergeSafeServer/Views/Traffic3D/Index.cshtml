@@ -560,98 +560,136 @@ function _drawVehicles() {
         var color = CAT_COLORS[cat] || '#1d4ed8';
         var make  = vd.make || '';
         var badge = BRAND_BADGES[make];
+        var logoImg = BRAND_LOGO_IMAGES[make];
+        var dir = vd.direction || 0;
+        var spd = vd.speedMph || 0;
 
-        // ── Vehicle dot ───────────────────────────────────────────────
-        var dotR = 7;
+        // ── Car silhouette with brand logo ─────────────────────────────
+        // Draw a distinguishable car shape at the vehicle position, with
+        // the manufacturer logo (image or initials) rendered ON the car body.
+        var carW = 22, carH = 13;
+        var carCx = sx, carCy = sy;
+
+        // Rotate car to match travel direction
+        _octx.save();
+        _octx.translate(carCx, carCy);
+        var carRot = 0;
+        if (dir >= 45 && dir <= 135) carRot = Math.PI / 2;       // E-W → rotate 90°
+        else if (dir >= 135 && dir <= 225) carRot = Math.PI;      // S → rotate 180°
+        else if (dir >= 225 && dir <= 315) carRot = -Math.PI / 2; // W → rotate -90°
+        if (vd.isNSHwy) carRot = (dir <= 90 || dir >= 270) ? 0 : Math.PI;
+        _octx.rotate(carRot);
+
+        // Car body — rounded rectangle
         _octx.beginPath();
-        _octx.arc(sx, sy, dotR, 0, Math.PI * 2);
+        _octx.roundRect(-carW/2, -carH/2, carW, carH, 4);
         _octx.fillStyle = color;
         _octx.fill();
-        _octx.strokeStyle = 'rgba(255,255,255,0.9)';
+        _octx.strokeStyle = 'rgba(255,255,255,0.85)';
         _octx.lineWidth = 1.5;
         _octx.stroke();
 
-        // Heading arrow — shows direction of travel
-        var dir = vd.direction || 0;
-        var spd = vd.speedMph || 0;
+        // Windshield highlight (top portion of car)
+        _octx.beginPath();
+        _octx.roundRect(-carW/2 + 3, -carH/2 + 1.5, carW - 6, carH * 0.35, 2);
+        _octx.fillStyle = 'rgba(255,255,255,0.25)';
+        _octx.fill();
+
+        // Wheels (two small dark rectangles at bottom)
+        _octx.fillStyle = '#1a1a2e';
+        _octx.fillRect(-carW/2 + 2, carH/2 - 1.5, 4, 3);
+        _octx.fillRect(carW/2 - 6, carH/2 - 1.5, 4, 3);
+        _octx.fillRect(-carW/2 + 2, -carH/2 - 1.5, 4, 3);
+        _octx.fillRect(carW/2 - 6, -carH/2 - 1.5, 4, 3);
+
+        // Brand logo ON the car body
+        if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
+            // Draw the brand SVG image centered on the car
+            _octx.drawImage(logoImg, -9, -7, 18, 14);
+        } else if (badge) {
+            // Fallback: brand initials on a subtle circle
+            _octx.beginPath();
+            _octx.arc(0, 0, 6, 0, Math.PI * 2);
+            _octx.fillStyle = badge.color;
+            _octx.fill();
+            _octx.strokeStyle = 'rgba(255,255,255,0.5)';
+            _octx.lineWidth = 1;
+            _octx.stroke();
+            _octx.fillStyle = '#fff';
+            _octx.font = badge.initials.length > 2 ? 'bold 6px Arial' : 'bold 8px Arial';
+            _octx.textAlign = 'center';
+            _octx.textBaseline = 'middle';
+            _octx.fillText(badge.initials, 0, 0.5);
+        }
+        _octx.restore();
+
+        // Heading arrow — extends from the front of the car
         if (dir && spd > 0) {
             var arrowRad = (dir - 90) * Math.PI / 180;
-            var arrowLen = dotR + 8;
-            var ax = sx + Math.cos(arrowRad) * arrowLen;
-            var ay = sy + Math.sin(arrowRad) * arrowLen;
+            var arrowLen = 14;
+            var ax2 = sx + Math.cos(arrowRad) * arrowLen;
+            var ay2 = sy + Math.sin(arrowRad) * arrowLen;
             _octx.beginPath();
-            _octx.moveTo(sx, sy);
-            _octx.lineTo(ax, ay);
-            _octx.strokeStyle = 'rgba(255,255,255,0.85)';
-            _octx.lineWidth = 2.5;
+            _octx.moveTo(sx + Math.cos(arrowRad) * 10, sy + Math.sin(arrowRad) * 10);
+            _octx.lineTo(ax2, ay2);
+            _octx.strokeStyle = 'rgba(255,255,255,0.7)';
+            _octx.lineWidth = 2;
             _octx.stroke();
-            _octx.beginPath();
-            _octx.arc(ax, ay, 3, 0, Math.PI * 2);
-            _octx.fillStyle = 'rgba(255,255,255,0.85)';
-            _octx.fill();
         }
 
         // Speed indicator ring (arc proportional to speed)
         var arc = (Math.min(spd, 120) / 120) * Math.PI * 2;
         _octx.beginPath();
-        _octx.arc(sx, sy, dotR + 4, -Math.PI / 2, -Math.PI / 2 + arc);
-        _octx.strokeStyle = 'rgba(253,224,71,0.85)';
-        _octx.lineWidth = 2.5;
+        _octx.arc(sx, sy, 15, -Math.PI / 2, -Math.PI / 2 + arc);
+        _octx.strokeStyle = 'rgba(253,224,71,0.75)';
+        _octx.lineWidth = 2;
         _octx.stroke();
 
-        // ── Label pill ────────────────────────────────────────────────
-        var pillW = 148, pillH = 36;
-        var pillX = Math.max(2, Math.min(cw - pillW - 2, sx - pillW / 2));
-        var pillY = sy - 56;
-        if (pillY < 2) pillY = sy + dotR + 8;
+        // ── Transparent tooltip (no dark background) ────────────────────
+        // Text with shadow for readability — no filled pill background.
+        var tipW = 120, tipH = 30;
+        var tipX = Math.max(2, Math.min(cw - tipW - 2, sx - tipW / 2));
+        var tipY = sy - 48;
+        if (tipY < 2) tipY = sy + 20;
 
-        // Shadow + pill background
-        _octx.save();
-        _octx.shadowColor = 'rgba(0,0,0,0.65)'; _octx.shadowBlur = 6; _octx.shadowOffsetY = 2;
-        _octx.fillStyle = color;
-        _octx.beginPath();
-        _octx.roundRect(pillX, pillY, pillW, pillH, 7);
-        _octx.fill();
-        _octx.restore();
-
-        // Pill border
-        _octx.strokeStyle = 'rgba(255,255,255,0.22)';
+        // Connector line (thin, semi-transparent)
+        var lineFx = tipX + tipW / 2;
+        var lineFy = tipY < sy ? tipY + tipH : tipY;
+        _octx.strokeStyle = 'rgba(255,255,255,0.35)';
         _octx.lineWidth = 1;
-        _octx.beginPath(); _octx.roundRect(pillX + 0.5, pillY + 0.5, pillW - 1, pillH - 1, 7); _octx.stroke();
-
-        // Brand badge (circle + initials)
-        if (badge) {
-            _octx.beginPath();
-            _octx.arc(pillX + 18, pillY + pillH / 2, 13, 0, Math.PI * 2);
-            _octx.fillStyle = badge.color; _octx.fill();
-            _octx.strokeStyle = 'rgba(255,255,255,0.35)'; _octx.lineWidth = 1.5; _octx.stroke();
-            _octx.fillStyle = '#fff';
-            _octx.font = badge.initials.length > 2 ? 'bold 7px Arial' : 'bold 11px Arial';
-            _octx.textAlign = 'center'; _octx.textBaseline = 'middle';
-            _octx.fillText(badge.initials, pillX + 18, pillY + pillH / 2 + 1);
-        }
-
-        // Vehicle ID text
-        var textX = badge ? pillX + 35 : pillX + 8;
-        _octx.fillStyle = '#fff';
-        _octx.font = 'bold 11px monospace';
-        _octx.textAlign = 'left'; _octx.textBaseline = 'top';
-        _octx.fillText((vid || '–').slice(0, 14), textX, pillY + 5);
-
-        // Make + category
-        _octx.fillStyle = 'rgba(255,255,255,0.72)';
-        _octx.font = '9.5px Arial'; _octx.textBaseline = 'bottom';
-        _octx.fillText((make ? make.slice(0, 10) + '  ' : '') + cat, textX, pillY + pillH - 4);
-
-        // Connector line from pill to dot
-        var lineFromX = pillX + pillW / 2;
-        var lineFromY = pillY < sy ? pillY + pillH : pillY;
-        _octx.strokeStyle = 'rgba(0,0,0,0.5)'; _octx.lineWidth = 3;
-        _octx.beginPath(); _octx.moveTo(lineFromX, lineFromY); _octx.lineTo(sx, sy); _octx.stroke();
-        _octx.strokeStyle = 'rgba(255,255,255,0.8)'; _octx.lineWidth = 1.2;
-        _octx.setLineDash([4, 3]);
-        _octx.beginPath(); _octx.moveTo(lineFromX, lineFromY); _octx.lineTo(sx, sy); _octx.stroke();
+        _octx.setLineDash([3, 3]);
+        _octx.beginPath();
+        _octx.moveTo(lineFx, lineFy);
+        _octx.lineTo(sx, sy);
+        _octx.stroke();
         _octx.setLineDash([]);
+
+        // Vehicle ID — bold, with text shadow for legibility on any background
+        _octx.save();
+        _octx.shadowColor = 'rgba(0,0,0,0.9)';
+        _octx.shadowBlur = 4;
+        _octx.fillStyle = 'rgba(255,255,255,0.95)';
+        _octx.font = 'bold 10px monospace';
+        _octx.textAlign = 'left';
+        _octx.textBaseline = 'top';
+        _octx.fillText((vid || '–').slice(0, 14), tipX + 4, tipY + 3);
+
+        // Make + category — smaller, slightly transparent
+        _octx.fillStyle = 'rgba(255,255,255,0.7)';
+        _octx.font = '9px Arial';
+        _octx.textBaseline = 'bottom';
+        var makeCat = (make ? make.slice(0, 12) : '') + (make && cat ? ' · ' : '') + cat;
+        _octx.fillText(makeCat, tipX + 4, tipY + tipH - 3);
+
+        // Speed — right-aligned
+        if (spd > 0) {
+            _octx.fillStyle = 'rgba(253,224,71,0.9)';
+            _octx.font = 'bold 9px monospace';
+            _octx.textAlign = 'right';
+            _octx.textBaseline = 'top';
+            _octx.fillText(spd + 'mph', tipX + tipW - 4, tipY + 3);
+        }
+        _octx.restore();
     });
 }
 
