@@ -1214,6 +1214,10 @@ function setViewport(view) {
     ['labelA','labelB','labelC'].forEach(function(id) {
         document.getElementById(id).style.display = view === 'split' ? '' : 'none';
     });
+    // Force bridge re-projection — canvas dimensions may have changed
+    _bridgeDirty = true;
+    if (_map) _map.invalidateSize();
+    console.log('[T3D] Viewport set: ' + view + ' bridge dirty');
 }
 
 // View buttons
@@ -1274,6 +1278,13 @@ async function t3dHighwayChanged(newHighwayId) {
             if (typeof roadGroup3 !== 'undefined') {
                 roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
             }
+        } else {
+            // No zones returned — clear T3D_ZONES and highway path
+            T3D_ZONES = [];
+            _hwyPath = [];
+            if (zsel) zsel.innerHTML = '<option value="">(All Zones)</option>';
+            if (ssel) ssel.innerHTML = '<option value="">(All Servers)</option>';
+            console.warn('[T3D] Highway ' + newHighwayId + ' has no zones');
         }
         // Store bounds
         if (data.bounds) _serverBounds = data.bounds;
@@ -1309,16 +1320,23 @@ async function t3dZoneChanged() {
         o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
     });
     // Pan map to selected zone center + re-sort highway path
-    var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+    var z = selectedZoneId
+        ? T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
+        : (T3D_ZONES.find(function(zz){ return zz.lat && zz.lon; }) || null);
     if (z && z.lat && z.lon) {
         midLat = z.lat; midLon = z.lon;
         _panMapTo(z.lat, z.lon);
         _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
+    } else if (T3D_ZONES.length > 0) {
+        // No specific zone — re-center to first zone on the highway
+        var z0 = T3D_ZONES[0];
+        midLat = z0.lat; midLon = z0.lon;
+        _panMapTo(z0.lat, z0.lon);
+        _setHighwayCoords(z0.lat, z0.lon, HW);
     }
     _clearVehicles();
     _bridgeDirty = true;
     await refreshScene();
-    // After server data arrives, re-center map to ensure correct position
     if (z && z.lat && z.lon) {
         _panMapTo(z.lat, z.lon);
     }
@@ -1341,16 +1359,22 @@ async function t3dServerChanged() {
             });
         }
     }
-    var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+    var z = selectedZoneId
+        ? T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
+        : (T3D_ZONES.find(function(zz){ return zz.lat && zz.lon; }) || null);
     if (z && z.lat && z.lon) {
         midLat = z.lat; midLon = z.lon;
         _panMapTo(z.lat, z.lon);
         _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
+    } else if (T3D_ZONES.length > 0) {
+        var z0 = T3D_ZONES[0];
+        midLat = z0.lat; midLon = z0.lon;
+        _panMapTo(z0.lat, z0.lon);
+        _setHighwayCoords(z0.lat, z0.lon, HW);
     }
     _clearVehicles();
     _bridgeDirty = true;
     await refreshScene();
-    // After server data arrives, re-center map
     if (z && z.lat && z.lon) {
         _panMapTo(z.lat, z.lon);
     }
@@ -1793,6 +1817,7 @@ function _onSimMsg(data) {
             var zsel = document.getElementById('t3dZoneSel');
             if (zsel) zsel.value = _simZoneId;
         }
+        _forceBridgeRedraw();
         _updateSimPanel(ev);
         // Validate sim event coordinates against selected bounds before loading
         var _simLat = parseFloat(ev.latitude || ev.Latitude || ev.lat || 0);
@@ -1900,6 +1925,7 @@ _oc.addEventListener('click', function(e) {
 
 // ── Window resize ─────────────────────────────────────────────────────
 window.addEventListener('resize', function() {
+    _bridgeDirty = true;
     if (_map) setTimeout(function() { if (_map) _map.invalidateSize(true); }, 50);
 });
 
