@@ -158,9 +158,10 @@ public class SettingsController : Controller
     [HttpGet("Settings/TraceLatest")]
     public IActionResult TraceLatest(int count = 2)
     {
-        TraceLogger.Enter("Settings", nameof(TraceLatest));
+        // NOTE: No TraceLogger calls here — this endpoint is polled every 2s.
+        // Adding Enter/Exit would flood the ring buffer with self-referential
+        // trace lines, pushing out the actual useful diagnostic data.
         var lines = _trace.GetRecent(count);
-        TraceLogger.Exit("Settings", nameof(TraceLatest));
         return Ok(new { enabled = _trace.Enabled, level = _trace.Level, lines });
     }
 
