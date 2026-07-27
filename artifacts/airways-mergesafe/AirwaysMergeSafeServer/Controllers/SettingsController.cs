@@ -6,6 +6,7 @@ using AirwaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
@@ -85,8 +86,10 @@ public class SettingsController : Controller
 
     public async Task<IActionResult> Index()
     {
+        TraceLogger.Enter("Settings", nameof(Index));
         var (maxDays, maxCount) = LoadPurgeSettings();
         var (traceEnabled, traceLevel) = LoadInAppTraceSettings();
+        TraceLogger.Exit("Settings", nameof(Index));
         return View(new SettingsViewModel
         {
             Highways           = await _db.Highways.AsNoTracking().OrderBy(h => h.Name).ToListAsync(),
@@ -106,6 +109,7 @@ public class SettingsController : Controller
         string warningLabel, string warningColor, int warningBands,
         string overspeedLabel, string overspeedColor, int overspeedBands)
     {
+        TraceLogger.Enter("Settings", nameof(SaveAirSceneAlerts));
         var userId = HttpContext.Session.GetString("UserId") ?? "unknown";
         _logger.LogInformation("Security: Admin action — SaveAirSceneAlerts userId={UserId}", userId);
 
@@ -126,12 +130,14 @@ public class SettingsController : Controller
 
         System.IO.File.WriteAllText(AirSceneAlertsPath, json);
         TempData["AlertSaved"] = "true";
+        TraceLogger.Exit("Settings", nameof(SaveAirSceneAlerts));
         return RedirectToAction(nameof(Index));
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public IActionResult SaveInAppTrace(bool enabled, string level)
     {
+        TraceLogger.Enter("Settings", nameof(SaveInAppTrace));
         level = level is "info" or "warning" or "error" ? level : "info";
         var json = JsonSerializer.Serialize(new { enabled, level },
             new JsonSerializerOptions { WriteIndented = true });
@@ -144,6 +150,7 @@ public class SettingsController : Controller
 
         _logger.LogInformation("Settings: In-App Trace {State} — level={Level}", enabled ? "enabled" : "disabled", level);
         TempData["TraceSaved"] = "true";
+        TraceLogger.Exit("Settings", nameof(SaveInAppTrace));
         return RedirectToAction(nameof(Index));
     }
 
@@ -151,44 +158,53 @@ public class SettingsController : Controller
     [HttpGet("Settings/TraceLatest")]
     public IActionResult TraceLatest(int count = 2)
     {
+        TraceLogger.Enter("Settings", nameof(TraceLatest));
         var lines = _trace.GetRecent(count);
+        TraceLogger.Exit("Settings", nameof(TraceLatest));
         return Ok(new { enabled = _trace.Enabled, level = _trace.Level, lines });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(Highway model)
     {
+        TraceLogger.Enter("Settings", nameof(Create));
         if (ModelState.IsValid)
         {
             model.CreatedDate = DateTime.UtcNow;
             _db.Highways.Add(model);
             await _db.SaveChangesAsync();
         }
+        TraceLogger.Exit("Settings", nameof(Create));
         return RedirectToAction(nameof(Index));
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Edit(Highway model)
     {
+        TraceLogger.Enter("Settings", nameof(Edit));
         if (ModelState.IsValid)
         {
             _db.Highways.Update(model);
             await _db.SaveChangesAsync();
         }
+        TraceLogger.Exit("Settings", nameof(Edit));
         return RedirectToAction(nameof(Index));
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Delete(int id)
     {
+        TraceLogger.Enter("Settings", nameof(Delete));
         var h = await _db.Highways.FindAsync(id);
         if (h != null) { _db.Highways.Remove(h); await _db.SaveChangesAsync(); }
+        TraceLogger.Exit("Settings", nameof(Delete));
         return RedirectToAction(nameof(Index));
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public IActionResult SavePurgeSettings(int purgeMaxDays, int purgeMaxCount)
     {
+        TraceLogger.Enter("Settings", nameof(SavePurgeSettings));
         var userId = HttpContext.Session.GetString("UserId") ?? "unknown";
         _logger.LogInformation("Security: Admin action — SavePurgeSettings userId={UserId} maxDays={MaxDays} maxCount={MaxCount}",
             userId, purgeMaxDays, purgeMaxCount);
@@ -200,12 +216,14 @@ public class SettingsController : Controller
         }, new JsonSerializerOptions { WriteIndented = true });
         System.IO.File.WriteAllText(PurgeSettingsPath, json);
         TempData["PurgeSaved"] = "true";
+        TraceLogger.Exit("Settings", nameof(SavePurgeSettings));
         return RedirectToAction(nameof(Index));
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> RunPurge()
     {
+        TraceLogger.Enter("Settings", nameof(RunPurge));
         var userId = HttpContext.Session.GetString("UserId") ?? "unknown";
         _logger.LogInformation("Security: Admin action — RunPurge userId={UserId}", userId);
 
@@ -231,6 +249,7 @@ public class SettingsController : Controller
         }
 
         remaining = await _db.VehicleEvents.CountAsync();
+        TraceLogger.Exit("Settings", nameof(RunPurge));
         return Json(new
         {
             ok            = true,
@@ -246,6 +265,7 @@ public class SettingsController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public IActionResult SaveTomTomKey(string apiKey)
     {
+        TraceLogger.Enter("Settings", nameof(SaveTomTomKey));
         var userId = HttpContext.Session.GetString("UserId") ?? "unknown";
         _logger.LogInformation("Security: Admin action — SaveTomTomKey userId={UserId}", userId);
 
@@ -260,6 +280,7 @@ public class SettingsController : Controller
         reloadable?.Reload();
 
         TempData["Success"] = "TomTom API key saved successfully.";
+        TraceLogger.Exit("Settings", nameof(SaveTomTomKey));
         return RedirectToAction(nameof(Index));
     }
 }
