@@ -98,14 +98,14 @@ try
     builder.Services.AddHostedService<HeartbeatMonitorService>();
 
     // ── In-App Trace Service (singleton ring buffer for floating panel) ──
-builder.Services.AddSingleton<InAppTraceService>();
+    builder.Services.AddSingleton<InAppTraceService>();
 
-// Wire the InAppTraceService into the static TraceLogger so every
-// trace line is also pushed to the in-app ring buffer for the panel.
-var _traceSvc = builder.Services.BuildServiceProvider().GetService<InAppTraceService>();
-if (_traceSvc != null)
-{
-    // Load saved settings from inapptrace.json
+    var app = builder.Build();
+
+    // Wire the InAppTraceService into the static TraceLogger so every
+    // trace line is also pushed to the in-app ring buffer for the floating panel.
+    // Done after Build() to avoid creating a duplicate service provider.
+    var _traceSvc = app.Services.GetRequiredService<InAppTraceService>();
     var tracePath = Path.Combine(AppContext.BaseDirectory, "inapptrace.json");
     if (File.Exists(tracePath))
     {
@@ -113,15 +113,17 @@ if (_traceSvc != null)
         {
             var tj = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
                 File.ReadAllText(tracePath));
-            _traceSvc.Enabled = tj?.GetValueOrDefault("enabled", new System.Text.Json.JsonElement(false)).GetBoolean() ?? false;
-            _traceSvc.Level   = tj?.GetValueOrDefault("level",   new System.Text.Json.JsonElement("info")).GetString() ?? "info";
+            if (tj != null)
+            {
+                if (tj.TryGetValue("enabled", out var eEl) && eEl.ValueKind == System.Text.Json.JsonValueKind.True)
+                    _traceSvc.Enabled = true;
+                if (tj.TryGetValue("level", out var lEl) && lEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                    _traceSvc.Level = lEl.GetString() ?? "info";
+            }
         }
         catch { }
     }
-    Infrastructure.TraceLogger.OnInAppTrace = (level, message) => _traceSvc.AddLine(level, message);
-}
-
-var app = builder.Build();
+    TraceLogger.OnInAppTrace = (level, message) => _traceSvc.AddLine(level, message);
 
     // ── C5 / FIX: MigrateAsync for BOTH SQLite and PostgreSQL ────────────
     // ROOT CAUSE FIX (SqliteException: no such column FailedLoginAttempts):
