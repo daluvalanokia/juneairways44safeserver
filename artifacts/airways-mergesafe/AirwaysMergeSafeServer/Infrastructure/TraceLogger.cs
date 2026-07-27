@@ -16,6 +16,13 @@ public static class TraceLogger
     private static string          _logPath = string.Empty;
 
     /// <summary>
+    /// Optional in-app trace callback. When set (by InAppTraceService at startup),
+    /// every Write() also pushes the line to the in-app ring buffer for the
+    /// floating bottom panel.
+    /// </summary>
+    internal static Action<string, string, string>? OnInAppTrace;
+
+    /// <summary>
     /// Call once in Program.cs before the host is built.
     /// Creates /tmp/trace_yyyyMMdd_HHmmss.log and writes an INIT entry.
     /// </summary>
@@ -77,6 +84,9 @@ public static class TraceLogger
         {
             var line = $"[{DateTime.UtcNow:HH:mm:ss.fff}] [{level}] [{module}.{method}] {message}";
             lock (_lock) { _writer?.WriteLine(line); }
+
+            // Also push to the in-app trace buffer if the callback is registered
+            try { OnInAppTrace?.Invoke(level, line); } catch { /* never throw from trace */ }
         }
         catch { /* never throw from the trace logger */ }
     }
