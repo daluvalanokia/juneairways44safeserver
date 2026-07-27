@@ -184,7 +184,6 @@ public class DataInputFormatsController : Controller
             _db.VehicleEvents.Add(_savedEvent);
         }
         catch (Exception _evEx) { _logger.LogWarning("SimPost: VehicleEvent save failed: {Msg}", _evEx.Message); }
-        catch (Exception _evEx) { _logger.LogWarning("SimPost: VehicleEvent save failed: {Msg}", _evEx.Message); }
         // ── Update SimulationStatus in database ──────────────────────────────
         // Maintain a persistent server-side record so the app knows the sim
         // was recently active even after a restart.  This is the authoritative
@@ -212,7 +211,7 @@ public class DataInputFormatsController : Controller
         }
         catch (Exception exSim)
         {
-            TraceLogger.Error("DataInputFormats", nameof(SimulationPost), ex);
+            TraceLogger.Error("DataInputFormats", nameof(SimulationPost), exSim);
             _logger.LogWarning("SimPost: Failed to update SimulationStatus: {Message}", exSim.Message);
         }
 
