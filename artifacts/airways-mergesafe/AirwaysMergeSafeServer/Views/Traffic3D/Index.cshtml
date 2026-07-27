@@ -404,26 +404,43 @@ document.getElementById('t3dMiniMap').addEventListener('wheel', function(e) {
 // so it automatically tracks zoom + pan without any extra re-computation.
 var _hwyLat   = 0, _hwyLon = 0;
 var _hwyIsEW  = true;
+// Array of {lat, lon} for ALL zones on the current highway — used to draw
+// a multi-segment polyline that follows the actual road curvature.
+var _hwyPath  = [];
 
 function _isEWHighway(hwId) {
-    // Classify highway by ID string — used by both _setHighwayCoords and vehicle parser.
     var h = (hwId || '').toUpperCase();
-    // Explicit N-S check first
     if (h.indexOf('I35') >= 0 || h.indexOf('I-35') >= 0 ||
         h.indexOf('I45') >= 0 || h.indexOf('I-45') >= 0 ||
         h.indexOf('I25') >= 0 || h.indexOf('I-25') >= 0) return false;
-    // Everything else (I-20, I-10, I-30, I-40, I-80, unknown) → E-W
     return true;
 }
 
 function _setHighwayCoords(lat, lon, hwId) {
-    // lat/lon: exact GPS centreline of the selected zone (from DB seed).
-    // hwId:    highway identifier string (e.g. "I20-TX", "I35-TX").
-    // Store the centreline point — the draw function extends it to fill the viewport.
+    // Store the clicked zone's centreline
     _hwyLat  = lat;
     _hwyLon  = lon;
     _hwyIsEW = _isEWHighway(hwId);
     _hwyHeading = _hwyIsEW ? 'EW' : 'NS';
+
+    // Collect ALL zones on the same highway — sort along the road axis
+    // so the polyline follows the road from one end to the other.
+    _hwyPath = [];
+    if (typeof T3D_ZONES !== 'undefined') {
+        T3D_ZONES.forEach(function(z) {
+            if (z.lat && z.lon) {
+                _hwyPath.push({ lat: z.lat, lon: z.lon, zoneId: z.zoneId });
+            }
+        });
+        // Sort: E-W by longitude, N-S by latitude
+        _hwyPath.sort(function(a, b) {
+            return _hwyIsEW ? a.lon - b.lon : a.lat - b.lat;
+        });
+    }
+    // If no zones found, use just the centreline point
+    if (_hwyPath.length === 0 && lat && lon) {
+        _hwyPath = [{ lat: lat, lon: lon, zoneId: '' }];
+    }
 
     // Sync 3D road group rotation
     if (typeof roadGroup3 !== 'undefined') {
@@ -431,108 +448,148 @@ function _setHighwayCoords(lat, lon, hwId) {
     }
 }
 
+function _projectLatLng(lat, lon) {
+    // Project a GPS coordinate to screen-relative pixel coords.
+    if (_map && _mapReady) {
+        var origin = _map.getPixelOrigin();
+        var p = _map.project([lat, lon], _map.getZoom());
+        return { x: p.x - origin.x, y: p.y - origin.y };
+    }
+    var zfb = _leafletZoom || 15;
+    var pxPerDeg = Math.pow(2, zfb) * 256 / 360;
+    return {
+        x: _oc.width/2  + (lon - _mapCtrLon) * pxPerDeg,
+        y: _oc.height/2 - (lat - _mapCtrLat) * pxPerDeg
+    };
+}
+
 function _drawHighwayOverlay() {
     if (!_oc || !_octx) return;
-    if (!_hwyLat || !_hwyLon) return;
+    if (!_hwyPath.length) return;
     var cw = _oc.width, ch = _oc.height;
     if (cw < 2 || ch < 2) return;
 
-    // ── Project highway centreline through Leaflet every frame ──────────
-    // This gives exact pixel alignment at any zoom level / pan position.
-    // We compute TWO points on the highway axis using the stored centreline
-    // lat/lon plus a large enough delta so the line always spans the screen.
-    var zoomFactor, sx, sy, ex, ey;
-
+    var zoomFactor;
     if (_map && _mapReady) {
-        var z      = _map.getZoom();
-        var origin = _map.getPixelOrigin();
-        // Degree span that covers more than the viewport at the current zoom.
-        // At zoom 10, 1° lon ≈ 113px — span 8° gives 900px coverage.
-        // At zoom 15, 1° lon ≈ 3630px — span 0.25° covers 900px.
-        // Formula: need > screen_px / px_per_deg.
-        // Use 5 / zoomFactor so it shrinks as zoom increases but always enough.
-        var span = Math.max(0.25, 5 / Math.pow(2, z - 10));
-
-        var lat1, lon1, lat2, lon2;
-        if (_hwyIsEW) {
-            // E-W highway: same lat, extend longitude both directions
-            lat1 = _hwyLat; lon1 = _hwyLon - span;
-            lat2 = _hwyLat; lon2 = _hwyLon + span;
-        } else {
-            // N-S highway: same lon, extend latitude both directions
-            lat1 = _hwyLat - span; lon1 = _hwyLon;
-            lat2 = _hwyLat + span; lon2 = _hwyLon;
-        }
-
-        var p1 = _map.project([lat1, lon1], z);
-        var p2 = _map.project([lat2, lon2], z);
-        sx = p1.x - origin.x; sy = p1.y - origin.y;
-        ex = p2.x - origin.x; ey = p2.y - origin.y;
-        zoomFactor = Math.pow(2, z - 15);
+        zoomFactor = Math.pow(2, _map.getZoom() - 15);
     } else {
-        // Fallback: linear projection from map centre
-        var zfb = _leafletZoom || 15;
-        var pxPerDeg = Math.pow(2, zfb) * 256 / 360;
-        var span2 = Math.max(0.25, 5 / Math.pow(2, zfb - 10));
-        if (_hwyIsEW) {
-            sx = cw/2 + (-span2) * pxPerDeg + (_hwyLon - _mapCtrLon) * pxPerDeg;
-            ex = cw/2 + ( span2) * pxPerDeg + (_hwyLon - _mapCtrLon) * pxPerDeg;
-            sy = ey = ch/2 - (_hwyLat - _mapCtrLat) * pxPerDeg;
-        } else {
-            sx = ex = cw/2 + (_hwyLon - _mapCtrLon) * pxPerDeg;
-            sy = ch/2 + span2 * pxPerDeg - (_hwyLat - _mapCtrLat) * pxPerDeg;
-            ey = ch/2 - span2 * pxPerDeg - (_hwyLat - _mapCtrLat) * pxPerDeg;
-        }
-        zoomFactor = Math.pow(2, zfb - 15);
+        zoomFactor = Math.pow(2, (_leafletZoom || 15) - 15);
     }
-
-    var dx = ex - sx, dy = ey - sy;
-    var len = Math.hypot(dx, dy);
-    if (len < 2) return;
-
-    // Unit vector along the road + road width in pixels
-    var ux = dx / len, uy = dy / len;
     var roadPx = Math.max(24, Math.round(48 * zoomFactor));
 
-    // Road surface (semi-transparent asphalt)
-    // NOTE: do NOT clearRect here — _renderLoop already clears the canvas.
+    // ── Project ALL highway zone points to screen coords ────────────────
+    var pts = _hwyPath.map(function(p) {
+        return _projectLatLng(p.lat, p.lon);
+    });
+
+    // ── Extend the first and last segments to fill the screen ───────────
+    if (pts.length >= 2) {
+        var extLen = Math.max(cw, ch) * 1.5;
+        // Extend the first segment backwards
+        var dx0 = pts[0].x - pts[1].x, dy0 = pts[0].y - pts[1].y;
+        var len0 = Math.hypot(dx0, dy0);
+        if (len0 > 0) {
+            pts[0].x += dx0 / len0 * extLen;
+            pts[0].y += dy0 / len0 * extLen;
+        }
+        // Extend the last segment forwards
+        var n = pts.length;
+        var dxN = pts[n-1].x - pts[n-2].x, dyN = pts[n-1].y - pts[n-2].y;
+        var lenN = Math.hypot(dxN, dyN);
+        if (lenN > 0) {
+            pts[n-1].x += dxN / lenN * extLen;
+            pts[n-1].y += dyN / lenN * extLen;
+        }
+    }
+
+    // ── Helper: draw a polyline through all projected points ───────────
+    function _strokePath() {
+        _octx.beginPath();
+        _octx.moveTo(pts[0].x, pts[0].y);
+        for (var i = 1; i < pts.length; i++) {
+            _octx.lineTo(pts[i].x, pts[i].y);
+        }
+        _octx.stroke();
+    }
+
+    // ── Road surface (semi-transparent asphalt) ────────────────────────
     _octx.strokeStyle = 'rgba(80, 100, 120, 0.55)';
     _octx.lineWidth = roadPx;
     _octx.lineCap = 'butt';
-    _octx.beginPath();
-    _octx.moveTo(sx, sy); _octx.lineTo(ex, ey);
-    _octx.stroke();
+    _octx.lineJoin = 'round';
+    _strokePath();
 
-    // Centre yellow line
+    // ── Centre yellow line ──────────────────────────────────────────────
     _octx.strokeStyle = 'rgba(253, 224, 71, 0.90)';
     _octx.lineWidth = Math.max(2, 3 * zoomFactor);
     _octx.setLineDash([]);
-    _octx.beginPath();
-    _octx.moveTo(sx, sy); _octx.lineTo(ex, ey);
-    _octx.stroke();
+    _strokePath();
 
-    // Lane dashes — perpendicular offset from centre
+    // ── Lane dashes — perpendicular offset from centre ──────────────────
     _octx.strokeStyle = 'rgba(255,255,255,0.70)';
     _octx.lineWidth = Math.max(1, 1.5 * zoomFactor);
     _octx.setLineDash([20 * zoomFactor, 14 * zoomFactor]);
     var laneOff = roadPx / 4;
-    var px = -uy, py = ux;  // perpendicular unit vector
-    [-laneOff, laneOff].forEach(function(off) {
-        _octx.beginPath();
-        _octx.moveTo(sx + px * off, sy + py * off);
-        _octx.lineTo(ex + px * off, ey + py * off);
-        _octx.stroke();
-    });
+    // Compute perpendicular for each segment — use average direction
+    for (var si = 0; si < pts.length - 1; si++) {
+        var sdx = pts[si+1].x - pts[si].x;
+        var sdy = pts[si+1].y - pts[si].y;
+        var slen = Math.hypot(sdx, sdy);
+        if (slen < 1) continue;
+        var spx = -sdy / slen, spy = sdx / slen;
+        [-laneOff, laneOff].forEach(function(off) {
+            _octx.beginPath();
+            _octx.moveTo(pts[si].x + spx * off, pts[si].y + spy * off);
+            _octx.lineTo(pts[si+1].x + spx * off, pts[si+1].y + spy * off);
+            _octx.stroke();
+        });
+    }
     _octx.setLineDash([]);
 
-    // Edge kerb lines
+    // ── Edge kerb lines ─────────────────────────────────────────────────
     _octx.strokeStyle = 'rgba(255,255,255,0.55)';
     _octx.lineWidth = Math.max(2, 3 * zoomFactor);
-    [-roadPx/2, roadPx/2].forEach(function(off) {
+    for (var ki = 0; ki < pts.length - 1; ki++) {
+        var kdx = pts[ki+1].x - pts[ki].x;
+        var kdy = pts[ki+1].y - pts[ki].y;
+        var klen = Math.hypot(kdx, kdy);
+        if (klen < 1) continue;
+        var kpx = -kdy / klen, kpy = kdx / klen;
+        [-roadPx/2, roadPx/2].forEach(function(off) {
+            _octx.beginPath();
+            _octx.moveTo(pts[ki].x + kpx * off, pts[ki].y + kpy * off);
+            _octx.lineTo(pts[ki+1].x + kpx * off, pts[ki+1].y + kpy * off);
+            _octx.stroke();
+        });
+    }
+
+    // ── Zone anchor pins — mark each real GPS coordinate on the map ────
+    // These show exactly where the bridge connects to the highway.
+    _hwyPath.forEach(function(zp) {
+        var pp = _projectLatLng(zp.lat, zp.lon);
+        // Pin circle
         _octx.beginPath();
-        _octx.moveTo(sx + px * off, sy + py * off);
-        _octx.lineTo(ex + px * off, ey + py * off);
+        _octx.arc(pp.x, pp.y, 6, 0, Math.PI * 2);
+        _octx.fillStyle = 'rgba(253,224,71,0.9)';
+        _octx.fill();
+        _octx.strokeStyle = 'rgba(0,0,0,0.7)';
+        _octx.lineWidth = 1.5;
         _octx.stroke();
+        // Inner dot
+        _octx.beginPath();
+        _octx.arc(pp.x, pp.y, 2.5, 0, Math.PI * 2);
+        _octx.fillStyle = '#fff';
+        _octx.fill();
+        // Zone label
+        _octx.save();
+        _octx.shadowColor = 'rgba(255,255,255,0.8)';
+        _octx.shadowBlur = 3;
+        _octx.fillStyle = '#000';
+        _octx.font = 'bold 8px monospace';
+        _octx.textAlign = 'center';
+        _octx.textBaseline = 'bottom';
+        _octx.fillText(zp.zoneId || '', pp.x, pp.y - 9);
+        _octx.restore();
     });
 }
 
