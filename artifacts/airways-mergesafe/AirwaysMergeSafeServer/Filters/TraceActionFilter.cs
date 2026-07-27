@@ -22,8 +22,14 @@ public class TraceActionFilter : IActionFilter, IExceptionFilter
     {
         try
         {
-            var module = context.Controller.GetType().Name;
             var method = context.ActionDescriptor.RouteValues.TryGetValue("action", out var a) ? a : "Unknown";
+
+            // Skip diagnostic endpoints to prevent trace ring-buffer self-pollution.
+            // TraceLatest is polled every 3s — logging it would push out real data.
+            if (method == "TraceLatest" || method == "Health" || method == "TraceLatestExpanded")
+                return;
+
+            var module = context.Controller.GetType().Name;
             var args   = string.Join(", ",
                 context.ActionArguments.Select(kv =>
                     $"{kv.Key}={Truncate(kv.Value?.ToString())}"));
@@ -41,8 +47,10 @@ public class TraceActionFilter : IActionFilter, IExceptionFilter
     {
         try
         {
-            var module  = context.Controller.GetType().Name;
             var method  = context.ActionDescriptor.RouteValues.TryGetValue("action", out var a) ? a : "Unknown";
+            if (method == "TraceLatest" || method == "Health" || method == "TraceLatestExpanded")
+                return;
+            var module  = context.Controller.GetType().Name;
             var elapsed = context.HttpContext.Items.TryGetValue(SwKey, out var sw) && sw is Stopwatch s
                         ? $"{s.ElapsedMilliseconds}ms" : "?ms";
 
