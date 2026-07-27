@@ -24,8 +24,10 @@ public class PortalController : Controller
     {
         TraceLogger.Enter("Portal", nameof(Index));
         if (HttpContext.Session.GetString("HighwayId") != null)
-        TraceLogger.Exit("Portal", nameof(Index));
+        {
+            TraceLogger.Exit("Portal", nameof(Index));
             return RedirectToAction("Index", "Dashboard");
+        }
         TraceLogger.Exit("Portal", nameof(Index));
         return View(new PortalViewModel
         {
@@ -39,7 +41,7 @@ public class PortalController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Login(string highwayId, string userId, string password)
     {
-        TraceLogger.Enter("Portal", nameof(LoginGet));
+        TraceLogger.Enter("Portal", nameof(Login));
         var ip       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         var highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
 
@@ -92,7 +94,7 @@ public class PortalController : Controller
         HttpContext.Session.SetString("FullName",  user.FullName);
 
         _logger.LogInformation("Security: Successful login — userId={UserId} highway={HighwayId} ip={Ip}", userId, highwayId, ip);
-        TraceLogger.Exit("Portal", nameof(LoginGet));
+        TraceLogger.Exit("Portal", nameof(Login));
         return RedirectToAction("Index", "Dashboard");
     }
 
