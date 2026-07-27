@@ -1,66 +1,15 @@
-# ── Build outputs ────────────────────────────────────────────────────────────
 bin/
 obj/
-out/
 
-# ── .NET / NuGet ─────────────────────────────────────────────────────────────
-*.user
-*.suo
-*.userosscache
-*.sln.docstates
-project.lock.json
-project.fragment.lock.json
-artifacts/
-
-# ── SQLite dev database ───────────────────────────────────────────────────────
+# SQLite database files — never track these (git checkout corrupts them)
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
-# ── Secrets & keys — NEVER commit these ──────────────────────────────────────
+# Local secrets
 appsettings.Production.json
-tomtomkey.json
 secrets.json
-.env
-.env.*
-*.pem
-*.key
-*.pfx
-*.p12
-
-# ── Logs ─────────────────────────────────────────────────────────────────────
-logs/
-*.log
-*.log.*
-
-# ── IDE / OS ──────────────────────────────────────────────────────────────────
-.vs/
-.vscode/
-.idea/
-*.DS_Store
-Thumbs.db
-desktop.ini
-
-# ── Rider / JetBrains ────────────────────────────────────────────────────────
-.idea/
-*.sln.iml
-
-# ── NuGet restore cache ───────────────────────────────────────────────────────
-packages/
-*.nupkg
-nuget.config.local
-
-# ── Publish output ────────────────────────────────────────────────────────────
-publish/
-wwwroot/dist/
-
-# ── Test results ─────────────────────────────────────────────────────────────
-TestResults/
-coverage/
-*.trx
-*.coverage
-
-# ── Copilot / AI tool residue — do not commit ────────────────────────────────
-.github/copilot/
-.copilot/
-.aicache/
+*.env
