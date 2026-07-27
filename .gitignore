@@ -1,7 +1,15 @@
+# ═══════════════════════════════════════════════════════════════
+# Root .gitignore — excludes everything EXCEPT the .NET MVC solution
+# ═══════════════════════════════════════════════════════════════
+
+# ── .NET build artifacts ──
 bin/
 obj/
+*.dll
+*.pdb
+*.exe
 
-# SQLite database files — never track these (git checkout corrupts them)
+# ── SQLite database files ──
 *.db
 *.db-shm
 *.db-wal
@@ -9,7 +17,46 @@ obj/
 *.sqlite-shm
 *.sqlite-wal
 
-# Local secrets
+# ── Secrets / production config ──
 appsettings.Production.json
 secrets.json
 *.env
+
+# ── Replit platform files ──
+.replit
+.replitignore
+.replit-artifact/
+replit.md
+replit.nix
+.npmrc
+
+# ── Node/TypeScript artifacts (not part of .NET solution) ──
+artifacts/api-server/
+artifacts/mockup-sandbox/
+lib/
+scripts/
+node_modules/
+pnpm-lock.yaml
+pnpm-workspace.yaml
+package.json
+package-lock.json
+tsconfig.json
+tsconfig.base.json
+
+# ── Attached assets / generated documents ──
+attached_assets/
+*.pdf
+*.zip
+
+# ── IDE / OS files ──
+.vs/
+.vscode/
+*.suo
+*.user
+.DS_Store
+Thumbs.db
+
+# ── Logs / temp ──
+*.log
+*.tmp
+*.cache
