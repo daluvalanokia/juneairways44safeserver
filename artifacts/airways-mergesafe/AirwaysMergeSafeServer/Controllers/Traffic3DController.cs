@@ -1,4 +1,5 @@
 using AirwaysMergeSafeServer.Data;
+using AirwaysMergeSafeServer.Infrastructure;
 using AirwaysMergeSafeServer.Services;
 using AirwaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
@@ -138,10 +139,9 @@ public class Traffic3DController : Controller
             TraceLogger.Info("Traffic3D", nameof(GetAnimationData), $"No zones for hw={highwayId}");
             return Json(new { highwayCoords = Array.Empty<object>(), vehicles = Array.Empty<object>(), bounds = (object?)null, isEW = true, servers = Array.Empty<object>() });
         }
-        TraceLogger.Info("Traffic3D", nameof(GetAnimationData), $"Highway={highwayId} zones={zones.Count} isEW={isEW}");
-
         // 2. Determine if highway is E-W or N-S
         bool isEW = !highwayId.Contains("I35") && !highwayId.Contains("I45") && !highwayId.Contains("I25");
+        TraceLogger.Info("Traffic3D", nameof(GetAnimationData), $"Highway={highwayId} zones={zones.Count} isEW={isEW}");
 
         // 3. Compute geographic bounds
         var lats = zones.Select(z => z.lat).ToList();
