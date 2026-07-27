@@ -9,4 +9,6 @@ public class SettingsViewModel
     public int           PurgeMaxDays       { get; set; } = 30;
     public int           PurgeMaxCount      { get; set; } = 10000;
     public string        AirSceneAlertsJson { get; set; } = "{}";
+    public bool          InAppTraceEnabled  { get; set; } = false;
+    public string        InAppTraceLevel    { get; set; } = "info";
 }
