@@ -677,7 +677,7 @@ function _drawVehicles() {
         // Connector line (thin, semi-transparent)
         var lineFx = tipX + tipW / 2;
         var lineFy = tipY < sy ? tipY + tipH : tipY;
-        _octx.strokeStyle = 'rgba(255,255,255,0.35)';
+        _octx.strokeStyle = 'rgba(0,0,0,0.35)';
         _octx.lineWidth = 1;
         _octx.setLineDash([3, 3]);
         _octx.beginPath();
@@ -686,26 +686,26 @@ function _drawVehicles() {
         _octx.stroke();
         _octx.setLineDash([]);
 
-        // Vehicle ID — bold, with text shadow for legibility on any background
+        // Vehicle ID — bold black text with light shadow for legibility
         _octx.save();
-        _octx.shadowColor = 'rgba(0,0,0,0.9)';
-        _octx.shadowBlur = 4;
-        _octx.fillStyle = 'rgba(255,255,255,0.95)';
+        _octx.shadowColor = 'rgba(255,255,255,0.85)';
+        _octx.shadowBlur = 3;
+        _octx.fillStyle = '#000';
         _octx.font = 'bold 10px monospace';
         _octx.textAlign = 'left';
         _octx.textBaseline = 'top';
         _octx.fillText((vid || '–').slice(0, 14), tipX + 4, tipY + 3);
 
-        // Make + category — smaller, slightly transparent
-        _octx.fillStyle = 'rgba(255,255,255,0.7)';
+        // Make + category — smaller, dark grey
+        _octx.fillStyle = 'rgba(0,0,0,0.8)';
         _octx.font = '9px Arial';
         _octx.textBaseline = 'bottom';
         var makeCat = (make ? make.slice(0, 12) : '') + (make && cat ? ' · ' : '') + cat;
         _octx.fillText(makeCat, tipX + 4, tipY + tipH - 3);
 
-        // Speed — right-aligned
+        // Speed — right-aligned, dark with amber tint
         if (spd > 0) {
-            _octx.fillStyle = 'rgba(253,224,71,0.9)';
+            _octx.fillStyle = 'rgba(120,53,15,0.95)';
             _octx.font = 'bold 9px monospace';
             _octx.textAlign = 'right';
             _octx.textBaseline = 'top';
