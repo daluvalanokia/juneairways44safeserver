@@ -50,7 +50,10 @@
             <option value="">(All Zones)</option>
             @foreach (var z in Model.Zones)
             {
-                <option value="@z.ZoneId">@z.ZoneName</option>
+                <option value="@z.ZoneId"
+                        data-hw="@z.HighwayId"
+                        data-lat="@(z.Latitude?.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture) ?? "")"
+                        data-lon="@(z.Longitude?.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture) ?? "")">@z.ZoneName</option>
             }
         </select>
         <!-- Switch Server dropdown -->
@@ -59,7 +62,10 @@
             <option value="">(All Servers)</option>
             @foreach (var s in Model.SwitchServers)
             {
-                <option value="@s.ServerId" data-zone="@(s.ZoneId ?? "")">@s.ServerName</option>
+                var sZone = Model.Zones.FirstOrDefault(z => z.ZoneId == s.ZoneId);
+                <option value="@s.ServerId"
+                        data-zone="@(s.ZoneId ?? "")"
+                        data-zonename="@(sZone?.ZoneName ?? s.ZoneId ?? "")">@s.ServerName (@(sZone?.ZoneName ?? s.ZoneId ?? "?"))</option>
             }
         </select>
         <!-- View-mode toggle -->
@@ -210,7 +216,7 @@ const _INITIAL_EVENTS = @Html.Raw(Model.RecentEventsJson ?? "[]");
 
 // ── Zone / Server data from Razor ─────────────────────────────────────
 const T3D_SERVERS = @Html.Raw(serversJson);
-const T3D_ZONES   = @Html.Raw(zonesJson);
+let T3D_ZONES   = @Html.Raw(zonesJson);
 var selectedZoneId   = '';
 var selectedServerId = '';
 
@@ -1323,12 +1329,18 @@ async function t3dZoneChanged() {
     var z = selectedZoneId
         ? T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
         : (T3D_ZONES.find(function(zz){ return zz.lat && zz.lon; }) || null);
+    if (!z && selectedZoneId) {
+        // Fallback: read GPS directly from the <option> data attributes
+        var zOpt = document.querySelector('#t3dZoneSel option[value="' + selectedZoneId + '"]');
+        if (zOpt && zOpt.dataset.lat && zOpt.dataset.lon)
+            z = { zoneId: selectedZoneId, lat: parseFloat(zOpt.dataset.lat),
+                  lon: parseFloat(zOpt.dataset.lon), highwayId: zOpt.dataset.hw || HW };
+    }
     if (z && z.lat && z.lon) {
         midLat = z.lat; midLon = z.lon;
         _panMapTo(z.lat, z.lon);
         _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
     } else if (T3D_ZONES.length > 0) {
-        // No specific zone — re-center to first zone on the highway
         var z0 = T3D_ZONES[0];
         midLat = z0.lat; midLon = z0.lon;
         _panMapTo(z0.lat, z0.lon);
@@ -1351,7 +1363,6 @@ async function t3dServerChanged() {
     if (opt && opt.dataset.zone) {
         document.getElementById('t3dZoneSel').value = opt.dataset.zone;
         selectedZoneId = opt.dataset.zone;
-        // Filter server dropdown to show only servers for this zone
         var srvSel = document.getElementById('t3dServerSel');
         if (srvSel) {
             srvSel.querySelectorAll('option').forEach(function(o) {
@@ -1362,6 +1373,12 @@ async function t3dServerChanged() {
     var z = selectedZoneId
         ? T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
         : (T3D_ZONES.find(function(zz){ return zz.lat && zz.lon; }) || null);
+    if (!z && selectedZoneId) {
+        var zOpt2 = document.querySelector('#t3dZoneSel option[value="' + selectedZoneId + '"]');
+        if (zOpt2 && zOpt2.dataset.lat && zOpt2.dataset.lon)
+            z = { zoneId: selectedZoneId, lat: parseFloat(zOpt2.dataset.lat),
+                  lon: parseFloat(zOpt2.dataset.lon), highwayId: zOpt2.dataset.hw || HW };
+    }
     if (z && z.lat && z.lon) {
         midLat = z.lat; midLon = z.lon;
         _panMapTo(z.lat, z.lon);
