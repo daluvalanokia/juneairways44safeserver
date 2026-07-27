@@ -375,7 +375,8 @@ function _applyTileFallback() {
 function _panMapTo(lat, lon) {
     if (!_map) return;
     _mapCtrLat = lat; _mapCtrLon = lon;
-    _map.panTo([lat, lon], { animate: false });
+    _map.setView([lat, lon], _map.getZoom() || _leafletZoom, { animate: false });
+    _map.invalidateSize();
 }
 
 // ── Zoom: Leaflet zoom level controls both map + vehicle size ─────────
@@ -570,11 +571,6 @@ function _drawHighwayOverlay() {
     var cw = _oc.width, ch = _oc.height;
     if (cw < 2 || ch < 2) return;
     if (_bridgeDirty && _map) { _map.invalidateSize(); _bridgeDirty = false; }
-    // If bridge is dirty, force map re-projection
-    if (_bridgeDirty && _map) {
-        _map.invalidateSize();
-        _bridgeDirty = false;
-    }
 
     var zoomFactor;
     if (_map && _mapReady) {
@@ -1261,10 +1257,10 @@ async function t3dHighwayChanged(newHighwayId) {
             var z0 = T3D_ZONES[0];
             midLat = z0.lat; midLon = z0.lon;
             _panMapTo(z0.lat, z0.lon);
-            // Update highway path for bridge
-            _hwyPath = T3D_ZONES.map(function(z) { return { lat: z.lat, lon: z.lon, zoneId: z.zoneId }; });
+            // Rebuild highway path and SORT it by axis via _setHighwayCoords
+            _setHighwayCoords(z0.lat, z0.lon, HW);
+            // Override isEW from server (authoritative)
             _hwyIsEW = data.isEW;
-            _hwyLat = z0.lat; _hwyLon = z0.lon;
             if (typeof roadGroup3 !== 'undefined') {
                 roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
             }
@@ -1304,16 +1300,15 @@ async function t3dZoneChanged() {
     srvSel.querySelectorAll('option').forEach(function(o) {
         o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
     });
-    // Pan map to selected zone center
+    // Pan map to selected zone center + re-sort highway path
     var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
     if (z && z.lat && z.lon) {
         midLat = z.lat; midLon = z.lon;
         _panMapTo(z.lat, z.lon);
+        _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
     }
-    // Clear vehicles immediately so old ones don't linger
     _clearVehicles();
     _bridgeDirty = true;
-    // Fetch validated data from server
     await refreshScene();
     // After server data arrives, re-center map to ensure correct position
     if (z && z.lat && z.lon) {
@@ -1340,16 +1335,14 @@ async function t3dServerChanged() {
             });
         }
     }
-    // Pan map to the zone center
     var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
     if (z && z.lat && z.lon) {
         midLat = z.lat; midLon = z.lon;
         _panMapTo(z.lat, z.lon);
+        _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
     }
-    // Clear vehicles immediately so old ones don't linger
     _clearVehicles();
     _bridgeDirty = true;
-    // Fetch validated data from server
     await refreshScene();
     // After server data arrives, re-center map
     if (z && z.lat && z.lon) {
@@ -1622,22 +1615,20 @@ async function refreshScene() {
         console.log('[T3D] refreshScene: zones=' + ((data.highwayCoords||[]).length) + ' vehicles=' + ((data.vehicles||[]).length));
         // Update highway path from server-provided zone coordinates
         if (data.highwayCoords && data.highwayCoords.length > 0) {
-            _hwyPath = data.highwayCoords.map(function(z) {
-                return { lat: z.lat, lon: z.lon, zoneId: z.zoneId };
+            // Update T3D_ZONES from server data
+            T3D_ZONES = data.highwayCoords.map(function(z) {
+                return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                         highwayId: z.highwayId, radius: z.radius };
             });
+            // Rebuild + SORT highway path via _setHighwayCoords
+            _setHighwayCoords(T3D_ZONES[0].lat, T3D_ZONES[0].lon, HW);
+            // Override isEW from server (authoritative)
             _hwyIsEW = data.isEW;
-            _hwyLat  = _hwyPath[0].lat;
-            _hwyLon  = _hwyPath[0].lon;
             if (typeof roadGroup3 !== 'undefined') {
                 roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
             }
         } else if (data.isEW !== undefined) {
             // No zones but server told us the highway orientation
-            _hwyIsEW = data.isEW;
-            if (typeof roadGroup3 !== 'undefined') {
-                roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
-            }
-        } else if (data.isEW !== undefined) {
             _hwyIsEW = data.isEW;
             if (typeof roadGroup3 !== 'undefined') roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
         }
@@ -1651,10 +1642,6 @@ async function refreshScene() {
         } else if (!simRunning) {
             _clearVehicles();
         }
-        // Force bridge to re-project with new data
-        _bridgeDirty = true;
-        // Ensure map updates tile layout
-        if (_map) _map.invalidateSize();
         _bridgeDirty = true;
         if (_map) _map.invalidateSize();
     } catch(e) { console.warn('[T3D] Scene refresh error:', e); }
@@ -1922,7 +1909,8 @@ window.addEventListener('resize', function() {
     var _bootZone = T3D_ZONES.find(function(z){ return z.lat && z.lon; });
     if (_bootZone) {
         _mapCtrLat = _bootZone.lat; _mapCtrLon = _bootZone.lon;
-        _setHighwayCoords(_bootZone.lat, _bootZone.lon, _bootZone.highwayId);
+        _panMapTo(_bootZone.lat, _bootZone.lon);
+        _setHighwayCoords(_bootZone.lat, _bootZone.lon, _bootZone.highwayId || HW);
     } else {
         _setHighwayCoords(_mapCtrLat, _mapCtrLon, HW);
     }
