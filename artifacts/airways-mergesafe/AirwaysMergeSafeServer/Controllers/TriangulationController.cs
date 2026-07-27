@@ -3,6 +3,7 @@ using AirwaysMergeSafeServer.Models;
 using AirwaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
@@ -18,18 +19,21 @@ public class TriangulationController : Controller
 
     public async Task<IActionResult> Index(string? highwayId)
     {
+        TraceLogger.Enter("Triangulation", nameof(Index));
         var highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
         highwayId ??= HttpContext.Session.GetString("HighwayId") ?? highways.FirstOrDefault()?.HighwayId;
         if (highwayId != null) HttpContext.Session.SetString("HighwayId", highwayId);
 
         var configs = await _db.TriangulationConfigs.AsNoTracking()
             .Where(c => c.HighwayId == highwayId).OrderBy(c => c.ZoneId).ToListAsync();
+        TraceLogger.Exit("Triangulation", nameof(Index));
         return View(new TriangulationViewModel { Highways = highways, SelectedHighwayId = highwayId, Configs = configs });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(TriangulationConfig model)
     {
+        TraceLogger.Enter("Triangulation", nameof(Create));
         if (!ModelState.IsValid) // C4 + A7 FIX
         {
             if (IsAjax) return Json(new { ok = false, errors = ModelStateErrors() });
@@ -38,12 +42,14 @@ public class TriangulationController : Controller
         _db.TriangulationConfigs.Add(model);
         await _db.SaveChangesAsync();
         if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
+        TraceLogger.Exit("Triangulation", nameof(Create));
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Edit(TriangulationConfig model)
     {
+        TraceLogger.Enter("Triangulation", nameof(Edit));
         if (!ModelState.IsValid) // C4 + A7 FIX
         {
             if (IsAjax) return Json(new { ok = false, errors = ModelStateErrors() });
@@ -52,15 +58,18 @@ public class TriangulationController : Controller
         _db.TriangulationConfigs.Update(model);
         await _db.SaveChangesAsync();
         if (IsAjax) return Json(new { ok = true, highwayId = model.HighwayId });
+        TraceLogger.Exit("Triangulation", nameof(Edit));
         return RedirectToAction(nameof(Index), new { highwayId = model.HighwayId });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Delete(int id, string? highwayId)
     {
+        TraceLogger.Enter("Triangulation", nameof(Delete));
         var c = await _db.TriangulationConfigs.FindAsync(id);
         if (c != null) { _db.TriangulationConfigs.Remove(c); await _db.SaveChangesAsync(); }
         if (IsAjax) return Json(new { ok = true }); // A7 FIX: was missing
+        TraceLogger.Exit("Triangulation", nameof(Delete));
         return RedirectToAction(nameof(Index), new { highwayId });
     }
 
