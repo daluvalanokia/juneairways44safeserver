@@ -463,6 +463,100 @@ function _projectLatLng(lat, lon) {
     };
 }
 
+// ── Clip the highway polyline to geographic bounds ──────────────────
+// Takes the projected screen pts + raw GPS path + clip rect (in GPS degrees).
+// Returns a new array of screen pts, clipped to the bounding box.
+function _clipPathToBounds(screenPts, gpsPts, minLat, maxLat, minLon, maxLon) {
+    if (screenPts.length === 0) return screenPts;
+    if (screenPts.length === 1) {
+        // Single point — check if it's inside bounds
+        var p = gpsPts[0];
+        if (p.lat >= minLat && p.lat <= maxLat && p.lon >= minLon && p.lon <= maxLon) {
+            return screenPts;
+        }
+        return [];
+    }
+
+    // For each segment, clip to the GPS bounds using Cohen-Sutherland-style logic
+    // We work in GPS space, then project the clipped endpoints to screen coords.
+    var result = [];
+    for (var i = 0; i < gpsPts.length - 1; i++) {
+        var lat1 = gpsPts[i].lat, lon1 = gpsPts[i].lon;
+        var lat2 = gpsPts[i+1].lat, lon2 = gpsPts[i+1].lon;
+        var inside1 = lat1 >= minLat && lat1 <= maxLat && lon1 >= minLon && lon1 <= maxLon;
+        var inside2 = lat2 >= minLat && lat2 <= maxLat && lon2 >= minLon && lon2 <= maxLon;
+
+        if (inside1 && inside2) {
+            // Both inside — add both (dedup: only add p1 if result is empty or different)
+            if (result.length === 0) {
+                result.push(_projectLatLng(lat1, lon1));
+            }
+            result.push(_projectLatLng(lat2, lon2));
+        } else if (inside1 && !inside2) {
+            // p1 inside, p2 outside — clip at boundary
+            var clip = _clipSegmentToBox(lat1, lon1, lat2, lon2, minLat, maxLat, minLon, maxLon, false);
+            if (result.length === 0) result.push(_projectLatLng(lat1, lon1));
+            if (clip) result.push(_projectLatLng(clip.lat, clip.lon));
+        } else if (!inside1 && inside2) {
+            // p1 outside, p2 inside — clip at boundary
+            var clip = _clipSegmentToBox(lat1, lon1, lat2, lon2, minLat, maxLat, minLon, maxLon, true);
+            if (clip) result.push(_projectLatLng(clip.lat, clip.lon));
+            result.push(_projectLatLng(lat2, lon2));
+        }
+        // Both outside — skip segment entirely
+    }
+    // Handle single-point path
+    if (result.length === 0 && gpsPts.length === 1) {
+        var p = gpsPts[0];
+        if (p.lat >= minLat && p.lat <= maxLat && p.lon >= minLon && p.lon <= maxLon) {
+            // Single point inside — extend along highway axis to fill bounds
+            var extLat = (maxLat - minLat) / 2;
+            var extLon = (maxLon - minLon) / 2;
+            if (_hwyIsEW) {
+                result.push(_projectLatLng(p.lat, p.lon - extLon));
+                result.push(_projectLatLng(p.lat, p.lon + extLon));
+            } else {
+                result.push(_projectLatLng(p.lat - extLat, p.lon));
+                result.push(_projectLatLng(p.lat + extLat, p.lon));
+            }
+        }
+    }
+    // Extend first/last points slightly beyond bounds so the line reaches the clip edge
+    if (result.length >= 2) {
+        var extPx = Math.max(cw, ch) * 0.1;
+        var d0x = result[0].x - result[1].x, d0y = result[0].y - result[1].y;
+        var l0 = Math.hypot(d0x, d0y);
+        if (l0 > 0) { result[0].x += d0x/l0 * extPx; result[0].y += d0y/l0 * extPx; }
+        var n = result.length;
+        var dNx = result[n-1].x - result[n-2].x, dNy = result[n-1].y - result[n-2].y;
+        var lN = Math.hypot(dNx, dNy);
+        if (lN > 0) { result[n-1].x += dNx/lN * extPx; result[n-1].y += dNy/lN * extPx; }
+    }
+    return result;
+}
+
+// Helper: clip a GPS line segment to a bounding box — returns the intersection point
+function _clipSegmentToBox(lat1, lon1, lat2, lon2, minLat, maxLat, minLon, maxLon, fromOutside) {
+    // Simple parametric clipping: find t where the line crosses the box edge
+    var dLat = lat2 - lat1, dLon = lon2 - lon1;
+    var t = 1;
+    // Check each boundary
+    if (dLat !== 0) {
+        var tMin = (minLat - lat1) / dLat;
+        var tMax = (maxLat - lat1) / dLat;
+        if (tMin > 0 && tMin <= 1) t = Math.min(t, tMin);
+        if (tMax > 0 && tMax <= 1) t = Math.min(t, tMax);
+    }
+    if (dLon !== 0) {
+        var tMin2 = (minLon - lon1) / dLon;
+        var tMax2 = (maxLon - lon1) / dLon;
+        if (tMin2 > 0 && tMin2 <= 1) t = Math.min(t, tMin2);
+        if (tMax2 > 0 && tMax2 <= 1) t = Math.min(t, tMax2);
+    }
+    if (t <= 0 || t > 1) return null;
+    return { lat: lat1 + dLat * t, lon: lon1 + dLon * t };
+}
+
 function _drawHighwayOverlay() {
     if (!_oc || !_octx) return;
     if (!_hwyPath.length) return;
@@ -483,16 +577,26 @@ function _drawHighwayOverlay() {
     });
 
     // ── Extend the first and last segments to fill the screen ───────────
-    if (pts.length >= 2) {
+    // BUT only when no specific zone is selected (All Zones view).
+    // When a zone IS selected, clip the bridge to the zone's geographic bounds
+    // so it doesn't extend beyond the valid highway/zone area.
+    var _selBounds = _getSelectedBounds();
+    if (_selBounds && _selBounds.tight) {
+        // Specific zone selected — clip bridge to zone bounds + small buffer
+        var bufLat = 0.008, bufLon = 0.008;  // ~880m buffer beyond zone bounds
+        var clipMinLat = _selBounds.minLat - bufLat, clipMaxLat = _selBounds.maxLat + bufLat;
+        var clipMinLon = _selBounds.minLon - bufLon, clipMaxLon = _selBounds.maxLon + bufLon;
+        // Clip the path to the bounds — compute intersection with clip rect
+        pts = _clipPathToBounds(pts, _hwyPath, clipMinLat, clipMaxLat, clipMinLon, clipMaxLon);
+    } else if (pts.length >= 2) {
+        // All Zones — extend first/last segments to fill the screen
         var extLen = Math.max(cw, ch) * 1.5;
-        // Extend the first segment backwards
         var dx0 = pts[0].x - pts[1].x, dy0 = pts[0].y - pts[1].y;
         var len0 = Math.hypot(dx0, dy0);
         if (len0 > 0) {
             pts[0].x += dx0 / len0 * extLen;
             pts[0].y += dy0 / len0 * extLen;
         }
-        // Extend the last segment forwards
         var n = pts.length;
         var dxN = pts[n-1].x - pts[n-2].x, dyN = pts[n-1].y - pts[n-2].y;
         var lenN = Math.hypot(dxN, dyN);
@@ -501,6 +605,8 @@ function _drawHighwayOverlay() {
             pts[n-1].y += dyN / lenN * extLen;
         }
     }
+
+    if (pts.length < 2) return;  // Bridge fully outside view — nothing to draw
 
     // ── Helper: draw a polyline through all projected points ───────────
     function _strokePath() {
@@ -822,24 +928,25 @@ function _updateVehiclePositions() {
         // Axis-aware corridor clamping — keeps vehicles within the physical road surface.
         // Cross-axis clamp: ±0.00035° ≈ ±39m (≈ 2 lane widths from centreline).
         // Along-axis wrap:  ±0.025°  ≈ ±2.5km (highway segment length).
+        // Also enforces selected highway/zone bounds — vehicles can't drift outside.
         if (vd.zoneLat && vd.zoneLon) {
             var dLat = vd.lat - vd.zoneLat;
             var dLon = vd.lon - vd.zoneLon;
             if (vd.isNSHwy) {
-                // N-S highway: tight lon clamping (cross-axis), wrap lat (along-axis)
                 if (Math.abs(dLon) > 0.00035) vd.lon = vd.zoneLon + (dLon > 0 ? 0.00035 : -0.00035);
-                if (Math.abs(dLat) > 0.025) {
-                    // Wrap to opposite end of segment — simulate continuous traffic
-                    vd.lat = vd.zoneLat - (dLat > 0 ? 0.024 : -0.024);
-                }
+                if (Math.abs(dLat) > 0.025) vd.lat = vd.zoneLat - (dLat > 0 ? 0.024 : -0.024);
             } else {
-                // E-W highway: tight lat clamping (cross-axis), wrap lon (along-axis)
                 if (Math.abs(dLat) > 0.00035) vd.lat = vd.zoneLat + (dLat > 0 ? 0.00035 : -0.00035);
-                if (Math.abs(dLon) > 0.025) {
-                    // Wrap to opposite end of segment — simulate continuous traffic
-                    vd.lon = vd.zoneLon - (dLon > 0 ? 0.024 : -0.024);
-                }
+                if (Math.abs(dLon) > 0.025) vd.lon = vd.zoneLon - (dLon > 0 ? 0.024 : -0.024);
             }
+        }
+        // Enforce selected bounds — hard clamp so vehicles stay within the visible highway area
+        var _moveBounds = _getSelectedBounds();
+        if (_moveBounds) {
+            if (vd.lat < _moveBounds.minLat) vd.lat = _moveBounds.minLat;
+            if (vd.lat > _moveBounds.maxLat) vd.lat = _moveBounds.maxLat;
+            if (vd.lon < _moveBounds.minLon) vd.lon = _moveBounds.minLon;
+            if (vd.lon > _moveBounds.maxLon) vd.lon = _moveBounds.maxLon;
         }
     });
 }
@@ -1108,6 +1215,72 @@ function _gpsDist(lat1, lon1, lat2, lon2) {
     return Math.sqrt((lat1 - lat2) * (lat1 - lat2) + (lon1 - lon2) * (lon1 - lon2));
 }
 
+// ── Selected bounds: geographic limits for bridge + vehicle validation ──
+// Returns {minLat, maxLat, minLon, maxLon, tight} or null if unconstrained.
+//   tight = true when a specific zone/server is selected (stricter vehicle check)
+function _getSelectedBounds() {
+    if (!T3D_ZONES || T3D_ZONES.length === 0) return null;
+
+    // If a specific zone is selected, compute bounds around just that zone
+    if (selectedZoneId) {
+        var z = T3D_ZONES.find(function(zz) { return zz.zoneId === selectedZoneId; });
+        if (z && z.lat && z.lon) {
+            // Buffer: ±0.045° (~5km) along the road, ±0.004° (~440m) across
+            var alongAxis = 0.045;
+            var crossAxis = 0.004;
+            var isNS = !_isEWHighway(z.highwayId);
+            if (isNS) {
+                return {
+                    minLat: z.lat - alongAxis, maxLat: z.lat + alongAxis,
+                    minLon: z.lon - crossAxis, maxLon: z.lon + crossAxis,
+                    tight: true, centerLat: z.lat, centerLon: z.lon
+                };
+            } else {
+                return {
+                    minLat: z.lat - crossAxis, maxLat: z.lat + crossAxis,
+                    minLon: z.lon - alongAxis, maxLon: z.lon + alongAxis,
+                    tight: true, centerLat: z.lat, centerLon: z.lon
+                };
+            }
+        }
+    }
+
+    // No specific zone — compute bounds from ALL zones on the highway
+    var lats = T3D_ZONES.filter(function(z) { return z.lat && z.lon; }).map(function(z) { return z.lat; });
+    var lons = T3D_ZONES.filter(function(z) { return z.lat && z.lon; }).map(function(z) { return z.lon; });
+    if (!lats.length) return null;
+
+    var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+    var minLon = Math.min.apply(null, lons), maxLon = Math.max.apply(null, lons);
+
+    // Expand by 15% padding so vehicles near the edge aren't clipped
+    var padLat = (maxLat - minLat) * 0.15 || 0.01;
+    var padLon = (maxLon - minLon) * 0.15 || 0.01;
+    return {
+        minLat: minLat - padLat, maxLat: maxLat + padLat,
+        minLon: minLon - padLon, maxLon: maxLon + padLon,
+        tight: false, centerLat: (minLat + maxLat) / 2, centerLon: (minLon + maxLon) / 2
+    };
+}
+
+// ── Check if a GPS coordinate is within the selected highway/zone bounds ──
+// Returns true if the point is valid, false if it should be rejected/snapped.
+function _isWithinBounds(lat, lon) {
+    var b = _getSelectedBounds();
+    if (!b) return true;  // No zones loaded — accept everything
+    return lat >= b.minLat && lat <= b.maxLat && lon >= b.minLon && lon <= b.maxLon;
+}
+
+// ── Snap a coordinate into the selected bounds if it's outside ──
+function _clampToBounds(lat, lon) {
+    var b = _getSelectedBounds();
+    if (!b) return { lat: lat, lon: lon };
+    return {
+        lat: Math.max(b.minLat, Math.min(b.maxLat, lat)),
+        lon: Math.max(b.minLon, Math.min(b.maxLon, lon))
+    };
+}
+
 function loadEvents(events) {
     if (!events || !events.length) return;
     var now = Date.now();
@@ -1115,10 +1288,13 @@ function loadEvents(events) {
         // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
         var vid = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '';
         if (!vid) return;
-        // Skip vehicles whose zone doesn't belong to the current view
-        // BUT allow events with no zone_id (sim may not always include it)
+        // Skip vehicles whose zone/highway doesn't match the current selection
+        // BUT allow events with no zone_id during active simulation
         var evZoneCheck = ev.zone_id || ev.zoneId || ev.ZoneId || '';
+        var evHwCheck   = (ev.highway_id || ev.highwayId || ev.HighwayId || '').toUpperCase();
         if (evZoneCheck && selectedZoneId && evZoneCheck !== selectedZoneId && !simRunning) return;
+        // If event has a highway_id that doesn't match the selected highway, skip it
+        if (evHwCheck && HW && evHwCheck !== HW.toUpperCase() && !simRunning) return;
         var lat = parseFloat(ev.latitude  || ev.Latitude  || 0);
         var lon = parseFloat(ev.longitude || ev.Longitude || 0);
         var spd  = parseFloat(ev.speed_mph || ev.speedMph || ev.SpeedMph || 0);
@@ -1129,25 +1305,51 @@ function loadEvents(events) {
         var evZoneId = ev.zone_id || ev.zoneId || ev.ZoneId || '';
         var zone = T3D_ZONES.find(function(zz) { return zz.zoneId === evZoneId; });
 
-        // Validate GPS — snap to zone highway if missing or way out-of-range
+        // Validate GPS — check against selected highway/zone/server bounds
         var needsSnap = false;
+        var selB = _getSelectedBounds();
         if (!lat || !lon || isNaN(lat) || isNaN(lon) || (lat === 0 && lon === 0)) {
             needsSnap = true;
         } else if (zone && zone.lat && zone.lon) {
             // If the GPS is more than 0.08° (~8km) from zone centre it's bogus — snap it
             var dist = _gpsDist(lat, lon, zone.lat, zone.lon);
             if (dist > 0.08) needsSnap = true;
+        } else if (selB && !_isWithinBounds(lat, lon)) {
+            // Outside the selected highway bounds — snap it
+            needsSnap = true;
+        }
+
+        // If a specific zone is selected (tight bounds), enforce stricter validation
+        if (!needsSnap && selB && selB.tight) {
+            // For tight (zone-selected) mode: reject vehicles more than 0.06° (~6.5km) from zone center
+            var zoneDist = _gpsDist(lat, lon, selB.centerLat, selB.centerLon);
+            if (zoneDist > 0.06) needsSnap = true;
         }
 
         if (needsSnap) {
             var snapped = zone ? _snapToZone(evZoneId) : null;
             if (snapped) {
                 lat = snapped.lat; lon = snapped.lon;
+            } else if (selB) {
+                // Snap to the center of the selected bounds with highway-aligned jitter
+                var snapped2 = _snapToZone(selectedZoneId || (T3D_ZONES[0] && T3D_ZONES[0].zoneId) || '');
+                if (snapped2) { lat = snapped2.lat; lon = snapped2.lon; }
+                else {
+                    var clamped = _clampToBounds(_mapCtrLat, _mapCtrLon);
+                    lat = clamped.lat + (Math.random() - 0.5) * 0.004;
+                    lon = clamped.lon + (Math.random() - 0.5) * 0.010;
+                }
             } else {
-                // No zone — use current map centre with tiny jitter
+                // No zones loaded — use current map centre with tiny jitter
                 lat = _mapCtrLat + (Math.random() - 0.5) * 0.008;
                 lon = _mapCtrLon + (Math.random() - 0.5) * 0.020;
             }
+        }
+
+        // Final safety: clamp to selected bounds if still outside
+        if (selB && !_isWithinBounds(lat, lon)) {
+            var clamped2 = _clampToBounds(lat, lon);
+            lat = clamped2.lat; lon = clamped2.lon;
         }
 
         var dir = parseFloat(ev.direction || ev.Direction || ev.heading || ev.Heading || -1);
