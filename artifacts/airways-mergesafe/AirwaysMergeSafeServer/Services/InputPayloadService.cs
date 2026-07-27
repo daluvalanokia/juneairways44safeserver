@@ -86,7 +86,7 @@ public class InputPayloadService
 
         if (string.Equals(sourceType, "airflycar", StringComparison.OrdinalIgnoreCase))
         {
-            var _afc = GenerateAirFlyCar(rng, fields);
+            var _afc = GenerateAirFlyCar(rng, fields, highwayId);
             TraceLogger.Exit("InputPayloadService", nameof(Generate), "airflycar");
             return _afc;
         }
@@ -154,7 +154,7 @@ public class InputPayloadService
     /// Produces realistic UAM telemetry with correlated fields
     /// (flight_phase drives altitude range, battery_soc drives range_remaining_km, etc.)
     /// </summary>
-    private static string GenerateAirFlyCar(Random rng, IEnumerable<string> fields)
+    private static string GenerateAirFlyCar(Random rng, IEnumerable<string> fields, string? highwayId = null)
     {
         var obj = new Dictionary<string, object?>();
 
