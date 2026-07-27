@@ -31,7 +31,8 @@ public static class TraceLogger
         try
         {
             var stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
-            const string dir = "/tmp";
+            // Cross-platform: Windows = %TEMP%, Linux = /tmp, macOS = $TMPDIR
+            var dir = Path.GetTempPath();
             Directory.CreateDirectory(dir);
             _logPath = Path.Combine(dir, $"trace_{stamp}.log");
             _writer  = new StreamWriter(_logPath, append: false, Encoding.UTF8) { AutoFlush = true };
@@ -41,7 +42,10 @@ public static class TraceLogger
         }
         catch
         {
-            _enabled = false; // non-fatal: tracing silently disabled
+            // File logging failed — but KEEP _enabled = true so the
+            // in-app trace ring buffer still receives lines via OnInAppTrace.
+            _enabled = true;
+            _writer  = null;
         }
     }
 
@@ -83,10 +87,10 @@ public static class TraceLogger
         try
         {
             var line = $"[{DateTime.UtcNow:HH:mm:ss.fff}] [{level}] [{module}.{method}] {message}";
-            lock (_lock) { _writer?.WriteLine(line); }
-
-            // Also push to the in-app trace buffer if the callback is registered
-            try { OnInAppTrace?.Invoke(level, line); } catch { /* never throw from trace */ }
+            // File write only if writer is available
+            if (_writer != null) lock (_lock) { _writer.WriteLine(line); }
+            // ALWAYS push to in-app trace — works even without file logging
+            try { OnInAppTrace?.Invoke(level, line); } catch { }
         }
         catch { /* never throw from the trace logger */ }
     }
