@@ -33,11 +33,19 @@ public class InAppTraceService
         if (!Enabled) return;
         if (Pri(level) < Pri(Level)) return;
 
+        // TraceLogger.Write passes the fully-formatted line as `message`:
+        // "[HH:mm:ss.fff] [LEVEL] [Module.Method] text"
+        // Strip that prefix so the TraceLine.Message contains clean plain text.
+        var cleanMsg = message;
+        var bracketClose = message.LastIndexOf(']');
+        if (bracketClose >= 0 && bracketClose < message.Length - 1)
+            cleanMsg = message.Substring(bracketClose + 1).Trim();
+
         _buffer.Enqueue(new TraceLine
         {
             Timestamp = DateTime.UtcNow.ToString("HH:mm:ss.fff"),
             Level      = level.Trim(),
-            Message    = message
+            Message    = cleanMsg
         });
 
         while (_buffer.Count > MaxLines)
