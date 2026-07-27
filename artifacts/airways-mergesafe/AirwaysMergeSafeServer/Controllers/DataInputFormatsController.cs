@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
@@ -34,6 +35,7 @@ public class DataInputFormatsController : Controller
 
     public async Task<IActionResult> Index(string activeTab = "physical")
     {
+        TraceLogger.Enter("DataInputFormats", nameof(Index));
         var highways   = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
         var highwayId  = HttpContext.Session.GetString("HighwayId");
         var allConfigs = await _db.InputFormatConfigs.AsNoTracking().OrderBy(c => c.FormatName).ToListAsync();
@@ -44,6 +46,7 @@ public class DataInputFormatsController : Controller
                             .Where(s => s.ZoneId != null && zoneIds.Contains(s.ZoneId))
                             .OrderBy(s => s.ServerName).ToListAsync();
 
+        TraceLogger.Exit("DataInputFormats", nameof(Index));
         return View(new DataInputFormatsViewModel
         {
             Highways          = highways,
@@ -68,6 +71,7 @@ public class DataInputFormatsController : Controller
     public async Task<IActionResult> SimulationPost(
         string? highwayId, string? zoneId, string? serverId, string? sourceType)
     {
+        TraceLogger.Enter("DataInputFormats", nameof(SimulationPost));
         var type          = sourceType ?? "physical";
         var isAirFlyCarSrc = string.Equals(type, "airflycar", StringComparison.OrdinalIgnoreCase);
         // Task 10: all formats carry isAirFlyCar explicitly (Y for airflycar source, N for others)
@@ -180,7 +184,7 @@ public class DataInputFormatsController : Controller
             _db.VehicleEvents.Add(_savedEvent);
         }
         catch (Exception _evEx) { _logger.LogWarning("SimPost: VehicleEvent save failed: {Msg}", _evEx.Message); }
-
+        catch (Exception _evEx) { _logger.LogWarning("SimPost: VehicleEvent save failed: {Msg}", _evEx.Message); }
         // ── Update SimulationStatus in database ──────────────────────────────
         // Maintain a persistent server-side record so the app knows the sim
         // was recently active even after a restart.  This is the authoritative
@@ -208,6 +212,7 @@ public class DataInputFormatsController : Controller
         }
         catch (Exception exSim)
         {
+            TraceLogger.Error("DataInputFormats", nameof(SimulationPost), ex);
             _logger.LogWarning("SimPost: Failed to update SimulationStatus: {Message}", exSim.Message);
         }
 
@@ -245,6 +250,7 @@ public class DataInputFormatsController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> SimulationStop()
     {
+        TraceLogger.Enter("DataInputFormats", nameof(SimulationStop));
         try
         {
             // ── Mark simulation as stopped in the database ────────────────────
@@ -274,6 +280,8 @@ public class DataInputFormatsController : Controller
         }
         catch (Exception ex)
         {
+            TraceLogger.Error("DataInputFormats", nameof(SimulationStop), ex);
+        TraceLogger.Exit("DataInputFormats", nameof(SimulationStop));
             return Json(new { ok = false, error = ex.Message });
         }
     }
@@ -286,6 +294,7 @@ public class DataInputFormatsController : Controller
     [HttpGet, SkipSessionAuth]
     public async Task<IActionResult> SimulationStatus()
     {
+        TraceLogger.Enter("DataInputFormats", nameof(SimulationStatus));
         try
         {
             var simStatus = await _db.SimulationStatuses
@@ -320,6 +329,8 @@ public class DataInputFormatsController : Controller
         }
         catch (Exception ex)
         {
+            TraceLogger.Error("DataInputFormats", nameof(SimulationStatus), ex);
+        TraceLogger.Exit("DataInputFormats", nameof(SimulationStatus));
             return Json(new { isRunning = false, stale = false, error = ex.Message });
         }
     }
@@ -327,39 +338,46 @@ public class DataInputFormatsController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(InputFormatConfig model, string[] enabledFields, string[]? customFieldNames)
     {
+        TraceLogger.Enter("DataInputFormats", nameof(Create));
         var combined = enabledFields.ToList();
         if (customFieldNames != null) combined.AddRange(customFieldNames.Where(n => !string.IsNullOrWhiteSpace(n)));
         model.EnabledFieldsRaw = string.Join(",", combined);
         _db.InputFormatConfigs.Add(model);
         await _db.SaveChangesAsync();
         if (IsAjax) return Json(new { ok = true, activeTab = model.SourceType });
+        TraceLogger.Exit("DataInputFormats", nameof(Create));
         return RedirectToAction(nameof(Index), new { activeTab = model.SourceType });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Edit(InputFormatConfig model, string[] enabledFields, string[]? customFieldNames)
     {
+        TraceLogger.Enter("DataInputFormats", nameof(Edit));
         var combined = enabledFields.ToList();
         if (customFieldNames != null) combined.AddRange(customFieldNames.Where(n => !string.IsNullOrWhiteSpace(n)));
         model.EnabledFieldsRaw = string.Join(",", combined);
         _db.InputFormatConfigs.Update(model);
         await _db.SaveChangesAsync();
         if (IsAjax) return Json(new { ok = true, activeTab = model.SourceType });
+        TraceLogger.Exit("DataInputFormats", nameof(Edit));
         return RedirectToAction(nameof(Index), new { activeTab = model.SourceType });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Delete(int id, string? activeTab)
     {
+        TraceLogger.Enter("DataInputFormats", nameof(Delete));
         var c = await _db.InputFormatConfigs.FindAsync(id);
         if (c != null) { _db.InputFormatConfigs.Remove(c); await _db.SaveChangesAsync(); }
         if (IsAjax) return Json(new { ok = true });
+        TraceLogger.Exit("DataInputFormats", nameof(Delete));
         return RedirectToAction(nameof(Index), new { activeTab });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> GeneratePayloadAjax(int configId)
     {
+        TraceLogger.Enter("DataInputFormats", nameof(GeneratePayloadAjax));
         var config = await _db.InputFormatConfigs.FindAsync(configId);
         if (config == null) return Json(new { ok = false, error = "Config not found" });
 
@@ -398,6 +416,7 @@ public class DataInputFormatsController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> DuplicateConfig(int id, string targetTab)
     {
+        TraceLogger.Enter("DataInputFormats", nameof(DuplicateConfig));
         var original = await _db.InputFormatConfigs.FindAsync(id);
         if (original == null) return Json(new { ok = false, error = "Config not found" });
         var validTabs = new[] { "physical", "satellite", "telecom", "tracker", "airflycar" };
@@ -415,15 +434,18 @@ public class DataInputFormatsController : Controller
         };
         _db.InputFormatConfigs.Add(copy);
         await _db.SaveChangesAsync();
+        TraceLogger.Exit("DataInputFormats", nameof(DuplicateConfig));
         return Json(new { ok = true, targetTab, configId = copy.Id, name = copy.FormatName });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> DeletePayload(int id, string? activeTab)
     {
+        TraceLogger.Enter("DataInputFormats", nameof(DeletePayload));
         var p = await _db.SamplePayloads.FindAsync(id);
         if (p != null) { _db.SamplePayloads.Remove(p); await _db.SaveChangesAsync(); }
         if (IsAjax) return Json(new { ok = true });
+        TraceLogger.Exit("DataInputFormats", nameof(DeletePayload));
         return RedirectToAction(nameof(Index), new { activeTab });
     }
 
