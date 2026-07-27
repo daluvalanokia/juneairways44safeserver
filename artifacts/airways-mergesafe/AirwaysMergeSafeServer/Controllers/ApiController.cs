@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
@@ -52,6 +53,7 @@ public class ApiController : ControllerBase
     [HttpGet("stats"), OutputCache(PolicyName = "ShortLive")]
     public async Task<IActionResult> Stats(string? highwayId)
     {
+        TraceLogger.Enter("Api", nameof(Stats));
         if (!IsAuthorised()) return Unauthorized(new { error = "Authentication required." });
         var zones   = await _db.MergeZones.AsNoTracking().Where(z => highwayId == null || z.HighwayId == highwayId).CountAsync();
         var servers = await _db.SwitchServers.AsNoTracking().Where(s => highwayId == null || s.HighwayId == highwayId).CountAsync();
@@ -59,12 +61,14 @@ public class ApiController : ControllerBase
         var events  = await _db.VehicleEvents.AsNoTracking().Where(e => highwayId == null || e.HighwayId == highwayId).CountAsync();
         var ground  = await _db.VehicleEvents.AsNoTracking().Where(e => (highwayId == null || e.HighwayId == highwayId) && e.VehicleMode == "ground").CountAsync();
         var air     = await _db.VehicleEvents.AsNoTracking().Where(e => (highwayId == null || e.HighwayId == highwayId) && e.VehicleMode == "air").CountAsync();
+        TraceLogger.Exit("Api", nameof(Stats));
         return Ok(new { zones, servers, sensors, events, ground, air });
     }
 
     [HttpGet("zones"), OutputCache(PolicyName = "ShortLive")]
     public async Task<IActionResult> Zones(string? highwayId)
     {
+        TraceLogger.Enter("Api", nameof(Zones));
         if (!IsAuthorised()) return Unauthorized(new { error = "Authentication required." });
         var zones = await _db.MergeZones.AsNoTracking()
             .Where(z => highwayId == null || z.HighwayId == highwayId)
@@ -73,6 +77,7 @@ public class ApiController : ControllerBase
                 z.Status, z.MileMarker, z.Latitude, z.Longitude,
                 z.GeofenceRadius, z.AltitudeMeters })
             .ToListAsync();
+        TraceLogger.Exit("Api", nameof(Zones));
         return Ok(zones);
     }
 
@@ -87,6 +92,7 @@ public class ApiController : ControllerBase
         string? mode = null, string? category = null,
         string? zoneId = null, string? serverId = null)
     {
+        TraceLogger.Enter("Api", nameof(EventsLive));
         if (!IsAuthorised()) return Unauthorized(new { error = "Authentication required." });
 
         take      = Math.Clamp(take, 1, 200);
@@ -120,12 +126,14 @@ public class ApiController : ControllerBase
                 e.IsAirFlyCar, e.CreatedDate
             })
             .ToListAsync();
+        TraceLogger.Exit("Api", nameof(EventsLive));
         return Ok(events);
     }
 
     [HttpGet("altitudebands"), OutputCache(PolicyName = "ShortLive")]
     public async Task<IActionResult> AltitudeBands(string? highwayId)
     {
+        TraceLogger.Enter("Api", nameof(AltitudeBands));
         if (!IsAuthorised()) return Unauthorized(new { error = "Authentication required." });
         var bands = await _db.SwitchServers.AsNoTracking()
             .Where(s => (highwayId == null || s.HighwayId == highwayId)
@@ -133,6 +141,7 @@ public class ApiController : ControllerBase
             .Select(s => new { s.ServerId, s.ServerName, s.ZoneId, s.HighwayId,
                 s.AltitudeMinMeters, s.AltitudeMaxMeters, s.AltitudeWidthMeters, s.Status })
             .ToListAsync();
+        TraceLogger.Exit("Api", nameof(AltitudeBands));
         return Ok(bands);
     }
 
@@ -141,6 +150,7 @@ public class ApiController : ControllerBase
     [RequestSizeLimit(32_768)]
     public async Task<IActionResult> IngestEvent([FromBody] IngestPayload payload)
     {
+        TraceLogger.Enter("Api", nameof(IngestEvent));
         if (!IsAuthorised()) return Unauthorized(new { error = "Authentication required." });
         if (payload is null) return BadRequest(new { error = "Payload required." });
 
@@ -218,7 +228,9 @@ public class ApiController : ControllerBase
     [HttpPost("sim/event")]
     public async Task<IActionResult> SaveSimEvent([FromBody] SimEventPayload payload)
     {
+        TraceLogger.Enter("Api", nameof(SaveSimEvent));
         if (HttpContext.Session.GetString("UserId") is not { Length: > 0 })
+        TraceLogger.Exit("Api", nameof(SaveSimEvent));
             return Unauthorized(new { error = "Session required." });
         if (payload is null) return BadRequest(new { error = "Payload required." });
 
