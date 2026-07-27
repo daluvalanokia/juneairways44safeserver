@@ -113,6 +113,9 @@ public class Traffic3DController : Controller
     {
         TraceLogger.Enter("Traffic3D", nameof(GetAnimationData), $"hw={highwayId} z={zoneId} s={serverId}");
         highwayId ??= HttpContext.Session.GetString("HighwayId") ?? "";
+        // Persist highway selection to session so page refresh preserves it
+        if (!string.IsNullOrEmpty(highwayId))
+            HttpContext.Session.SetString("HighwayId", highwayId);
         if (string.IsNullOrEmpty(highwayId))
         {
             TraceLogger.Info("Traffic3D", nameof(GetAnimationData), "No highwayId");
