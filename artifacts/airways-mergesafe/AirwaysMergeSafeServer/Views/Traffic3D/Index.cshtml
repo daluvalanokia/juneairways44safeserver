@@ -1241,10 +1241,13 @@ document.querySelectorAll('#viewToggle button').forEach(function(btn) {
 // ── Highway dropdown change — AJAX refresh (no page reload) ──────────
 async function t3dHighwayChanged(newHighwayId) {
     if (!newHighwayId || newHighwayId === HW) return;
-    // Update HW variable
+    // Update HW variable + persist to localStorage
     HW = newHighwayId;
+    localStorage.setItem('t3d_selectedHw', HW);
     // Reset zone/server selection
     selectedZoneId = ''; selectedServerId = '';
+    localStorage.removeItem('t3d_selectedZone');
+    localStorage.removeItem('t3d_selectedServer');
     var zsel = document.getElementById('t3dZoneSel');
     var ssel = document.getElementById('t3dServerSel');
     if (zsel) zsel.value = '';
@@ -1264,12 +1267,16 @@ async function t3dHighwayChanged(newHighwayId) {
                 return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
                          highwayId: z.highwayId, radius: z.radius };
             });
-            // Update zone dropdown options
+            // Update zone dropdown options WITH data attributes (matches Razor output)
             if (zsel) {
                 zsel.innerHTML = '<option value="">(All Zones)</option>';
                 T3D_ZONES.forEach(function(z) {
                     var opt = document.createElement('option');
-                    opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
+                    opt.value = z.zoneId;
+                    opt.textContent = z.zoneName || z.zoneId;
+                    opt.dataset.hw = z.highwayId || HW;
+                    opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                    opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
                     zsel.appendChild(opt);
                 });
             }
@@ -1294,14 +1301,20 @@ async function t3dHighwayChanged(newHighwayId) {
         }
         // Store bounds
         if (data.bounds) _serverBounds = data.bounds;
-        // Rebuild server dropdown from server data
+        // Rebuild server dropdown from server data (with zone info)
         if (data.servers && ssel) {
             ssel.innerHTML = '<option value="">(All Servers)</option>';
             data.servers.forEach(function(s) {
                 var opt = document.createElement('option');
                 opt.value = s.serverId;
-                opt.textContent = s.serverName || s.serverId;
-                opt.dataset.zone = s.zoneId;
+                // Find zone name from T3D_ZONES for display
+                var zn = '';
+                if (s.zoneId) {
+                    var zMatch = T3D_ZONES.find(function(zz){ return zz.zoneId === s.zoneId; });
+                    zn = zMatch ? (zMatch.zoneName || s.zoneId) : s.zoneId;
+                }
+                opt.textContent = (s.serverName || s.serverId) + (zn ? ' (' + zn + ')' : '');
+                opt.dataset.zone = s.zoneId || '';
                 ssel.appendChild(opt);
             });
         }
@@ -1318,6 +1331,8 @@ async function t3dHighwayChanged(newHighwayId) {
 
 async function t3dZoneChanged() {
     selectedZoneId = document.getElementById('t3dZoneSel').value;
+    localStorage.setItem('t3d_selectedZone', selectedZoneId);
+    localStorage.removeItem('t3d_selectedServer');
     selectedServerId = '';
     document.getElementById('t3dServerSel').value = '';
     var srvSel = document.getElementById('t3dServerSel');
@@ -1358,6 +1373,8 @@ async function t3dZoneChanged() {
 
 async function t3dServerChanged() {
     selectedServerId = document.getElementById('t3dServerSel').value;
+    localStorage.setItem('t3d_selectedServer', selectedServerId);
+    if (selectedServerId) localStorage.setItem('t3d_selectedZone', selectedZoneId);
     var opt = document.querySelector('#t3dServerSel option[value="' + selectedServerId + '"]');
     // Sync zone dropdown with the server's zone
     if (opt && opt.dataset.zone) {
@@ -1665,6 +1682,59 @@ async function refreshScene() {
                 return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
                          highwayId: z.highwayId, radius: z.radius };
             });
+            // Rebuild zone dropdown if the zone list changed (compare IDs)
+            var zsel = document.getElementById('t3dZoneSel');
+            if (zsel) {
+                var currentIds = Array.from(zsel.querySelectorAll('option')).filter(function(o){ return o.value; }).map(function(o){ return o.value; });
+                var newIds = T3D_ZONES.map(function(z){ return z.zoneId; });
+                var changed = currentIds.length !== newIds.length || currentIds.some(function(id,i){ return id !== newIds[i]; });
+                if (changed) {
+                    var prevZone = selectedZoneId;
+                    zsel.innerHTML = '<option value="">(All Zones)</option>';
+                    T3D_ZONES.forEach(function(z) {
+                        var opt = document.createElement('option');
+                        opt.value = z.zoneId;
+                        opt.textContent = z.zoneName || z.zoneId;
+                        opt.dataset.hw = z.highwayId || HW;
+                        opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                        opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                        zsel.appendChild(opt);
+                    });
+                    // Restore selection if still valid
+                    if (prevZone && newIds.indexOf(prevZone) >= 0) {
+                        zsel.value = prevZone;
+                    } else {
+                        selectedZoneId = '';
+                        zsel.value = '';
+                    }
+                }
+            }
+            // Rebuild server dropdown if servers changed
+            if (data.servers) {
+                var ssel = document.getElementById('t3dServerSel');
+                if (ssel) {
+                    var prevSrv = selectedServerId;
+                    ssel.innerHTML = '<option value="">(All Servers)</option>';
+                    data.servers.forEach(function(s) {
+                        var opt = document.createElement('option');
+                        opt.value = s.serverId;
+                        var zn = '';
+                        if (s.zoneId) {
+                            var zMatch = T3D_ZONES.find(function(zz){ return zz.zoneId === s.zoneId; });
+                            zn = zMatch ? (zMatch.zoneName || s.zoneId) : s.zoneId;
+                        }
+                        opt.textContent = (s.serverName || s.serverId) + (zn ? ' (' + zn + ')' : '');
+                        opt.dataset.zone = s.zoneId || '';
+                        ssel.appendChild(opt);
+                    });
+                    // Restore selection if still valid
+                    if (prevSrv) {
+                        var stillExists = data.servers.some(function(s){ return s.serverId === prevSrv; });
+                        if (stillExists) ssel.value = prevSrv;
+                        else { selectedServerId = ''; ssel.value = ''; }
+                    }
+                }
+            }
             // Rebuild + SORT highway path via _setHighwayCoords
             _setHighwayCoords(T3D_ZONES[0].lat, T3D_ZONES[0].lon, HW);
             // Override isEW from server (authoritative)
@@ -1977,7 +2047,33 @@ window.addEventListener('resize', function() {
     // 4. Check if sim was running (cross-tab restore) — BEFORE loading DB events
     await _simRestoreState();
 
-    // 5. Initial server-side data fetch (skipped if sim is running)
+    // 5. Restore selection from localStorage (survives page refresh)
+    var savedHw   = localStorage.getItem('t3d_selectedHw');
+    var savedZone = localStorage.getItem('t3d_selectedZone');
+    var savedSrv  = localStorage.getItem('t3d_selectedServer');
+    if (savedHw && savedHw !== HW) {
+        HW = savedHw;
+        var hwSel = document.getElementById('hwSel');
+        if (hwSel) hwSel.value = HW;
+        console.log('[T3D] Boot: restored HW=' + HW + ' from localStorage');
+    }
+    if (savedZone) {
+        var validZone = T3D_ZONES.some(function(z){ return z.zoneId === savedZone; });
+        if (validZone) {
+            selectedZoneId = savedZone;
+            var zSelEl = document.getElementById('t3dZoneSel');
+            if (zSelEl) zSelEl.value = savedZone;
+            console.log('[T3D] Boot: restored zone=' + savedZone);
+        }
+    }
+    if (savedSrv) {
+        selectedServerId = savedSrv;
+        var sSelEl = document.getElementById('t3dServerSel');
+        if (sSelEl) sSelEl.value = savedSrv;
+        console.log('[T3D] Boot: restored server=' + savedSrv);
+    }
+
+    // 6. Initial server-side data fetch (skipped if sim is running)
     if (!simRunning) {
         console.log('[T3D] Boot: fetching initial data');
         await refreshScene();
