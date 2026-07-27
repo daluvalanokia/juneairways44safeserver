@@ -565,62 +565,84 @@ function _drawVehicles() {
         var spd = vd.speedMph || 0;
 
         // ── Car silhouette with brand logo ─────────────────────────────
-        // Draw a distinguishable car shape at the vehicle position, with
-        // the manufacturer logo (image or initials) rendered ON the car body.
-        var carW = 22, carH = 13;
-        var carCx = sx, carCy = sy;
+        // Car drawn with long axis = X (pointing East by default).
+        // Rotation formula: carRot = (dir - 90) * PI/180
+        //   dir=90  (East)  → carRot=0   → long axis East  ✅
+        //   dir=0   (North) → carRot=-PI/2 → long axis North ✅
+        //   dir=270 (West)  → carRot=PI   → long axis West  ✅
+        //   dir=180 (South) → carRot=PI/2 → long axis South ✅
+        var carW = 30, carH = 15;   // long=X, short=Y (body dimensions in px)
+        var carRot = (dir - 90) * Math.PI / 180;
 
-        // Rotate car to match travel direction
         _octx.save();
-        _octx.translate(carCx, carCy);
-        var carRot = 0;
-        if (dir >= 45 && dir <= 135) carRot = Math.PI / 2;       // E-W → rotate 90°
-        else if (dir >= 135 && dir <= 225) carRot = Math.PI;      // S → rotate 180°
-        else if (dir >= 225 && dir <= 315) carRot = -Math.PI / 2; // W → rotate -90°
-        if (vd.isNSHwy) carRot = (dir <= 90 || dir >= 270) ? 0 : Math.PI;
+        _octx.translate(sx, sy);
         _octx.rotate(carRot);
 
-        // Car body — rounded rectangle
+        // ── Car body ──────────────────────────────────────────────────
         _octx.beginPath();
-        _octx.roundRect(-carW/2, -carH/2, carW, carH, 4);
+        _octx.roundRect(-carW/2, -carH/2, carW, carH, 5);
         _octx.fillStyle = color;
         _octx.fill();
-        _octx.strokeStyle = 'rgba(255,255,255,0.85)';
-        _octx.lineWidth = 1.5;
+        _octx.strokeStyle = 'rgba(255,255,255,0.9)';
+        _octx.lineWidth = 1.8;
         _octx.stroke();
 
-        // Windshield highlight (top portion of car)
+        // ── Roof / cabin highlight (raised section, centred) ──────────
         _octx.beginPath();
-        _octx.roundRect(-carW/2 + 3, -carH/2 + 1.5, carW - 6, carH * 0.35, 2);
-        _octx.fillStyle = 'rgba(255,255,255,0.25)';
+        _octx.roundRect(-carW/2 + 5, -carH/2 + 2, carW - 10, carH - 4, 3);
+        _octx.fillStyle = 'rgba(255,255,255,0.18)';
         _octx.fill();
 
-        // Wheels (two small dark rectangles at bottom)
-        _octx.fillStyle = '#1a1a2e';
-        _octx.fillRect(-carW/2 + 2, carH/2 - 1.5, 4, 3);
-        _octx.fillRect(carW/2 - 6, carH/2 - 1.5, 4, 3);
-        _octx.fillRect(-carW/2 + 2, -carH/2 - 1.5, 4, 3);
-        _octx.fillRect(carW/2 - 6, -carH/2 - 1.5, 4, 3);
+        // ── Front nose — brighter tint shows drive direction ──────────
+        _octx.beginPath();
+        _octx.roundRect(carW/2 - 6, -carH/2 + 2, 5, carH - 4, 2);
+        _octx.fillStyle = 'rgba(255,255,255,0.45)';
+        _octx.fill();
 
-        // Brand logo ON the car body
-        if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
-            // Draw the brand SVG image centered on the car
-            _octx.drawImage(logoImg, -9, -7, 18, 14);
-        } else if (badge) {
-            // Fallback: brand initials on a subtle circle
+        // ── Wheels — 4 ellipses perpendicular to car long-axis ────────
+        // Wheels are along the Y axis (short axis) so they are always
+        // perpendicular to the road — this is the natural result of the
+        // correct rotation formula above.
+        var wW = 4, wH = 7;   // wheel: narrow along car axis, tall across it
+        _octx.fillStyle = '#111827';
+        _octx.strokeStyle = 'rgba(255,255,255,0.6)';
+        _octx.lineWidth = 0.8;
+        // Front-left, front-right, rear-left, rear-right
+        [[carW/2 - 6,  carH/2 - 1],
+         [carW/2 - 6, -carH/2 - 2],
+         [-carW/2 + 3,  carH/2 - 1],
+         [-carW/2 + 3, -carH/2 - 2]].forEach(function(w) {
             _octx.beginPath();
-            _octx.arc(0, 0, 6, 0, Math.PI * 2);
+            _octx.ellipse(w[0], w[1], wW/2, wH/2, 0, 0, Math.PI * 2);
+            _octx.fill();
+            _octx.stroke();
+        });
+
+        // ── Brand logo centered on car body ───────────────────────────
+        if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
+            _octx.drawImage(logoImg, -10, -7, 20, 14);
+        } else if (badge) {
+            // Initials badge
+            _octx.beginPath();
+            _octx.arc(0, 0, 7, 0, Math.PI * 2);
             _octx.fillStyle = badge.color;
             _octx.fill();
-            _octx.strokeStyle = 'rgba(255,255,255,0.5)';
-            _octx.lineWidth = 1;
+            _octx.strokeStyle = 'rgba(255,255,255,0.55)';
+            _octx.lineWidth = 1.2;
             _octx.stroke();
             _octx.fillStyle = '#fff';
-            _octx.font = badge.initials.length > 2 ? 'bold 6px Arial' : 'bold 8px Arial';
+            _octx.font = badge.initials.length > 2 ? 'bold 6px Arial' : 'bold 9px Arial';
             _octx.textAlign = 'center';
             _octx.textBaseline = 'middle';
             _octx.fillText(badge.initials, 0, 0.5);
+        } else {
+            // Generic dot fallback
+            _octx.beginPath();
+            _octx.arc(0, 0, 5, 0, Math.PI * 2);
+            _octx.fillStyle = 'rgba(255,255,255,0.4)';
+            _octx.fill();
         }
+
         _octx.restore();
 
         // Heading arrow — extends from the front of the car
