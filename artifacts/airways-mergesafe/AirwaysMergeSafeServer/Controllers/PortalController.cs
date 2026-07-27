@@ -2,6 +2,7 @@ using AirwaysMergeSafeServer.Data;
 using AirwaysMergeSafeServer.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using AirwaysMergeSafeServer.Infrastructure;
 
 namespace AirwaysMergeSafeServer.Controllers;
 
@@ -21,8 +22,11 @@ public class PortalController : Controller
 
     public async Task<IActionResult> Index()
     {
+        TraceLogger.Enter("Portal", nameof(Index));
         if (HttpContext.Session.GetString("HighwayId") != null)
+        TraceLogger.Exit("Portal", nameof(Index));
             return RedirectToAction("Index", "Dashboard");
+        TraceLogger.Exit("Portal", nameof(Index));
         return View(new PortalViewModel
         {
             Highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync()
@@ -35,6 +39,7 @@ public class PortalController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Login(string highwayId, string userId, string password)
     {
+        TraceLogger.Enter("Portal", nameof(LoginGet));
         var ip       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         var highways = await _db.Highways.AsNoTracking().Where(h => h.IsActive).OrderBy(h => h.Name).ToListAsync();
 
@@ -87,16 +92,19 @@ public class PortalController : Controller
         HttpContext.Session.SetString("FullName",  user.FullName);
 
         _logger.LogInformation("Security: Successful login — userId={UserId} highway={HighwayId} ip={Ip}", userId, highwayId, ip);
+        TraceLogger.Exit("Portal", nameof(LoginGet));
         return RedirectToAction("Index", "Dashboard");
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public IActionResult Logout()
     {
+        TraceLogger.Enter("Portal", nameof(Logout));
         var userId    = HttpContext.Session.GetString("UserId")    ?? "unknown";
         var highwayId = HttpContext.Session.GetString("HighwayId") ?? "unknown";
         _logger.LogInformation("Security: Logout — userId={UserId} highway={HighwayId}", userId, highwayId);
         HttpContext.Session.Clear();
+        TraceLogger.Exit("Portal", nameof(Logout));
         return RedirectToAction("Index");
     }
 
