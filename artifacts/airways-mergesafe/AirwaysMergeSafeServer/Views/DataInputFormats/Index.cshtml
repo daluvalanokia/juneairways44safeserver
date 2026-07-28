@@ -488,9 +488,16 @@ async function _simRestoreState() {
 }
 
 function simBroadcast(type) {
-    // Carry interval (seconds) so 3D scene can match its poll exactly.
-    var _ivSec = parseInt((document.getElementById('simInterval')||{}).value||'30');
-    if (airwaysBroadcast) airwaysBroadcast.postMessage({ type: type, intervalSec: _ivSec });
+    // Carry interval + full highway/zone/server context so 3D scene can sync
+    var _ivSec  = parseInt((document.getElementById('simInterval')||{}).value||'30');
+    var _ctx    = {
+        hwId:     (document.getElementById('simHighway')||{}).value||'',
+        zoneId:   (document.getElementById('simZone')   ||{}).value||'',
+        serverId: (document.getElementById('simServer') ||{}).value||''
+    };
+    if (airwaysBroadcast) airwaysBroadcast.postMessage({
+        type: type, intervalSec: _ivSec, context: _ctx
+    });
     _simPersist(type === 'sim_started');
     // Write heartbeat immediately on sim_started so T3D watchdog sees it
     if (type === 'sim_started') {
