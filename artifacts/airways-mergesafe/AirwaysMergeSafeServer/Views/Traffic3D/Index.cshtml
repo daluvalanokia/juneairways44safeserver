@@ -1850,76 +1850,76 @@ async function refreshScene() {
                 return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
                          highwayId: z.highwayId, radius: z.radius };
             });
-            // Rebuild zone dropdown if the zone list changed (compare IDs)
-            var zsel = document.getElementById('t3dZoneSel');
-            if (zsel) {
-                var currentIds = Array.from(zsel.querySelectorAll('option')).filter(function(o){ return o.value; }).map(function(o){ return o.value; });
-                var newIds = T3D_ZONES.map(function(z){ return z.zoneId; });
-                var changed = currentIds.length !== newIds.length || currentIds.some(function(id,i){ return id !== newIds[i]; });
-                if (changed) {
-                    var prevZone = selectedZoneId;
-                    zsel.innerHTML = '<option value="">(Select Zone)</option>';
-                    T3D_ZONES.forEach(function(z) {
-                        var opt = document.createElement('option');
-                        opt.value = z.zoneId;
-                        opt.textContent = z.zoneName || z.zoneId;
-                        opt.dataset.hw = z.highwayId || HW;
-                        opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
-                        opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
-                        zsel.appendChild(opt);
-                    });
-                    // Restore selection if still valid
-                    if (prevZone && newIds.indexOf(prevZone) >= 0) {
-                        zsel.value = prevZone;
-                    } else {
-                        selectedZoneId = '';
-                        zsel.value = '';
-                    }
-                }
-            }
-            // Rebuild server dropdown if servers changed
-            if (data.servers) {
-                var ssel = document.getElementById('t3dServerSel');
-                if (ssel) {
-                    var prevSrv = selectedServerId;
-                    ssel.innerHTML = '<option value="">(Select Server)</option>';
-                    data.servers.forEach(function(s) {
-                        var opt = document.createElement('option');
-                        opt.value = s.serverId;
-                        var zn = '';
-                        if (s.zoneId) {
-                            var zMatch = T3D_ZONES.find(function(zz){ return zz.zoneId === s.zoneId; });
-                            zn = zMatch ? (zMatch.zoneName || s.zoneId) : s.zoneId;
-                        }
-                        opt.textContent = (s.serverName || s.serverId) + (zn ? ' (' + zn + ')' : '');
-                        opt.dataset.zone = s.zoneId || '';
-                        ssel.appendChild(opt);
-                    });
-                    // Restore selection if still valid
-                    if (prevSrv) {
-                        var stillExists = data.servers.some(function(s){ return s.serverId === prevSrv; });
-                        if (stillExists) ssel.value = prevSrv;
-                        else { selectedServerId = ''; ssel.value = ''; }
-                    }
-                    // Re-apply zone filter to the freshly built server options
-                    // (t3dZoneChanged filters BEFORE refreshScene, but refreshScene
-                    //  rebuilds the dropdown — so the filter is lost. Re-apply here.)
-                    if (selectedZoneId) {
-                        ssel.querySelectorAll('option').forEach(function(o) {
-                            o.style.display = (!o.value || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+            // ── DO NOT rebuild dropdowns when all 3 are already set ──
+            // The dropdowns were populated by t3dHighwayChanged. Rebuilding
+            // them here can clear the selection if zone ordering differs between
+            // the initial fetch (ordered by longitude) and this fetch (sorted by axis).
+            // Just update T3D_ZONES for the bridge path and keep dropdowns as-is.
+            if (!selectedZoneId || !selectedServerId) {
+                // Only rebuild if we're missing selections (e.g. boot or highway change)
+                var zsel = document.getElementById('t3dZoneSel');
+                if (zsel) {
+                    var currentIds = Array.from(zsel.querySelectorAll('option')).filter(function(o){ return o.value; }).map(function(o){ return o.value; });
+                    var newIds = T3D_ZONES.map(function(z){ return z.zoneId; });
+                    var changed = currentIds.length !== newIds.length || currentIds.some(function(id,i){ return id !== newIds[i]; });
+                    if (changed) {
+                        var prevZone = selectedZoneId;
+                        zsel.innerHTML = '<option value="">(Select Zone)</option>';
+                        T3D_ZONES.forEach(function(z) {
+                            var opt = document.createElement('option');
+                            opt.value = z.zoneId;
+                            opt.textContent = z.zoneName || z.zoneId;
+                            opt.dataset.hw = z.highwayId || HW;
+                            opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                            opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                            zsel.appendChild(opt);
                         });
+                        if (prevZone && newIds.indexOf(prevZone) >= 0) {
+                            zsel.value = prevZone;
+                        } else {
+                            selectedZoneId = '';
+                            zsel.value = '';
+                        }
+                    }
+                }
+                // Rebuild server dropdown only if missing
+                if (data.servers) {
+                    var ssel = document.getElementById('t3dServerSel');
+                    if (ssel) {
+                        var prevSrv = selectedServerId;
+                        ssel.innerHTML = '<option value="">(Select Server)</option>';
+                        data.servers.forEach(function(s) {
+                            var opt = document.createElement('option');
+                            opt.value = s.serverId;
+                            var zn = '';
+                            if (s.zoneId) {
+                                var zMatch = T3D_ZONES.find(function(zz){ return zz.zoneId === s.zoneId; });
+                                zn = zMatch ? (zMatch.zoneName || s.zoneId) : s.zoneId;
+                            }
+                            opt.textContent = (s.serverName || s.serverId) + (zn ? ' (' + zn + ')' : '');
+                            opt.dataset.zone = s.zoneId || '';
+                            ssel.appendChild(opt);
+                        });
+                        if (prevSrv) {
+                            var stillExists = data.servers.some(function(s){ return s.serverId === prevSrv; });
+                            if (stillExists) ssel.value = prevSrv;
+                            else { selectedServerId = ''; ssel.value = ''; }
+                        }
+                        if (selectedZoneId) {
+                            ssel.querySelectorAll('option').forEach(function(o) {
+                                o.style.display = (!o.value || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+                            });
+                        }
                     }
                 }
             }
-            // Rebuild + SORT highway path via _setHighwayCoords
+            // ALWAYS update bridge path from server zones (sorted by axis)
             _setHighwayCoords(T3D_ZONES[0].lat, T3D_ZONES[0].lon, HW);
-            // Override isEW from server (authoritative)
             _hwyIsEW = data.isEW;
             if (typeof roadGroup3 !== 'undefined') {
                 roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
             }
         } else if (data.isEW !== undefined) {
-            // No zones but server told us the highway orientation
             _hwyIsEW = data.isEW;
             if (typeof roadGroup3 !== 'undefined') roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
         }
