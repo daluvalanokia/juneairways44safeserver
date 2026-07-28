@@ -170,7 +170,7 @@
                     <span>Ground: <b id="statGround">–</b></span>
                     <span>Zones: <b>@Model.Zones.Count</b></span>
                     <span>Sensors: <b>@Model.Sensors.Count</b></span>
-                    <span>Highway: <b>@(Model.SelectedHighwayId ?? "–")</b></span>
+                    <span>Highway: <b id="statHighway">@(Model.SelectedHighwayId ?? "–")</b></span>
                 </div>
             </div>
         </div>
@@ -1848,6 +1848,8 @@ function loadEvents(events) {
 function _updateStatsBar() {
     var el = document.getElementById('statGround');
     if (el) el.textContent = vehicleData.size;
+    var hw = document.getElementById('statHighway');
+    if (hw) hw.textContent = HW || '–';
 }
 
 // ── DB scene refresh ──────────────────────────────────────────────────
