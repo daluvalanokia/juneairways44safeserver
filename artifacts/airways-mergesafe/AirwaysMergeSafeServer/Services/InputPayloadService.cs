@@ -68,12 +68,17 @@ public class InputPayloadService
         // Pre-computed bearing from first zone to last zone (OSM-verified)
         // bearing = atan2(Δlon * cos(latMid), Δlat) in degrees
         var hw = (highwayId ?? "").ToUpperInvariant();
-        if (hw.Contains("I35")) return 345.0;  // I-35: mostly N but curves NW  (N=0°, NW≈345°)
-        if (hw.Contains("I45")) return 350.0;  // I-45: mostly N, slight NW
-        if (hw.Contains("I25")) return 355.0;  // I-25: near-true N
-        if (hw.Contains("I20")) return  88.0;  // I-20: near-true E, very slight S
-        if (hw.Contains("I10")) return  75.0;  // I-10 TX: ENE (curves NE toward Beaumont)
-        return 90.0;                            // default: East
+        // Computed from actual zone GPS (atan2(Δlon*cos(lat), Δlat)):
+        //   I-35 TX: Z003→Z001 = 206.4° (SSW — road goes from N to S)
+        //   I-45 TX: Z001→Z003 = 348.4° (NNW)
+        //   I-20 TX: Z001→Z003 = 268.8° (WSW — road goes from E to W)
+        //   I-10 TX: Z001→Z003 =  75.1° (ENE)
+        if (hw.Contains("I35")) return 206.0;
+        if (hw.Contains("I45")) return 348.0;
+        if (hw.Contains("I25")) return 355.0;
+        if (hw.Contains("I20")) return 269.0;
+        if (hw.Contains("I10")) return  75.0;
+        return 90.0;
     }
 
     /// <summary>
@@ -83,9 +88,9 @@ public class InputPayloadService
     /// Returns (lat, lon) on the road, not axis-aligned.
     /// </summary>
     private static (double lat, double lon) GenerateLanePosition(
-        double zoneLat, double zoneLon, string? highwayId, Random rng)
+        double zoneLat, double zoneLon, string? highwayId, Random rng, double bearingOverride = -1)
     {
-        double bearingDeg = HighwayBearingDeg(highwayId);
+        double bearingDeg = bearingOverride >= 0 ? bearingOverride : HighwayBearingDeg(highwayId);
         double bearingRad = bearingDeg * Math.PI / 180.0;
 
         // Along-road scatter (±LongJitter)
@@ -114,29 +119,22 @@ public class InputPayloadService
     }
 
     private static double GenerateLaneLat(double zoneLat, double zoneLon,
-        string? highwayId, Random rng)
+        string? highwayId, Random rng, double bearingOverride = -1)
     {
-        // Delegate to bearing-vector generator — lat component
-        // The rng state is advanced identically in both lat and lon calls
-        // because Generate() calls lat then lon using the same rng instance.
-        // We use a shared cache keyed on a per-call token so both calls
-        // return coordinates from the same (along, cross) draw.
-        var pos = GenerateLanePosition(zoneLat, zoneLon, highwayId, rng);
-        _lastLanePos = pos;   // cache for the immediately-following GenerateLaneLon call
+        var pos = GenerateLanePosition(zoneLat, zoneLon, highwayId, rng, bearingOverride);
+        _lastLanePos = pos;
         _lastLanePosValid = true;
         return pos.lat;
     }
 
     private static double GenerateLaneLon(double zoneLat, double zoneLon,
-        string? highwayId, Random rng)
+        string? highwayId, Random rng, double bearingOverride = -1)
     {
-        // Return the lon from the same position as the preceding GenerateLaneLat call
         if (_lastLanePosValid)
         {
             _lastLanePosValid = false;
             return _lastLanePos.lon;
         }
-        // Fallback (should not happen in normal Generate() flow)
         return Math.Round(zoneLon + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
     }
 
@@ -226,7 +224,8 @@ public class InputPayloadService
         double?              zoneLon      = null,
         double               zoneRadiusDeg = 0.015,
         string?              zoneId       = null,
-        string?              highwayId    = null)
+        string?              highwayId    = null,
+        double               highwayBearing = 90.0)
     {
         TraceLogger.Enter("InputPayloadService", nameof(Generate), $"sourceType={sourceType}");
         try
@@ -271,21 +270,21 @@ public class InputPayloadService
                 //               southbound (180°) on east side (+lon).
                 // Cross-axis spread is tight (±0.00008° ≈ ±9m within-lane jitter).
                 // Along-axis spread is wide (±0.025° ≈ ±2.5km highway segment).
-                "latitude"        => GenerateLaneLat(zoneLat ?? HighwayDefaultLat(highwayId), zoneLon ?? HighwayDefaultLon(highwayId), highwayId, rng),
-                "longitude"       => GenerateLaneLon(zoneLat ?? HighwayDefaultLat(highwayId), zoneLon ?? HighwayDefaultLon(highwayId), highwayId, rng),
+                "latitude"        => GenerateLaneLat(zoneLat ?? HighwayDefaultLat(highwayId), zoneLon ?? HighwayDefaultLon(highwayId), highwayId, rng, highwayBearing),
+                "longitude"       => GenerateLaneLon(zoneLat ?? HighwayDefaultLat(highwayId), zoneLon ?? HighwayDefaultLon(highwayId), highwayId, rng, highwayBearing),
                 "altitude_m"      => altitudeM,
                 "altitude_ft"     => Math.Round(altitudeM * 3.28084, 1),
                 "vehicle_type"    => vehicleType,
                 "vehicle_make"    => vehicleMake,
                 // Highway-aware direction: E-W highways travel east(90°) or west(270°)
                 //                          N-S highways travel north(0°) or south(180°)
-                "direction"       => HighwayDirectionDeg(highwayId, rng),
+                "direction"       => (rng.Next(2) == 0) ? (int)Math.Round(highwayBearing) : (int)Math.Round((highwayBearing + 180) % 360),
                 "lane"            => isAirVehicle ? rng.Next(10, 20) : rng.Next(1, 5),
                 "event_type"      => new[] { "detection","merge","speeding","conflict","fault" }[rng.Next(5)],
                 "zone_id"         => !string.IsNullOrEmpty(zoneId) ? zoneId : $"ZONE-{rng.Next(1, 10):D3}",
                 "highway_id"      => !string.IsNullOrEmpty(highwayId) ? highwayId : "I20-TX",
                 "signal_strength" => sourceType == "telecom" ? rng.Next(-80, -30) : rng.Next(-95, -40),
-                "heading"         => HighwayDirectionDeg(highwayId, rng),
+                "heading"         => (rng.Next(2) == 0) ? (int)Math.Round(highwayBearing) : (int)Math.Round((highwayBearing + 180) % 360),
                 "satellite_count" => rng.Next(4, 16),
                 "hdop"            => Math.Round(rng.NextDouble() * 2.5, 2),
                 "rsrp"            => rng.Next(-120, -70),
