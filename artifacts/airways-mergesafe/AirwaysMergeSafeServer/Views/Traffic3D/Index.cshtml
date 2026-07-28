@@ -384,6 +384,17 @@ function _panMapTo(lat, lon) {
     _mapCtrLat = lat; _mapCtrLon = lon;
     _map.setView([lat, lon], _map.getZoom() || _leafletZoom, { animate: false });
     _map.invalidateSize();
+    // Force a second invalidateSize + bridge redraw after the map
+    // has processed the setView — tiles may not be loaded yet but
+    // the projection needs the correct container size.
+    var _panLat = lat, _panLon = lon;
+    setTimeout(function() {
+        if (_map) {
+            _map.invalidateSize(true);
+            _bridgeDirty = true;
+            _forceBridgeRedraw();
+        }
+    }, 150);
 }
 
 // ── Zoom: Leaflet zoom level controls both map + vehicle size ─────────
@@ -420,7 +431,6 @@ var _hwyIsEW  = true;
 // Array of {lat, lon} for ALL zones on the current highway — used to draw
 // a multi-segment polyline that follows the actual road curvature.
 var _hwyPath  = [];
-var _bridgeDirty = true;
 var _bridgeDirty = true;  // forces full bridge re-projection on next frame
 
 function _isEWHighway(hwId) {
@@ -588,6 +598,15 @@ function _drawHighwayOverlay() {
     var cw = _oc.width, ch = _oc.height;
     if (cw < 2 || ch < 2) return;
     if (_bridgeDirty && _map) { _map.invalidateSize(); _bridgeDirty = false; }
+    // Debug: log bridge state every 5 seconds (throttled)
+    if (!window._lastBridgeLog || Date.now() - window._lastBridgeLog > 5000) {
+        window._lastBridgeLog = Date.now();
+        var _dbgCenter = _map ? _map.getCenter() : { lat: _mapCtrLat, lng: _mapCtrLon };
+        console.log('[T3D] Bridge: path=' + _hwyPath.length + ' isEW=' + _hwyIsEW +
+            ' HW=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId +
+            ' mapCenter=(' + _dbgCenter.lat.toFixed(4) + ',' + _dbgCenter.lng.toFixed(4) + ')' +
+            ' canvas=' + cw + 'x' + ch + ' mapReady=' + _mapReady);
+    }
 
     var zoomFactor;
     if (_map && _mapReady) {
@@ -602,20 +621,13 @@ function _drawHighwayOverlay() {
         return _projectLatLng(p.lat, p.lon);
     });
 
-    // ── Extend the first and last segments to fill the screen ───────────
-    // BUT only when no specific zone is selected (All Zones view).
-    // When a zone IS selected, clip the bridge to the zone's geographic bounds
-    // so it doesn't extend beyond the valid highway/zone area.
-    var _selBounds = _getSelectedBounds();
-    if (_selBounds && _selBounds.tight) {
-        // Specific zone selected — clip bridge to zone bounds + small buffer
-        var bufLat = 0.008, bufLon = 0.008;  // ~880m buffer beyond zone bounds
-        var clipMinLat = _selBounds.minLat - bufLat, clipMaxLat = _selBounds.maxLat + bufLat;
-        var clipMinLon = _selBounds.minLon - bufLon, clipMaxLon = _selBounds.maxLon + bufLon;
-        // Clip the path to the bounds — compute intersection with clip rect
-        pts = _clipPathToBounds(pts, _hwyPath, clipMinLat, clipMaxLat, clipMinLon, clipMaxLon);
-    } else if (pts.length >= 2) {
-        // All Zones — extend first/last segments to fill the screen
+    // ── Always extend the first and last segments to fill the screen ──
+    // The bridge is a polyline connecting ALL zones on the highway.
+    // It should always be fully drawn — the map zoom/pan handles what's
+    // visible. Previous zone-based clipping could eliminate all points
+    // when zones were far apart (e.g., I-10 Z001 vs Z003 are 1.4° apart),
+    // resulting in pts.length < 2 and no bridge drawn at all.
+    if (pts.length >= 2) {
         var extLen = Math.max(cw, ch) * 1.5;
         var dx0 = pts[0].x - pts[1].x, dy0 = pts[0].y - pts[1].y;
         var len0 = Math.hypot(dx0, dy0);
@@ -630,9 +642,26 @@ function _drawHighwayOverlay() {
             pts[n-1].x += dxN / lenN * extLen;
             pts[n-1].y += dyN / lenN * extLen;
         }
+    } else if (pts.length === 1) {
+        // Single zone — extend along highway axis to fill the screen
+        var extLen2 = Math.max(cw, ch) * 1.5;
+        if (_hwyIsEW) {
+            pts = [
+                { x: pts[0].x - extLen2, y: pts[0].y },
+                { x: pts[0].x + extLen2, y: pts[0].y }
+            ];
+        } else {
+            pts = [
+                { x: pts[0].x, y: pts[0].y - extLen2 },
+                { x: pts[0].x, y: pts[0].y + extLen2 }
+            ];
+        }
     }
 
-    if (pts.length < 2) return;  // Bridge fully outside view — nothing to draw
+    if (pts.length < 2) {
+        console.warn('[T3D] Bridge: pts.length=' + pts.length + ' path=' + _hwyPath.length + ' — cannot draw');
+        return;
+    }
 
     // ── Helper: draw a polyline through all projected points ───────────
     function _strokePath() {
