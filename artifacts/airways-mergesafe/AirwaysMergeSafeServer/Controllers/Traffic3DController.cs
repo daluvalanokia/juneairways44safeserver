@@ -260,6 +260,9 @@ public class Traffic3DController : Controller
                 .ToListAsync();
         }
 
+        // 5. Prepare validated vehicles list
+        var validatedVehicles = new List<object>();
+
         // ── ULTIMATE FALLBACK: If still 0 vehicles for the highway, generate
         //    synthetic vehicles from zone coordinates so the animation always
         //    has something to show. This covers highways with no VehicleEvents
@@ -269,83 +272,51 @@ public class Traffic3DController : Controller
             TraceLogger.Info("Traffic3D", nameof(GetAnimationData),
                 $"No VehicleEvents for {highwayId} — generating synthetic vehicles from {zones.Count} zones");
             var rng = Random.Shared;
-            var syntheticEvents = new List<object>();
             int syntheticId = 1;
+            var categories = new[] { "Sedan", "SUV", "Pickup", "Coupe", "Van" };
             foreach (var zn in zones)
             {
-                // Generate 3-4 vehicles per zone
                 int vehiclesPerZone = rng.Next(3, 5);
                 for (int v = 0; v < vehiclesPerZone; v++)
                 {
                     double jLat, jLon;
                     if (isEW)
                     {
-                        jLat = (rng.NextDouble() - 0.5) * 0.001;    // ±55m cross-axis
-                        jLon = (rng.NextDouble() - 0.5) * 0.020;      // ±2.2km along-axis
+                        jLat = (rng.NextDouble() - 0.5) * 0.001;
+                        jLon = (rng.NextDouble() - 0.5) * 0.020;
                     }
                     else
                     {
                         jLat = (rng.NextDouble() - 0.5) * 0.020;
                         jLon = (rng.NextDouble() - 0.5) * 0.001;
                     }
-                    int dir = isEW
+                    int sDir = isEW
                         ? (rng.Next(2) == 0 ? 90 : 270)
                         : (rng.Next(2) == 0 ? 0 : 180);
-                    var categories = new[] { "Sedan", "SUV", "Pickup", "Coupe", "Van" };
-                    var makes = new[] { "Toyota", "Ford", "Honda", "Chevrolet", "Nissan", "Hyundai" };
-                    syntheticEvents.Add(new
+                    validatedVehicles.Add(new
                     {
-                        Id = syntheticId,
-                        VehicleId = "SYN-" + syntheticId.ToString("D4"),
-                        EventType = "ground",
-                        ZoneId = zn.zoneId,
-                        SpeedMph = (double)(rng.Next(35, 75)),
-                        Latitude = (double?)Math.Round(zn.lat + jLat, 6),
-                        Longitude = (double?)Math.Round(zn.lon + jLon, 6),
-                        AltitudeMeters = (double?)0,
-                        VehicleMode = "ground",
-                        VehicleCategory = categories[rng.Next(categories.Length)],
-                        VehicleClassJson = "",
-                        IsAirFlyCar = "N",
-                        CreatedDate = DateTime.UtcNow,
-                        HighwayId = highwayId
+                        id = syntheticId,
+                        vehicle_id = "SYN-" + syntheticId.ToString("D4"),
+                        zone_id = zn.zoneId,
+                        highway_id = highwayId,
+                        speed_mph = (double)rng.Next(35, 75),
+                        latitude = Math.Round(zn.lat + jLat, 6),
+                        longitude = Math.Round(zn.lon + jLon, 6),
+                        direction = sDir,
+                        vehicle_mode = "ground",
+                        vehicle_category = categories[rng.Next(categories.Length)],
+                        vehicle_class_json = "",
+                        is_air_fly_car = "N",
+                        created_date = DateTime.UtcNow,
+                        validated = true
                     });
                     syntheticId++;
                 }
             }
-            // Convert synthetic events to the same anonymous type structure
-            // by projecting through validatedVehicles directly
-            foreach (dynamic se in syntheticEvents)
-            {
-                double sLat = se.Latitude ?? 0;
-                double sLon = se.Longitude ?? 0;
-                int sDir = isEW ? (rng.Next(2) == 0 ? 90 : 270) : (rng.Next(2) == 0 ? 0 : 180);
-                validatedVehicles.Add(new
-                {
-                    id = se.Id,
-                    vehicle_id = se.VehicleId,
-                    zone_id = se.ZoneId,
-                    highway_id = highwayId,
-                    speed_mph = se.SpeedMph,
-                    latitude = Math.Round(sLat, 6),
-                    longitude = Math.Round(sLon, 6),
-                    direction = sDir,
-                    vehicle_mode = "ground",
-                    vehicle_category = se.VehicleCategory,
-                    vehicle_class_json = "",
-                    is_air_fly_car = "N",
-                    created_date = se.CreatedDate,
-                    validated = true
-                });
-            }
             TraceLogger.Info("Traffic3D", nameof(GetAnimationData),
                 $"Generated {validatedVehicles.Count} synthetic vehicles for {highwayId}");
-            // Skip the normal validation loop since we already built validatedVehicles
             goto ReturnResult;
         }
-
-        // 5. Validate each vehicle record's coordinates
-        var validatedVehicles = new List<object>();
         foreach (var ev in rawEvents)
         {
             double lat = ev.Latitude ?? 0;
