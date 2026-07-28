@@ -1362,7 +1362,6 @@ async function t3dZoneChanged() {
         _panMapTo(z0.lat, z0.lon);
         _setHighwayCoords(z0.lat, z0.lon, HW);
     }
-    _clearVehicles();
     _bridgeDirty = true;
     await refreshScene();
     if (z && z.lat && z.lon) {
@@ -1407,7 +1406,6 @@ async function t3dServerChanged() {
         _panMapTo(z0.lat, z0.lon);
         _setHighwayCoords(z0.lat, z0.lon, HW);
     }
-    _clearVehicles();
     _bridgeDirty = true;
     await refreshScene();
     if (z && z.lat && z.lon) {
@@ -1755,8 +1753,8 @@ async function refreshScene() {
         // Load validated vehicles
         if (data.vehicles && data.vehicles.length > 0) {
             loadEvents(data.vehicles);
-        } else if (!simRunning) {
-            _clearVehicles();
+        } else if (!simRunning && vehicleData.size === 0) {
+            console.log('[T3D] No vehicles from server, scene already empty');
         }
         _forceBridgeRedraw();
     } catch(e) { console.warn('[T3D] Scene refresh error:', e); }
