@@ -441,17 +441,22 @@ function _isEWHighway(hwId) {
     return true;
 }
 
-// ── Highway bearing lookup (matches IPS HighwayBearingDeg) ──────────
-// Returns the actual road bearing in degrees so the bridge polyline
-// and vehicle scatter use the SAME heading vector.
+// ── Highway bearing: server-provided value takes priority ────────────
+// _hwBearingDeg is set from data.hwBearing on every GetAnimationData
+// fetch. It is computed server-side from actual zone GPS in the DB.
+// Hardcoded fallbacks (corrected from zone GPS) only apply pre-fetch.
 function _hwBearing(hwId) {
+    if (typeof _hwBearingDeg === 'number' && _hwBearingDeg !== 90.0) {
+        return _hwBearingDeg;
+    }
+    // Corrected fallbacks (atan2 from zone GPS, not guessed):
     var h = (hwId || '').toUpperCase();
-    if (h.indexOf('I35') >= 0 || h.indexOf('I-35') >= 0) return 345;
-    if (h.indexOf('I45') >= 0 || h.indexOf('I-45') >= 0) return 350;
+    if (h.indexOf('I35') >= 0 || h.indexOf('I-35') >= 0) return 206;
+    if (h.indexOf('I45') >= 0 || h.indexOf('I-45') >= 0) return 348;
     if (h.indexOf('I25') >= 0 || h.indexOf('I-25') >= 0) return 355;
-    if (h.indexOf('I20') >= 0 || h.indexOf('I-20') >= 0) return  88;
+    if (h.indexOf('I20') >= 0 || h.indexOf('I-20') >= 0) return 269;
     if (h.indexOf('I10') >= 0 || h.indexOf('I-10') >= 0) return  75;
-    return 90;
+    return _hwBearingDeg || 90;
 }
 
 // ── Extend a point along a bearing by distDeg degrees ────────────────
@@ -465,28 +470,34 @@ function _bearingPoint(lat, lon, bearing, distDeg) {
 }
 
 function _setHighwayCoords(lat, lon, hwId) {
-    // Store the clicked zone's centreline
     _hwyLat  = lat;
     _hwyLon  = lon;
     _hwyIsEW = _isEWHighway(hwId);
     _hwyHeading = _hwyIsEW ? 'EW' : 'NS';
 
-    var bearing = _hwBearing(hwId);
+    // ── PRIORITY: use server-provided dense bridge path ──────────────
+    // When bridgePath is available from GetAnimationData, use it directly
+    // as the road polyline — it is computed from real zone GPS coordinates
+    // and is always geometrically correct.
+    if (_bridgePathCoords && _bridgePathCoords.length >= 2) {
+        _hwyPath = _bridgePathCoords.map(function(p) {
+            return { lat: p.lat, lon: p.lon };
+        });
+        console.log('[T3D] _setHighwayCoords: using server bridgePath (' + _hwyPath.length + ' pts)');
+        if (typeof roadGroup3 !== 'undefined') {
+            roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
+        }
+        return;
+    }
 
-    // ── Build bridge path using the real road bearing vector ─────────
-    // Strategy: collect all zone GPS anchors, then extend each along
-    // the bearing so the polyline follows the real road curvature.
-    // This ensures the bridge line passes through every zone's exact
-    // coordinates — and vehicles scattered along the same bearing vector
-    // stay ON the bridge regardless of how far they are scattered.
+    // ── FALLBACK: build path from zone anchors + server bearing ─────
+    var bearing = _hwBearing(hwId);
     _hwyPath = [];
     if (typeof T3D_ZONES !== 'undefined' && T3D_ZONES.length > 0) {
-        // Sort zones along the bearing axis (project each zone onto bearing)
         var cosLat = Math.cos(lat * Math.PI / 180);
         var bearRad = bearing * Math.PI / 180;
         var sorted = T3D_ZONES.filter(function(z){ return z.lat && z.lon; }).slice();
         sorted.sort(function(a, b) {
-            // Project onto bearing direction for sorting
             var pa = Math.cos(bearRad) * a.lat + Math.sin(bearRad) * a.lon * cosLat;
             var pb = Math.cos(bearRad) * b.lat + Math.sin(bearRad) * b.lon * cosLat;
             return pa - pb;
@@ -495,12 +506,9 @@ function _setHighwayCoords(lat, lon, hwId) {
             _hwyPath.push({ lat: z.lat, lon: z.lon, zoneId: z.zoneId });
         });
     }
-    // Fallback: single point extended along bearing
     if (_hwyPath.length === 0 && lat && lon) {
         _hwyPath = [{ lat: lat, lon: lon, zoneId: '' }];
     }
-
-    // Sync 3D road group rotation to match the real bearing
     if (typeof roadGroup3 !== 'undefined') {
         roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
     }
@@ -1546,14 +1554,15 @@ function _snapToZone(zoneId) {
     var z = T3D_ZONES.find(function(zz) { return zz.zoneId === zoneId; });
     if (!z || !z.lat || !z.lon) return null;
     var hwId = z.highwayId || HW;
+    // Always use the server-provided bearing — _hwBearing() now returns
+    // _hwBearingDeg when it has been set from GetAnimationData response.
     var bearing = _hwBearing(hwId);
     var bearRad = bearing * Math.PI / 180;
     var cosLat = Math.cos(z.lat * Math.PI / 180);
 
-    // Scatter along the real road bearing vector — same math as IPS
-    // so snapped vehicles stay on the bridge polyline
-    var along = (Math.random() - 0.5) * 0.030 * 2;   // ±1.5km along road
-    var cross = (Math.random() - 0.5) * 0.0015 * 2;  // ±165m cross-road
+    // Scatter along the real road bearing vector
+    var along = (Math.random() - 0.5) * 0.020 * 2;   // ±1km along road
+    var cross = (Math.random() - 0.5) * 0.00015 * 2;  // ±17m cross-road (1 lane)
 
     var dLatAlong = Math.cos(bearRad) * along;
     var dLonAlong = Math.sin(bearRad) * along / cosLat;
