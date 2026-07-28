@@ -2324,15 +2324,15 @@ async function refreshScene() {
         // When sim is running, clear existing vehicles first so we only
         // show simulation data — no stale DB or synthetic vehicles.
         if (simRunning) {
-            // When sim is ON, only clear + replace if DB has new sim vehicles.
-            // If DB returns 0 sim events, KEEP existing BroadcastChannel vehicles
-            // — clearing them would cause flickering every 3s poll cycle.
+            // When sim is ON, MERGE DB vehicles with existing animation.
+            // DO NOT clear — loadEvents preserves existing vehicles' animated
+            // positions and only adds new ones. Clearing would wipe the
+            // continuous animation and re-create vehicles at the DB's latest
+            // GPS, causing them to jump to new positions.
             if (data.vehicles && data.vehicles.length > 0) {
-                console.log('[T3D] refreshScene: sim ON — loading ' + data.vehicles.length + ' sim vehicles from DB');
-                _clearVehicles();
+                console.log('[T3D] refreshScene: sim ON — merging ' + data.vehicles.length + ' DB vehicles with ' + vehicleData.size + ' existing');
                 loadEvents(data.vehicles);
             } else {
-                // DB has 0 sim events — don't clear BroadcastChannel vehicles
                 console.log('[T3D] refreshScene: sim ON, 0 DB sim events — keeping ' + vehicleData.size + ' BroadcastChannel vehicles');
             }
         } else {
