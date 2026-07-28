@@ -1953,7 +1953,14 @@ async function refreshAnimation() {
     } catch(e) { console.warn('[T3D] refreshAnimation: sim status check failed', e); }
 
     // ── STEP 2: IF SIM IS ON — sync to sim context ──
-    if (simActive && simCtx && simCtx.hwId) {
+    // Check both DB status and localStorage as fallback (DIF page might
+    // be open in another tab, broadcasting via BroadcastChannel but the
+    // DB heartbeat might be slightly stale).
+    var localSimActive = localStorage.getItem('airways_sim_active') === 'true';
+    var simHeartbeat = parseInt(localStorage.getItem('airways_sim_heartbeat') || '0');
+    var heartbeatAge = Date.now() - simHeartbeat;
+    var heartbeatFresh = simHeartbeat > 0 && heartbeatAge < 120000; // 2 min
+    if ((simActive || (localSimActive && heartbeatFresh)) && simCtx && simCtx.hwId) {
         console.log('[T3D] refreshAnimation: SIM IS ON — syncing to sim context', simCtx);
 
         // 2a. Clear current animation
@@ -2068,7 +2075,49 @@ async function refreshAnimation() {
         return;
     }
 
-    // ── STEP 3: SIM IS OFF — use current dropdown values ──
+    // ── STEP 3: Check if sim is ON but context is missing ──
+    // If the DB says sim is active but we don't have simCtx in localStorage,
+    // still treat this as sim mode using the DB status directly.
+    if (simActive && (!simCtx || !simCtx.hwId)) {
+        console.log('[T3D] refreshAnimation: SIM IS ON (DB) but no localStorage context — fetching from DB status');
+        try {
+            var sr2 = await fetch('/DataInputFormats/SimulationStatus');
+            if (sr2.ok) {
+                var dbCtx = await sr2.json();
+                if (dbCtx.highwayId) {
+                    simCtx = { hwId: dbCtx.highwayId, zoneId: dbCtx.zoneId, serverId: dbCtx.serverId };
+                    simActive = true;
+                    console.log('[T3D] refreshAnimation: using DB sim context', simCtx);
+                }
+            }
+        } catch(e) { console.warn('[T3D] refreshAnimation: DB context fetch failed', e); }
+    }
+
+    // If we now have a valid simCtx, go back to STEP 2
+    if (simActive && simCtx && simCtx.hwId) {
+        console.log('[T3D] refreshAnimation: retrying STEP 2 with recovered context');
+        // Re-run the sim sync path by setting state and calling refreshScene
+        _clearVehicles();
+        simRunning = true; feedHeld = true;
+        HW = simCtx.hwId;
+        selectedZoneId = simCtx.zoneId || selectedZoneId;
+        selectedServerId = simCtx.serverId || selectedServerId;
+        var hwSelR = document.getElementById('hwSel');
+        if (hwSelR) hwSelR.value = HW;
+        var zselR = document.getElementById('t3dZoneSel');
+        if (zselR) zselR.value = selectedZoneId;
+        var sselR = document.getElementById('t3dServerSel');
+        if (sselR) sselR.value = selectedServerId;
+        localStorage.setItem('t3d_selectedHw', HW);
+        localStorage.setItem('t3d_selectedZone', selectedZoneId);
+        localStorage.setItem('t3d_selectedServer', selectedServerId);
+        // Fetch zones + vehicles
+        await refreshScene();
+        _validateSelectionState();
+        return;
+    }
+
+    // ── STEP 4: SIM IS OFF — use current dropdown values ──
     console.log('[T3D] refreshAnimation: sim is OFF — using current dropdown values');
     simRunning = false; feedHeld = false;
     var badgeOff = document.getElementById('simFeedBadge');
@@ -2287,21 +2336,24 @@ async function refreshScene() {
         // When sim is running, clear existing vehicles first so we only
         // show simulation data — no stale DB or synthetic vehicles.
         if (simRunning) {
-            // Only clear if we have new vehicles to replace them.
-            // If 0 sim events in DB, keep existing vehicles (from BroadcastChannel)
-            // and just wait for more sim events to arrive.
+            // When sim is ON, ALWAYS clear existing vehicles before loading.
+            // This removes any stale non-sim vehicles that may have been loaded
+            // before the sim started. Only sim data (SIM-* vehicle IDs) from
+            // the DB + BroadcastChannel events should be shown.
+            _clearVehicles();
             if (data.vehicles && data.vehicles.length > 0) {
-                _clearVehicles();
+                console.log('[T3D] refreshScene: sim ON — loading ' + data.vehicles.length + ' sim vehicles from DB');
+                loadEvents(data.vehicles);
             } else {
-                console.log('[T3D] refreshScene: sim active, 0 DB events — keeping ' + vehicleData.size + ' existing vehicles');
+                console.log('[T3D] refreshScene: sim ON, 0 DB sim events — waiting for BroadcastChannel');
             }
-        }
-        if (data.vehicles && data.vehicles.length > 0) {
-            loadEvents(data.vehicles);
-        } else if (simRunning) {
-            console.log('[T3D] refreshScene: sim active — waiting for BroadcastChannel events');
-        } else if (vehicleData.size === 0) {
-            console.log('[T3D] No vehicles from server, scene already empty');
+        } else {
+            // Sim OFF — normal mode: load whatever the server returns
+            if (data.vehicles && data.vehicles.length > 0) {
+                loadEvents(data.vehicles);
+            } else if (vehicleData.size === 0) {
+                console.log('[T3D] No vehicles from server, scene already empty');
+            }
         }
         _forceBridgeRedraw();
     } catch(e) { console.warn('[T3D] Scene refresh error:', e); }
@@ -2801,5 +2853,14 @@ window.addEventListener('resize', function() {
 
 // ── Slow poll: 30s, live mode only ───────────────────────────────────
 setInterval(function() { if (!simRunning && !feedHeld && HW && selectedZoneId && selectedServerId) refreshScene(); }, 30000);
+
+// ── Sim poll: 3s, sim mode only ────────────────────────────────────────
+// During simulation, poll the DB for sim events (SIM-* vehicles) so the
+// scene stays current even if BroadcastChannel isn't delivering (e.g.,
+// DIF page was closed). This ensures the Refresh button + auto-poll
+// always show ONLY simulation data.
+setInterval(function() {
+    if (simRunning && feedHeld && HW && selectedZoneId && selectedServerId) refreshScene();
+}, 3000);
 
 </script>
