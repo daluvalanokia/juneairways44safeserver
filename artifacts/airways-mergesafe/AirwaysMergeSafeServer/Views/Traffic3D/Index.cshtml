@@ -24,8 +24,9 @@
     var hw          = Model.SelectedHighwayId ?? "";
     var zoneCtrLat  = Model.Zones.Where(z => z.Latitude.HasValue).Select(z => z.Latitude!.Value).FirstOrDefault();
     var zoneCtrLon  = Model.Zones.Where(z => z.Longitude.HasValue).Select(z => z.Longitude!.Value).FirstOrDefault();
-    if (zoneCtrLat == 0) zoneCtrLat = 32.7767;
-    if (zoneCtrLon == 0) zoneCtrLon = -96.7970;
+    // I-20 Grand Prairie centreline fallback — not downtown Dallas
+    if (zoneCtrLat == 0) zoneCtrLat = 32.7213;
+    if (zoneCtrLon == 0) zoneCtrLon = -97.0207;
 }
 
 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -938,7 +939,7 @@ function _updateVehiclePositions() {
     if (dt <= 0) return;
 
     // Pre-compute degree-per-metre ratios at current map centre
-    var refLat = _mapCtrLat || 32.78;
+    var refLat = _mapCtrLat || 32.7213;
     var latPerM = 1 / 111000;
     var lonPerM = 1 / (111000 * Math.cos(refLat * Math.PI / 180));
     var bounds  = _getSelectedBounds();
