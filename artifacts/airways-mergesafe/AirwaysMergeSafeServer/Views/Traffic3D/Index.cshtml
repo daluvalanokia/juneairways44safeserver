@@ -2031,6 +2031,13 @@ async function refreshAnimation() {
                         return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
                                  highwayId: z.highwayId, radius: z.radius };
                     });
+                    // Store bridge path + bearing from zone-only fetch
+                    if (typeof rd.hwBearing === 'number') _hwBearingDeg = rd.hwBearing;
+                    if (rd.bridgePath && rd.bridgePath.length > 0) {
+                        _bridgePathCoords = rd.bridgePath.map(function(p) {
+                            return { lat: p.lat, lon: p.lon };
+                        });
+                    }
                     var zsel3 = document.getElementById('t3dZoneSel');
                     if (zsel3) {
                         zsel3.innerHTML = '<option value="">(Select Zone)</option>';
@@ -2209,12 +2216,19 @@ async function refreshScene() {
         // When sim is running, clear existing vehicles first so we only
         // show simulation data — no stale DB or synthetic vehicles.
         if (simRunning) {
-            _clearVehicles();
+            // Only clear if we have new vehicles to replace them.
+            // If 0 sim events in DB, keep existing vehicles (from BroadcastChannel)
+            // and just wait for more sim events to arrive.
+            if (data.vehicles && data.vehicles.length > 0) {
+                _clearVehicles();
+            } else {
+                console.log('[T3D] refreshScene: sim active, 0 DB events — keeping ' + vehicleData.size + ' existing vehicles');
+            }
         }
         if (data.vehicles && data.vehicles.length > 0) {
             loadEvents(data.vehicles);
         } else if (simRunning) {
-            console.log('[T3D] refreshScene: sim active but 0 sim events — waiting for BroadcastChannel');
+            console.log('[T3D] refreshScene: sim active — waiting for BroadcastChannel events');
         } else if (vehicleData.size === 0) {
             console.log('[T3D] No vehicles from server, scene already empty');
         }
@@ -2361,6 +2375,13 @@ function _onSimMsg(data) {
                                 return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
                                          highwayId: z.highwayId, radius: z.radius };
                             });
+                            // Store bridge path + bearing from zone-only fetch
+                            if (typeof d.hwBearing === 'number') _hwBearingDeg = d.hwBearing;
+                            if (d.bridgePath && d.bridgePath.length > 0) {
+                                _bridgePathCoords = d.bridgePath.map(function(p) {
+                                    return { lat: p.lat, lon: p.lon };
+                                });
+                            }
                             // Rebuild zone dropdown
                             var zsel = document.getElementById('t3dZoneSel');
                             if (zsel) {
