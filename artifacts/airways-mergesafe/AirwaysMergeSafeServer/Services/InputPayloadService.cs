@@ -260,7 +260,7 @@ public class InputPayloadService
         {
             obj[f] = f switch
             {
-                "vehicle_id"      => $"VEH-{rng.Next(1, 21):D3}",
+                "vehicle_id"      => $"VEH-{_vehicleCounter:D3}",
                 "timestamp"       => DateTime.UtcNow.ToString("o"),
                 "speed_mph"       => isAirVehicle ? rng.Next(80, 180) : rng.Next(20, 100),
                 // Direction-aware lane placement:
