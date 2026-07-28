@@ -33,6 +33,19 @@ public class InputPayloadService
     // 3D scene to update existing vehicles instead of creating new ones.
     private static int _vehicleCounter = 1;
 
+    // ── Persistent vehicle state — tracks each vehicle's current GPS position ──
+    // Instead of generating a random GPS each tick, we advance each vehicle's
+    // position based on its speed and direction. This makes vehicles move
+    // continuously along the highway instead of jumping to random positions.
+    private static readonly Dictionary<string, (double lat, double lon, double speed, int dir, DateTime lastUpdate)> _vehicleState = new();
+    private static readonly object _stateLock = new();
+
+    // Called by SimulationStop to reset all vehicle positions when sim ends
+    public static void ResetVehicleState()
+    {
+        lock (_stateLock) { _vehicleState.Clear(); }
+    }
+
     public InputPayloadService(AppDbContext db)
     {
         _db = db;
@@ -266,42 +279,81 @@ public class InputPayloadService
             ? (vehicleType == "air_urban" ? rng.Next(30, 150) : rng.Next(151, 801))
             : Math.Round(rng.NextDouble() * 5, 1);
 
+        // ── Pre-compute vehicle identity + continuous position ──────────────
+        // Each vehicle ID (VEH-001 to VEH-020) has a persistent position that
+        // advances based on speed and direction. This makes vehicles travel
+        // continuously along the highway instead of jumping to random spots.
+        var _vid = $"VEH-{_vehicleCounter:D3}";
+        var _spd = isAirVehicle ? rng.Next(80, 180) : rng.Next(35, 75);
+        var _dir = (_vehicleCounter % 2 == 1) ? (int)Math.Round(highwayBearing) : (int)Math.Round((highwayBearing + 180) % 360);
+        var _zLat = zoneLat ?? HighwayDefaultLat(highwayId);
+        var _zLon = zoneLon ?? HighwayDefaultLon(highwayId);
+
+        double _lat, _lon;
+        lock (_stateLock)
+        {
+            if (_vehicleState.TryGetValue(_vid, out var st))
+            {
+                // ── Advance existing vehicle position ──────────────────────────
+                var dt = (DateTime.UtcNow - st.lastUpdate).TotalSeconds;
+                if (dt > 300) dt = 300; // cap at 5 min
+                if (dt < 0.1) dt = 0.1;  // min 100ms
+                var ms = st.speed * 0.44704; // mph → m/s
+                var rad = st.dir * Math.PI / 180;
+                var cosLat = Math.Cos(st.lat * Math.PI / 180);
+                var dLat = ms * Math.Cos(rad) * dt / 111000.0;
+                var dLon = ms * Math.Sin(rad) * dt / (111000.0 * cosLat);
+                _lat = st.lat + dLat;
+                _lon = st.lon + dLon;
+
+                // ── Respawn if vehicle has left the zone corridor (>5km) ────────
+                var dist = Math.Sqrt(Math.Pow(_lat - _zLat, 2) + Math.Pow(_lon - _zLon, 2));
+                if (dist > 0.05)
+                {
+                    // Vehicle reached the end of the zone — respawn at the start
+                    var pos = GenerateLanePosition(_zLat, _zLon, highwayId, rng, highwayBearing);
+                    _lat = pos.lat;
+                    _lon = pos.lon;
+                }
+                _vehicleState[_vid] = (_lat, _lon, st.speed, st.dir, DateTime.UtcNow);
+            }
+            else
+            {
+                // ── New vehicle — start at a lane position near the zone ────────
+                var pos = GenerateLanePosition(_zLat, _zLon, highwayId, rng, highwayBearing);
+                _lat = pos.lat;
+                _lon = pos.lon;
+                _vehicleState[_vid] = (_lat, _lon, _spd, _dir, DateTime.UtcNow);
+            }
+        }
+
         foreach (var f in fields)
         {
             obj[f] = f switch
             {
-                "vehicle_id"      => $"VEH-{_vehicleCounter:D3}",
+                "vehicle_id"      => _vid,
                 "timestamp"       => DateTime.UtcNow.ToString("o"),
-                "speed_mph"       => isAirVehicle ? rng.Next(80, 180) : rng.Next(20, 100),
-                // Direction-aware lane placement:
-                // E-W highways: eastbound (90°) vehicles on north side (+lat),
-                //               westbound (270°) vehicles on south side (-lat).
-                // N-S highways: northbound (0°) on west side (-lon),
-                //               southbound (180°) on east side (+lon).
-                // Cross-axis spread is tight (±0.00008° ≈ ±9m within-lane jitter).
-                // Along-axis spread is wide (±0.025° ≈ ±2.5km highway segment).
-                "latitude"        => GenerateLaneLat(zoneLat ?? HighwayDefaultLat(highwayId), zoneLon ?? HighwayDefaultLon(highwayId), highwayId, rng, highwayBearing),
-                "longitude"       => GenerateLaneLon(zoneLat ?? HighwayDefaultLat(highwayId), zoneLon ?? HighwayDefaultLon(highwayId), highwayId, rng, highwayBearing),
+                "speed_mph"       => _spd,
+                "latitude"        => Math.Round(_lat, 6),
+                "longitude"       => Math.Round(_lon, 6),
                 "altitude_m"      => altitudeM,
                 "altitude_ft"     => Math.Round(altitudeM * 3.28084, 1),
                 "vehicle_type"    => vehicleType,
                 "vehicle_make"    => vehicleMake,
-                // Highway-aware direction: E-W highways travel east(90°) or west(270°)
-                //                          N-S highways travel north(0°) or south(180°)
-                "direction"       => (_vehicleCounter % 2 == 1) ? (int)Math.Round(highwayBearing) : (int)Math.Round((highwayBearing + 180) % 360),
+                "direction"       => _dir,
                 "lane"            => isAirVehicle ? rng.Next(10, 20) : rng.Next(1, 5),
                 "event_type"      => new[] { "detection","merge","speeding","conflict","fault" }[rng.Next(5)],
                 "zone_id"         => !string.IsNullOrEmpty(zoneId) ? zoneId : $"ZONE-{rng.Next(1, 10):D3}",
                 "highway_id"      => !string.IsNullOrEmpty(highwayId) ? highwayId : "I20-TX",
                 "signal_strength" => sourceType == "telecom" ? rng.Next(-80, -30) : rng.Next(-95, -40),
-                "heading"         => (_vehicleCounter % 2 == 1) ? (int)Math.Round(highwayBearing) : (int)Math.Round((highwayBearing + 180) % 360),
+                "heading"         => _dir,
                 "satellite_count" => rng.Next(4, 16),
                 "hdop"            => Math.Round(rng.NextDouble() * 2.5, 2),
                 "rsrp"            => rng.Next(-120, -70),
                 "rsrq"            => rng.Next(-15, -3),
                 "tag_id"          => $"TAG-{rng.Next(100000, 999999):X}",
                 "read_count"      => rng.Next(1, 10),
-                "isAirFlyCar"     => "N",   // always "N" for non-airflycar sources
+                "isAirFlyCar"     => "N",
                 _                 => $"val_{rng.Next(100, 999)}"
             };
         }
