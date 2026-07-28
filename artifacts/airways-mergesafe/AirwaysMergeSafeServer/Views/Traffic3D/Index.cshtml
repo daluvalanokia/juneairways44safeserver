@@ -1464,9 +1464,9 @@ function _getSelectedBounds() {
     if (selectedZoneId) {
         var z = T3D_ZONES.find(function(zz) { return zz.zoneId === selectedZoneId; });
         if (z && z.lat && z.lon) {
-            // Buffer: ±0.045° (~5km) along the road, ±0.004° (~440m) across
-            var alongAxis = 0.045;
-            var crossAxis = 0.004;
+            // Buffer: ±0.06° (~6.6km) along the road, ±0.008° (~880m) across
+            var alongAxis = 0.06;
+            var crossAxis = 0.008;
             var isNS = !_isEWHighway(z.highwayId);
             if (isNS) {
                 return {
@@ -1504,6 +1504,29 @@ function _getSelectedBounds() {
 
 // ── Check if a GPS coordinate is within the selected highway/zone bounds ──
 // Returns true if the point is valid, false if it should be rejected/snapped.
+
+// ── Highway-level bounds (wider than zone bounds) ─────────────────────
+// Used for clamping fallback vehicles that come from other zones on the
+// same highway. Prevents cramming all vehicles into the selected zone.
+function _getHighwayBounds() {
+    if (!T3D_ZONES || T3D_ZONES.length === 0) return null;
+    var lats = T3D_ZONES.filter(function(z) { return z.lat && z.lon; }).map(function(z) { return z.lat; });
+    var lons = T3D_ZONES.filter(function(z) { return z.lat && z.lon; }).map(function(z) { return z.lon; });
+    if (lats.length === 0) return null;
+    var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+    var minLon = Math.min.apply(null, lons), maxLon = Math.max.apply(null, lons);
+    // Add buffer: ±0.03° (~3.3km) beyond the outermost zones
+    return {
+        minLat: minLat - 0.03, maxLat: maxLat + 0.03,
+        minLon: minLon - 0.03, maxLon: maxLon + 0.03
+    };
+}
+
+function _isWithinHighwayBounds(lat, lon, hb) {
+    if (!hb) return true;
+    return lat >= hb.minLat && lat <= hb.maxLat && lon >= hb.minLon && lon <= hb.maxLon;
+}
+
 function _isWithinBounds(lat, lon) {
     var b = _getSelectedBounds();
     if (!b) return true;  // No zones loaded — accept everything
@@ -1528,12 +1551,12 @@ function loadEvents(events) {
         // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
         var vid = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '';
         if (!vid) return;
-        // Skip vehicles whose zone/highway doesn't match the current selection
-        // BUT allow events with no zone_id during active simulation
-        var evZoneCheck = ev.zone_id || ev.zoneId || ev.ZoneId || '';
-        var evHwCheck   = (ev.highway_id || ev.highwayId || ev.HighwayId || '').toUpperCase();
-        if (evZoneCheck && selectedZoneId && evZoneCheck !== selectedZoneId && !simRunning) return;
-        // If event has a highway_id that doesn't match the selected highway, skip it
+        // ── Vehicle acceptance filter ──────────────────────────────────────
+        // The server (GetAnimationData) already filters by zone/server with
+        // a highway-level fallback when the zone has 0 events. Do NOT re-filter
+        // by zone on the client side — that rejects the fallback vehicles and
+        // clears the animation. Only filter by highway (never changes within a scene).
+        var evHwCheck = (ev.highway_id || ev.highwayId || ev.HighwayId || '').toUpperCase();
         if (evHwCheck && HW && evHwCheck !== HW.toUpperCase() && !simRunning) return;
         var lat = parseFloat(ev.latitude  || ev.Latitude  || 0);
         var lon = parseFloat(ev.longitude || ev.Longitude || 0);
@@ -1559,11 +1582,12 @@ function loadEvents(events) {
             needsSnap = true;
         }
 
-        // If a specific zone is selected (tight bounds), enforce stricter validation
+        // If a specific zone is selected (tight bounds), only snap if the vehicle
+        // is truly far away (>0.15°/~16km). Fallback vehicles from other zones
+        // on the same highway should keep their GPS and animate naturally.
         if (!needsSnap && selB && selB.tight) {
-            // For tight (zone-selected) mode: reject vehicles more than 0.06° (~6.5km) from zone center
             var zoneDist = _gpsDist(lat, lon, selB.centerLat, selB.centerLon);
-            if (zoneDist > 0.06) needsSnap = true;
+            if (zoneDist > 0.15) needsSnap = true;
         }
 
         if (needsSnap) {
@@ -1586,8 +1610,17 @@ function loadEvents(events) {
             }
         }
 
-        // Final safety: clamp to selected bounds if still outside
-        if (selB && !_isWithinBounds(lat, lon)) {
+        // Final safety: only clamp if vehicle is outside the HIGHWAY bounds
+        // (not the tight zone bounds — fallback vehicles from other zones
+        //  should be visible across the full highway, not crammed into one zone)
+        if (selB && selB.tight) {
+            // For tight (zone-selected) mode, use wider highway-level bounds for clamping
+            var hwBounds = _getHighwayBounds();
+            if (hwBounds && !_isWithinHighwayBounds(lat, lon, hwBounds)) {
+                lat = Math.max(hwBounds.minLat, Math.min(hwBounds.maxLat, lat));
+                lon = Math.max(hwBounds.minLon, Math.min(hwBounds.maxLon, lon));
+            }
+        } else if (selB && !_isWithinBounds(lat, lon)) {
             var clamped2 = _clampToBounds(lat, lon);
             lat = clamped2.lat; lon = clamped2.lon;
         }
