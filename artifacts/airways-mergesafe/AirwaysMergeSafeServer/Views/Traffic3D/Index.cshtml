@@ -1367,6 +1367,13 @@ async function t3dZoneChanged() {
     if (z && z.lat && z.lon) {
         _panMapTo(z.lat, z.lon);
     }
+    // Re-apply zone filter to server dropdown (refreshScene may have rebuilt it)
+    var srvSelAfter = document.getElementById('t3dServerSel');
+    if (srvSelAfter && selectedZoneId) {
+        srvSelAfter.querySelectorAll('option').forEach(function(o) {
+            o.style.display = (!o.value || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+        });
+    }
     _forceBridgeRedraw();
     _validateSelectionState();
 }
@@ -1731,6 +1738,14 @@ async function refreshScene() {
                         var stillExists = data.servers.some(function(s){ return s.serverId === prevSrv; });
                         if (stillExists) ssel.value = prevSrv;
                         else { selectedServerId = ''; ssel.value = ''; }
+                    }
+                    // Re-apply zone filter to the freshly built server options
+                    // (t3dZoneChanged filters BEFORE refreshScene, but refreshScene
+                    //  rebuilds the dropdown — so the filter is lost. Re-apply here.)
+                    if (selectedZoneId) {
+                        ssel.querySelectorAll('option').forEach(function(o) {
+                            o.style.display = (!o.value || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+                        });
                     }
                 }
             }
