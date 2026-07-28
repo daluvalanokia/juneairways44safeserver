@@ -1737,13 +1737,20 @@ function loadEvents(events) {
             }
         }
 
-        // ── Clamp vehicle to bridge path (±road width) ────────────────────
-        // Even if the vehicle doesn't need snapping, ensure it's within
-        // the bridge road width — keeps all vehicles ON the bridge.
+        // ── ALWAYS project vehicle onto bridge path ───────────────────────
+        // The bridge path IS the ground truth. Regardless of what GPS the
+        // simulation generated, the vehicle is placed ON the path with a
+        // small perpendicular lane offset (±road width).
+        // This guarantees vehicle objects align with the bridge animation.
         var bpClamp = _nearestOnBridgePath(lat, lon);
-        if (bpClamp && bpClamp.perpDist > _bridgeRoadWidth) {
-            lat = bpClamp.clampedLat;
-            lon = bpClamp.clampedLon;
+        if (bpClamp) {
+            // Always clamp to bridge path — use the nearest point + lane offset
+            var laneSide = (Math.random() > 0.5) ? _bridgeRoadWidth : -_bridgeRoadWidth;
+            // Apply lane offset perpendicular to the path bearing
+            var perpRad = bpClamp.bearing * Math.PI / 180 + Math.PI / 2;
+            var cosLat = Math.cos(bpClamp.lat * Math.PI / 180);
+            lat = bpClamp.lat + Math.cos(perpRad) * laneSide;
+            lon = bpClamp.lon + Math.sin(perpRad) * laneSide / cosLat;
         }
 
         // Final safety: only clamp if vehicle is outside the HIGHWAY bounds
