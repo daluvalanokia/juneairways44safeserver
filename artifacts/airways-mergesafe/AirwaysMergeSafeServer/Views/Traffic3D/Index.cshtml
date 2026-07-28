@@ -1102,29 +1102,32 @@ function _updateVehiclePositions() {
         if (vd.laneSide === undefined) vd.laneSide = (Math.random() > 0.5) ? 1 : -1;
 
         // ── 2. Determine movement bearing ─────────────────────────────────
-        // Use LOCAL segment bearing from snap (follows curves) when available;
-        // fall back to global _hwBearingDeg otherwise.
+        // The sim's direction (vd.direction) tells us which way the vehicle
+        // should travel: forward bearing or reverse bearing.
+        // We use the LOCAL segment bearing (snap.bearing) as the movement
+        // vector direction — this keeps vehicles aligned with the road.
+        // But the FORWARD vs REVERSE choice is determined by the sim's dir:
+        //   If dir matches localBrg → forward
+        //   If dir matches localRev → reverse
         var useBearing;
         if (snap) {
             var localBrg = snap.bearing;
             var localRev = (localBrg + 180) % 360;
             function _ad(a,b){ return Math.abs(((a-b+540)%360)-180); }
+            // Use the sim's direction to choose forward or reverse
             if (dir > 0 && _ad(dir, localBrg) <= 90) {
-                useBearing = localBrg;
+                useBearing = localBrg;        // sim says forward
             } else if (dir > 0 && _ad(dir, localRev) <= 90) {
-                useBearing = localRev;
+                useBearing = localRev;         // sim says reverse
+            } else if (dir > 0) {
+                // Sim direction doesn't match either — pick closest
+                useBearing = (_ad(dir, localBrg) <= _ad(dir, localRev)) ? localBrg : localRev;
             } else {
                 useBearing = (vd.laneSide >= 0) ? localBrg : localRev;
             }
         } else {
-            // No bridge path -- use global highway bearing
-            var _brg = _hwBearingDeg;
-            var _brgRev = (_brg + 180) % 360;
-            function _ad2(a,b){ return Math.abs(((a-b+540)%360)-180); }
-            useBearing = dir;
-            if (_ad2(useBearing, _brg) > 45 && _ad2(useBearing, _brgRev) > 45) {
-                useBearing = (Math.random() > 0.5) ? _brg : _brgRev;
-            }
+            // No bridge path — use the sim's direction directly
+            useBearing = dir > 0 ? dir : _hwBearingDeg;
         }
 
         // ── 3. Move along bearing ─────────────────────────────────────────
@@ -1134,10 +1137,10 @@ function _updateVehiclePositions() {
         var newLat = vd.lat + dLat;
         var newLon = vd.lon + dLon;
 
-        // ── 4. Re-project onto bridge path + lane offset ──────────────────
-        // After moving, find the nearest point on the bridge path and apply
-        // a perpendicular lane offset. This keeps vehicles ON the road even
-        // through curves, because we re-project every frame.
+        // ── 4. Gentle path correction — only if vehicle drifts off road ────
+        // Don't force re-projection every frame — that discards the sim's
+        // lane placement. Only nudge the vehicle back if it has drifted
+        // more than 2x _bridgeRoadWidth from the path centreline.
         if (_bridgePathCoords.length >= 2) {
             var snap2 = _nearestOnBridgePath(newLat, newLon);
             if (snap2) {
@@ -1163,13 +1166,15 @@ function _updateVehiclePositions() {
                         newLat = snapW2.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
                         newLon = snapW2.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
                     }
-                } else {
-                    // Normal: project onto path + perpendicular lane offset
+                } else if (snap2.perpDist > _bridgeRoadWidth * 2) {
+                    // Vehicle drifted too far from path — gently nudge back
                     var perpRad = snap2.bearing * Math.PI / 180 + Math.PI / 2;
                     var cosLat2 = Math.cos(snap2.lat * Math.PI / 180);
                     newLat = snap2.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
                     newLon = snap2.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
                 }
+                // If perpDist <= _bridgeRoadWidth * 2, keep the natural position.
+                // The vehicle is close enough to the road — no need to override.
             }
         } else if (vd.zoneLat && vd.zoneLon) {
             // Fallback: zone-based clamping when no bridge path
@@ -1803,11 +1808,12 @@ function loadEvents(events) {
             }
         }
 
-        // ── ALWAYS project vehicle onto bridge path ──────────────────────
-        // bridgePath from server IS the ground truth for vehicle positions.
-        // Project every vehicle onto the nearest bridge path segment, then
-        // apply a ±lane offset perpendicular to the road bearing.
-        if (_bridgePathCoords.length >= 2) {
+        // ── Respect sim GPS coordinates when valid ──────────────────────────
+        // The InputPayloadService generates GPS from zone coordinates with
+        // proper lane offsets. Only project onto the bridge path when the
+        // GPS is clearly bogus (0,0 or already flagged for snap). Otherwise
+        // keep the original coordinates — the sim knows where the vehicle is.
+        if (needsSnap && _bridgePathCoords.length >= 2) {
             var bpClamp = _nearestOnBridgePath(lat, lon);
             if (bpClamp) {
                 var laneSide = (Math.random() > 0.5) ? _bridgeRoadWidth : -_bridgeRoadWidth;
@@ -1816,11 +1822,10 @@ function loadEvents(events) {
                 lat = bpClamp.lat + Math.cos(perpRad) * laneSide;
                 lon = bpClamp.lon + Math.sin(perpRad) * laneSide / cosLat2;
             }
-        } else {
-            // Bridge path not yet loaded — snap to zone centre as fallback
-            if (zone && zone.lat) { lat = zone.lat; lon = zone.lon; }
-            console.warn('[T3D] loadEvents: bridge path empty — falling back to zone snap');
         }
+        // If GPS was valid (not snapped), keep original lat/lon from sim.
+        // The bridge path projection was too aggressive — it moved vehicles
+        // to different coordinates, ignoring the sim's lane placement.
 
         // Final safety: only clamp if vehicle is outside the HIGHWAY bounds
         // (not the tight zone bounds — fallback vehicles from other zones
@@ -1839,19 +1844,19 @@ function loadEvents(events) {
 
         var dir = parseFloat(ev.direction || ev.Direction || ev.heading || ev.Heading || -1);
         if (isNaN(dir) || dir < 0) dir = -1;
-        // Snap direction to highway axis — prevents vehicles moving perpendicular to road
         var hwId = (ev.highway_id || ev.highwayId || ev.HighwayId || '').toUpperCase();
         var isNSHwy = hwId.indexOf('I35') >= 0 || hwId.indexOf('I-35') >= 0 ||
                       hwId.indexOf('I45') >= 0 || hwId.indexOf('I-45') >= 0 ||
                       hwId.indexOf('I25') >= 0 || hwId.indexOf('I-25') >= 0;
-        // If direction is missing or not aligned with highway axis, assign highway-correct direction
-        // Use real highway bearing from server — not axis-aligned guesses
-        // Valid = within ±45° of bearing or reverse bearing
-        var _brg = _hwBearingDeg;
-        var _brgRev = (_brg + 180) % 360;
-        function _angleDiff(a, b) { return Math.abs(((a - b + 540) % 360) - 180); }
-        var isAligned = dir >= 0 && (_angleDiff(dir, _brg) <= 45 || _angleDiff(dir, _brgRev) <= 45);
-        if (!isAligned || dir < 0) {
+        // ── Trust the sim's direction ──────────────────────────────────────
+        // The InputPayloadService already generates direction aligned with the
+        // real highway bearing (highwayBearing or reverse). Do NOT reassign it
+        // based on _hwBearingDeg — that value may not be updated from the server
+        // yet (default 90°), which would reject valid directions for N-S highways.
+        // Only assign a fallback if direction is truly missing (< 0 or NaN).
+        if (dir < 0) {
+            var _brg = _hwBearingDeg;
+            var _brgRev = (_brg + 180) % 360;
             dir = (Math.random() > 0.5) ? Math.round(_brg) : Math.round(_brgRev);
         }
         var existing = vehicleData.get(vid);
