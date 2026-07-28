@@ -1085,135 +1085,79 @@ function _updateVehiclePositions() {
     var refLat = _mapCtrLat || 32.7213;
     var latPerM = 1 / 111000;
     var lonPerM = 1 / (111000 * Math.cos(refLat * Math.PI / 180));
-    var bounds  = _getSelectedBounds();
 
-    // ── Vehicle movement with lane-following on curved bridge path ───────
-    // Each frame: find nearest segment on bridge path -> use LOCAL bearing
-    // at that segment -> move along it -> re-project onto path + lane offset.
-    // This makes vehicles follow road curves naturally.
+    // ── Compute bridge path endpoints for vehicle removal ────────────────
+    // Vehicles that travel past the first or last bridge path coordinate
+    // have reached the end of the highway and should disappear.
+    var pathStart = null, pathEnd = null;
+    if (_bridgePathCoords.length >= 2) {
+        pathStart = _bridgePathCoords[0];
+        pathEnd   = _bridgePathCoords[_bridgePathCoords.length - 1];
+    }
+    // Extend the endpoints slightly so vehicles exit the visible area
+    // before being removed (20% of the total path length as margin).
+    var pathMargin = 0;
+    if (_bridgePathCoords.length >= 2) {
+        var totalLat = Math.abs(pathEnd.lat - pathStart.lat);
+        var totalLon = Math.abs(pathEnd.lon - pathStart.lon);
+        pathMargin = Math.max(totalLat, totalLon) * 0.15;
+    }
+
+    // ── Move each vehicle in the sim's direction at the sim's speed ──────
+    // No wrapping, no bouncing, no re-projection. Vehicles move freely
+    // from their starting GPS in the direction the sim specified, at the
+    // speed the sim specified. They disappear when they pass the highway
+    // endpoints.
+    var toRemove = [];
     vehicleData.forEach(function(vd, vid) {
         var spd = vd.speedMph || 0;
         if (spd < 1) return;
         var ms  = spd * 0.44704;          // mph -> m/s
         var dir = vd.direction || 0;
+        if (dir <= 0) dir = _hwBearingDeg; // fallback if missing
 
-        // ── 1. Find nearest segment on bridge path ────────────────────────
-        var snap = _nearestOnBridgePath(vd.lat, vd.lon);
-        if (vd.laneSide === undefined) vd.laneSide = (Math.random() > 0.5) ? 1 : -1;
-
-        // ── 2. Determine movement bearing ─────────────────────────────────
-        // The sim's direction (vd.direction) tells us which way the vehicle
-        // should travel: forward bearing or reverse bearing.
-        // We use the LOCAL segment bearing (snap.bearing) as the movement
-        // vector direction — this keeps vehicles aligned with the road.
-        // But the FORWARD vs REVERSE choice is determined by the sim's dir:
-        //   If dir matches localBrg → forward
-        //   If dir matches localRev → reverse
-        var useBearing;
-        if (snap) {
-            var localBrg = snap.bearing;
-            var localRev = (localBrg + 180) % 360;
-            function _ad(a,b){ return Math.abs(((a-b+540)%360)-180); }
-            // Use the sim's direction to choose forward or reverse
-            if (dir > 0 && _ad(dir, localBrg) <= 90) {
-                useBearing = localBrg;        // sim says forward
-            } else if (dir > 0 && _ad(dir, localRev) <= 90) {
-                useBearing = localRev;         // sim says reverse
-            } else if (dir > 0) {
-                // Sim direction doesn't match either — pick closest
-                useBearing = (_ad(dir, localBrg) <= _ad(dir, localRev)) ? localBrg : localRev;
-            } else {
-                useBearing = (vd.laneSide >= 0) ? localBrg : localRev;
-            }
-        } else {
-            // No bridge path — use the sim's direction directly
-            useBearing = dir > 0 ? dir : _hwBearingDeg;
-        }
-
-        // ── 3. Move along bearing ─────────────────────────────────────────
-        var rad  = useBearing * Math.PI / 180;
+        // ── 1. Move along the sim's direction ────────────────────────────
+        var rad  = dir * Math.PI / 180;
         var dLat = ms * Math.cos(rad) * dt * latPerM;
         var dLon = ms * Math.sin(rad) * dt * lonPerM;
         var newLat = vd.lat + dLat;
         var newLon = vd.lon + dLon;
 
-        // ── 4. Gentle path correction — only if vehicle drifts off road ────
-        // Don't force re-projection every frame — that discards the sim's
-        // lane placement. Only nudge the vehicle back if it has drifted
-        // more than 2x _bridgeRoadWidth from the path centreline.
+        // ── 2. Gentle lane keeping — nudge toward road if drifting ────────
+        // Apply a very gentle correction only if the vehicle has drifted
+        // more than 3x road width from the bridge centreline. This keeps
+        // vehicles roughly on the road without overriding their position.
         if (_bridgePathCoords.length >= 2) {
-            var snap2 = _nearestOnBridgePath(newLat, newLon);
-            if (snap2) {
-                var pathLen = _bridgePathCoords.length;
-                // Wrap at path endpoints (continuous traffic flow)
-                if (snap2.segIndex >= pathLen - 4) {
-                    var wi = Math.floor(Math.random() * 8) + 2;
-                    vd.laneSide = (Math.random() > 0.5) ? 1 : -1;
-                    var snapW = _nearestOnBridgePath(_bridgePathCoords[wi].lat, _bridgePathCoords[wi].lon);
-                    if (snapW) {
-                        var perpRad = snapW.bearing * Math.PI / 180 + Math.PI / 2;
-                        var cosLat2 = Math.cos(snapW.lat * Math.PI / 180);
-                        newLat = snapW.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
-                        newLon = snapW.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
-                    }
-                } else if (snap2.segIndex <= 1) {
-                    var wi = pathLen - Math.floor(Math.random() * 8) - 4;
-                    vd.laneSide = (Math.random() > 0.5) ? 1 : -1;
-                    var snapW2 = _nearestOnBridgePath(_bridgePathCoords[wi].lat, _bridgePathCoords[wi].lon);
-                    if (snapW2) {
-                        var perpRad = snapW2.bearing * Math.PI / 180 + Math.PI / 2;
-                        var cosLat2 = Math.cos(snapW2.lat * Math.PI / 180);
-                        newLat = snapW2.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
-                        newLon = snapW2.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
-                    }
-                } else if (snap2.perpDist > _bridgeRoadWidth * 2) {
-                    // Vehicle drifted too far from path — gently nudge back
-                    var perpRad = snap2.bearing * Math.PI / 180 + Math.PI / 2;
-                    var cosLat2 = Math.cos(snap2.lat * Math.PI / 180);
-                    newLat = snap2.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
-                    newLon = snap2.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
-                }
-                // If perpDist <= _bridgeRoadWidth * 2, keep the natural position.
-                // The vehicle is close enough to the road — no need to override.
-            }
-        } else if (vd.zoneLat && vd.zoneLon) {
-            // Fallback: zone-based clamping when no bridge path
-            var crossLat = newLat - vd.zoneLat;
-            var crossLon = newLon - vd.zoneLon;
-            if (vd.isNSHwy) {
-                if (Math.abs(crossLon) > _bridgeRoadWidth)
-                    newLon = vd.zoneLon + (crossLon > 0 ? _bridgeRoadWidth : -_bridgeRoadWidth);
-                if (Math.abs(crossLat) > 0.025)
-                    newLat = vd.zoneLat - crossLat * 0.95;
-            } else {
-                if (Math.abs(crossLat) > _bridgeRoadWidth)
-                    newLat = vd.zoneLat + (crossLat > 0 ? _bridgeRoadWidth : -_bridgeRoadWidth);
-                if (Math.abs(crossLon) > 0.025)
-                    newLon = vd.zoneLon - crossLon * 0.95;
+            var snap = _nearestOnBridgePath(newLat, newLon);
+            if (snap && snap.perpDist > _bridgeRoadWidth * 3) {
+                var perpRad = snap.bearing * Math.PI / 180 + Math.PI / 2;
+                var cosLat2 = Math.cos(snap.lat * Math.PI / 180);
+                newLat = snap.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
+                newLon = snap.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
             }
         }
 
-        // ── 5. Bounds validation ──────────────────────────────────────────
-        if (bounds) {
-            var outsideLat = newLat < bounds.minLat || newLat > bounds.maxLat;
-            var outsideLon = newLon < bounds.minLon || newLon > bounds.maxLon;
-            if (outsideLat || outsideLon) {
-                if (_bridgePathCoords.length >= 2) {
-                    var wi = Math.floor(Math.random() * (_bridgePathCoords.length - 4)) + 2;
-                    vd.laneSide = (Math.random() > 0.5) ? 1 : -1;
-                    var snapW3 = _nearestOnBridgePath(_bridgePathCoords[wi].lat, _bridgePathCoords[wi].lon);
-                    if (snapW3) {
-                        var perpRad = snapW3.bearing * Math.PI / 180 + Math.PI / 2;
-                        var cosLat2 = Math.cos(snapW3.lat * Math.PI / 180);
-                        newLat = snapW3.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
-                        newLon = snapW3.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
-                    }
-                } else if (vd.zoneLat && vd.zoneLon) {
-                    newLat = vd.zoneLat + (Math.random() - 0.5) * (vd.isNSHwy ? 0.04 : 0.0006);
-                    newLon = vd.zoneLon + (Math.random() - 0.5) * (vd.isNSHwy ? 0.0006 : 0.04);
-                } else if (bounds.centerLat) {
-                    newLat = bounds.centerLat + (Math.random() - 0.5) * 0.002;
-                    newLon = bounds.centerLon + (Math.random() - 0.5) * 0.005;
+        // ── 3. Check if vehicle has reached the end of the highway ───────
+        // Compare the vehicle's along-axis position against the bridge
+        // endpoints. If it has passed either end (plus margin), remove it.
+        if (pathStart && pathEnd) {
+            if (_hwyIsEW) {
+                // E-W highway: check longitude
+                var minLon = Math.min(pathStart.lon, pathEnd.lon) - pathMargin;
+                var maxLon = Math.max(pathStart.lon, pathEnd.lon) + pathMargin;
+                if (newLon < minLon || newLon > maxLon) {
+                    console.log('[T3D] Vehicle ' + vid + ' reached highway end (lon=' + newLon.toFixed(4) + ') — removing');
+                    toRemove.push(vid);
+                    return;
+                }
+            } else {
+                // N-S highway: check latitude
+                var minLat = Math.min(pathStart.lat, pathEnd.lat) - pathMargin;
+                var maxLat = Math.max(pathStart.lat, pathEnd.lat) + pathMargin;
+                if (newLat < minLat || newLat > maxLat) {
+                    console.log('[T3D] Vehicle ' + vid + ' reached highway end (lat=' + newLat.toFixed(4) + ') — removing');
+                    toRemove.push(vid);
+                    return;
                 }
             }
         }
@@ -1225,6 +1169,9 @@ function _updateVehiclePositions() {
         vd.lat = newLat;
         vd.lon = newLon;
     });
+
+    // Remove vehicles that reached the highway end
+    toRemove.forEach(function(vid) { vehicleData.delete(vid); });
 }
 
 var _animFrame = null;
