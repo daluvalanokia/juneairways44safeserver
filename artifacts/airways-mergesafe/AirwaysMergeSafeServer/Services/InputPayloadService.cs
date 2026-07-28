@@ -27,7 +27,17 @@ namespace AirwaysMergeSafeServer.Services;
 public class InputPayloadService
 {
     private readonly AppDbContext _db;
-    public InputPayloadService(AppDbContext db) { _db = db; }
+
+    // Static counter for stable vehicle IDs — cycles 1-20 so the same
+    // pool of vehicles persists across simulation ticks, allowing the
+    // 3D scene to update existing vehicles instead of creating new ones.
+    private static int _vehicleCounter = 1;
+
+    public InputPayloadService(AppDbContext db)
+    {
+        _db = db;
+        _vehicleCounter = (_vehicleCounter % 20) + 1;
+    }
 
     private static readonly string[] GroundTypes      = { "sedan", "suv", "truck", "motorcycle", "van" };
     private static readonly string[] AirTypes         = { "air_urban", "air_express" };
