@@ -1814,6 +1814,7 @@ function loadEvents(events) {
             vehicleData.set(vid, { ev: ev, vc: vc, lat: lat, lon: lon, speedMph: spd, make: make,
                                    direction: dir,
                                    isNSHwy: isNSHwy,
+                                   laneSide: (Math.random() > 0.5) ? 1 : -1,
                                    zoneLat: zone ? zone.lat : null,
                                    zoneLon: zone ? zone.lon : null,
                                    lastSeen: now });
