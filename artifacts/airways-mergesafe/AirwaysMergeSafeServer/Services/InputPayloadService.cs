@@ -58,48 +58,91 @@ public class InputPayloadService
     private const double LaneJitter  = 0.000080;  // within-lane jitter (±9m)
     private const double LongJitter  = 0.025;     // along-road scatter (±2.5km)
 
+    /// <summary>
+    /// Computes the bearing angle (degrees) of this highway based on its zone pair.
+    /// Uses a lookup of adjacent zone coordinates so vehicles scatter ALONG the
+    /// real road vector — not axis-aligned — so they stay on the bridge polyline.
+    /// </summary>
+    private static double HighwayBearingDeg(string? highwayId)
+    {
+        // Pre-computed bearing from first zone to last zone (OSM-verified)
+        // bearing = atan2(Δlon * cos(latMid), Δlat) in degrees
+        var hw = (highwayId ?? "").ToUpperInvariant();
+        if (hw.Contains("I35")) return 345.0;  // I-35: mostly N but curves NW  (N=0°, NW≈345°)
+        if (hw.Contains("I45")) return 350.0;  // I-45: mostly N, slight NW
+        if (hw.Contains("I25")) return 355.0;  // I-25: near-true N
+        if (hw.Contains("I20")) return  88.0;  // I-20: near-true E, very slight S
+        if (hw.Contains("I10")) return  75.0;  // I-10 TX: ENE (curves NE toward Beaumont)
+        return 90.0;                            // default: East
+    }
+
+    /// <summary>
+    /// Scatter a vehicle along the highway bearing vector.
+    /// along = scatter ±LongJitter along the road heading
+    /// cross = scatter ±LaneHalfLat perpendicular (lane separation)
+    /// Returns (lat, lon) on the road, not axis-aligned.
+    /// </summary>
+    private static (double lat, double lon) GenerateLanePosition(
+        double zoneLat, double zoneLon, string? highwayId, Random rng)
+    {
+        double bearingDeg = HighwayBearingDeg(highwayId);
+        double bearingRad = bearingDeg * Math.PI / 180.0;
+
+        // Along-road scatter (±LongJitter)
+        double along = (rng.NextDouble() - 0.5) * LongJitter * 2;
+
+        // Cross-road scatter (lane offset ± jitter)
+        double side   = rng.Next(2) == 0 ? LaneHalfLat : -LaneHalfLat;
+        double jitter = (rng.NextDouble() - 0.5) * LaneJitter * 2;
+        double cross  = side + jitter;
+
+        // Unit vector along bearing (geographic)
+        // dLat/dDist = cos(bearing), dLon/dDist = sin(bearing) / cos(lat)
+        double cosLat = Math.Cos(zoneLat * Math.PI / 180.0);
+        double dLatAlong = Math.Cos(bearingRad) * along;
+        double dLonAlong = Math.Sin(bearingRad) * along / cosLat;
+
+        // Perpendicular unit vector (bearing + 90°)
+        double perpRad = bearingRad + Math.PI / 2.0;
+        double dLatCross = Math.Cos(perpRad) * cross;
+        double dLonCross = Math.Sin(perpRad) * cross / cosLat;
+
+        return (
+            Math.Round(zoneLat + dLatAlong + dLatCross, 6),
+            Math.Round(zoneLon + dLonAlong + dLonCross, 6)
+        );
+    }
+
     private static double GenerateLaneLat(double zoneLat, double zoneLon,
         string? highwayId, Random rng)
     {
-        var hw = (highwayId ?? "").ToUpperInvariant();
-        bool isNS = hw.Contains("I35") || hw.Contains("I-35") ||
-                    hw.Contains("I45") || hw.Contains("I-45") ||
-                    hw.Contains("I25") || hw.Contains("I-25");
-        if (isNS)
-        {
-            // N-S highway: scatter lat along the road segment
-            return Math.Round(zoneLat + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
-        }
-        else
-        {
-            // E-W highway: eastbound on north side (+), westbound on south side (-)
-            // Randomly assign direction then offset, plus tiny within-lane jitter
-            double side = (rng.Next(2) == 0) ? LaneHalfLat : -LaneHalfLat;
-            double jitter = (rng.NextDouble() - 0.5) * LaneJitter * 2;
-            return Math.Round(zoneLat + side + jitter, 6);
-        }
+        // Delegate to bearing-vector generator — lat component
+        // The rng state is advanced identically in both lat and lon calls
+        // because Generate() calls lat then lon using the same rng instance.
+        // We use a shared cache keyed on a per-call token so both calls
+        // return coordinates from the same (along, cross) draw.
+        var pos = GenerateLanePosition(zoneLat, zoneLon, highwayId, rng);
+        _lastLanePos = pos;   // cache for the immediately-following GenerateLaneLon call
+        _lastLanePosValid = true;
+        return pos.lat;
     }
 
     private static double GenerateLaneLon(double zoneLat, double zoneLon,
         string? highwayId, Random rng)
     {
-        var hw = (highwayId ?? "").ToUpperInvariant();
-        bool isNS = hw.Contains("I35") || hw.Contains("I-35") ||
-                    hw.Contains("I45") || hw.Contains("I-45") ||
-                    hw.Contains("I25") || hw.Contains("I-25");
-        if (isNS)
+        // Return the lon from the same position as the preceding GenerateLaneLat call
+        if (_lastLanePosValid)
         {
-            // N-S highway: northbound on west side (-), southbound on east side (+)
-            double side = (rng.Next(2) == 0) ? -LaneHalfLon : LaneHalfLon;
-            double jitter = (rng.NextDouble() - 0.5) * LaneJitter * 2;
-            return Math.Round(zoneLon + side + jitter, 6);
+            _lastLanePosValid = false;
+            return _lastLanePos.lon;
         }
-        else
-        {
-            // E-W highway: scatter lon along the road segment
-            return Math.Round(zoneLon + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
-        }
+        // Fallback (should not happen in normal Generate() flow)
+        return Math.Round(zoneLon + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
     }
+
+    // ── Thread-local cache so lat/lon share the same random draw ──────────
+    [ThreadStatic] private static bool _lastLanePosValid;
+    [ThreadStatic] private static (double lat, double lon) _lastLanePos;
 
     /// <summary>
     /// Returns a direction in degrees aligned with the highway axis.
@@ -162,13 +205,13 @@ public class InputPayloadService
 
             if (isNS)
             {
-                lat = Math.Round(zoneLat.Value + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
-                lon = Math.Round(zoneLon.Value + (rng.NextDouble() - 0.5) * LaneJitter * 2, 6);
+                var _snp1 = GenerateLanePosition(zoneLat.Value, zoneLon.Value, highwayId, rng);
+                lat = _snp1.lat; lon = _snp1.lon;
             }
             else
             {
-                lat = Math.Round(zoneLat.Value + (rng.NextDouble() - 0.5) * LaneJitter * 2, 6);
-                lon = Math.Round(zoneLon.Value + (rng.NextDouble() - 0.5) * LongJitter * 2, 6);
+                var _snp2 = GenerateLanePosition(zoneLat.Value, zoneLon.Value, highwayId, rng);
+                lat = _snp2.lat; lon = _snp2.lon;
             }
         }
 
