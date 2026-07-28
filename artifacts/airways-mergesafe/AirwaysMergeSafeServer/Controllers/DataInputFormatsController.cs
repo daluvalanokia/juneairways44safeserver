@@ -90,9 +90,43 @@ public class DataInputFormatsController : Controller
                 "zone_id","highway_id","signal_strength","isAirFlyCar"
               };
 
-        // Look up the selected zone's GPS so IPS can place vehicles on the right highway
+        // Look up the selected zone's GPS + all highway zones to compute
+        // the real road bearing from actual zone coordinates.
         double? _zLat = null, _zLon = null;
-        if (!string.IsNullOrEmpty(zoneId))
+        double  _hwBearing = 90.0;  // default East
+
+        if (!string.IsNullOrEmpty(highwayId))
+        {
+            var _hwZones = await _db.MergeZones.AsNoTracking()
+                .Where(z => z.HighwayId == highwayId && z.Latitude.HasValue)
+                .OrderBy(z => z.Latitude)
+                .Select(z => new { z.ZoneId, z.Latitude, z.Longitude })
+                .ToListAsync();
+
+            if (_hwZones.Count >= 2)
+            {
+                // Compute bearing from first zone to last zone (real road heading)
+                var _first = _hwZones[0];
+                var _last  = _hwZones[^1];
+                double _midLat = (_first.Latitude!.Value + _last.Latitude!.Value) / 2.0;
+                double _cosLat = Math.Cos(_midLat * Math.PI / 180.0);
+                double _dLat = _last.Latitude!.Value - _first.Latitude!.Value;
+                double _dLon = _last.Longitude!.Value - _first.Longitude!.Value;
+                _hwBearing = Math.Atan2(_dLon * _cosLat, _dLat) * 180.0 / Math.PI;
+                if (_hwBearing < 0) _hwBearing += 360;
+                TraceLogger.Info("DataInputFormats", nameof(SimulationPost),
+                    $"Highway bearing from zones: {_hwBearing:F1}° ({_hwZones.Count} zones)");
+            }
+
+            // Also get the selected zone's GPS
+            if (!string.IsNullOrEmpty(zoneId))
+            {
+                var _sel = _hwZones.FirstOrDefault(z => z.ZoneId == zoneId);
+                if (_sel?.Latitude.HasValue == true)  _zLat = _sel.Latitude!.Value;
+                if (_sel?.Longitude.HasValue == true) _zLon = _sel.Longitude!.Value;
+            }
+        }
+        else if (!string.IsNullOrEmpty(zoneId))
         {
             var _zone = await _db.MergeZones.AsNoTracking()
                 .Where(z => z.ZoneId == zoneId).FirstOrDefaultAsync();
@@ -107,7 +141,8 @@ public class DataInputFormatsController : Controller
             zoneLon:       _zLon,
             zoneRadiusDeg: 0.012,    // ~1.3 km — tight corridor spread on highway
             zoneId:        zoneId,
-            highwayId:     highwayId);
+            highwayId:     highwayId,
+            highwayBearing: _hwBearing);
         // Task 10: for non-airflycar sources, enforce isAirFlyCar="N" in payload BEFORE
         // classification, so the classifier never promotes them to air via the Y-field gate.
         if (!isAirFlyCarSrc)
