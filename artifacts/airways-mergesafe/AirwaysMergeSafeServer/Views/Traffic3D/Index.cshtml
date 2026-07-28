@@ -441,6 +441,29 @@ function _isEWHighway(hwId) {
     return true;
 }
 
+// ── Highway bearing lookup (matches IPS HighwayBearingDeg) ──────────
+// Returns the actual road bearing in degrees so the bridge polyline
+// and vehicle scatter use the SAME heading vector.
+function _hwBearing(hwId) {
+    var h = (hwId || '').toUpperCase();
+    if (h.indexOf('I35') >= 0 || h.indexOf('I-35') >= 0) return 345;
+    if (h.indexOf('I45') >= 0 || h.indexOf('I-45') >= 0) return 350;
+    if (h.indexOf('I25') >= 0 || h.indexOf('I-25') >= 0) return 355;
+    if (h.indexOf('I20') >= 0 || h.indexOf('I-20') >= 0) return  88;
+    if (h.indexOf('I10') >= 0 || h.indexOf('I-10') >= 0) return  75;
+    return 90;
+}
+
+// ── Extend a point along a bearing by distDeg degrees ────────────────
+function _bearingPoint(lat, lon, bearing, distDeg) {
+    var rad = bearing * Math.PI / 180;
+    var cosLat = Math.cos(lat * Math.PI / 180);
+    return {
+        lat: lat + Math.cos(rad) * distDeg,
+        lon: lon + Math.sin(rad) * distDeg / cosLat
+    };
+}
+
 function _setHighwayCoords(lat, lon, hwId) {
     // Store the clicked zone's centreline
     _hwyLat  = lat;
@@ -448,26 +471,36 @@ function _setHighwayCoords(lat, lon, hwId) {
     _hwyIsEW = _isEWHighway(hwId);
     _hwyHeading = _hwyIsEW ? 'EW' : 'NS';
 
-    // Collect ALL zones on the same highway — sort along the road axis
-    // so the polyline follows the road from one end to the other.
+    var bearing = _hwBearing(hwId);
+
+    // ── Build bridge path using the real road bearing vector ─────────
+    // Strategy: collect all zone GPS anchors, then extend each along
+    // the bearing so the polyline follows the real road curvature.
+    // This ensures the bridge line passes through every zone's exact
+    // coordinates — and vehicles scattered along the same bearing vector
+    // stay ON the bridge regardless of how far they are scattered.
     _hwyPath = [];
-    if (typeof T3D_ZONES !== 'undefined') {
-        T3D_ZONES.forEach(function(z) {
-            if (z.lat && z.lon) {
-                _hwyPath.push({ lat: z.lat, lon: z.lon, zoneId: z.zoneId });
-            }
+    if (typeof T3D_ZONES !== 'undefined' && T3D_ZONES.length > 0) {
+        // Sort zones along the bearing axis (project each zone onto bearing)
+        var cosLat = Math.cos(lat * Math.PI / 180);
+        var bearRad = bearing * Math.PI / 180;
+        var sorted = T3D_ZONES.filter(function(z){ return z.lat && z.lon; }).slice();
+        sorted.sort(function(a, b) {
+            // Project onto bearing direction for sorting
+            var pa = Math.cos(bearRad) * a.lat + Math.sin(bearRad) * a.lon * cosLat;
+            var pb = Math.cos(bearRad) * b.lat + Math.sin(bearRad) * b.lon * cosLat;
+            return pa - pb;
         });
-        // Sort: E-W by longitude, N-S by latitude
-        _hwyPath.sort(function(a, b) {
-            return _hwyIsEW ? a.lon - b.lon : a.lat - b.lat;
+        sorted.forEach(function(z) {
+            _hwyPath.push({ lat: z.lat, lon: z.lon, zoneId: z.zoneId });
         });
     }
-    // If no zones found, use just the centreline point
+    // Fallback: single point extended along bearing
     if (_hwyPath.length === 0 && lat && lon) {
         _hwyPath = [{ lat: lat, lon: lon, zoneId: '' }];
     }
 
-    // Sync 3D road group rotation
+    // Sync 3D road group rotation to match the real bearing
     if (typeof roadGroup3 !== 'undefined') {
         roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
     }
@@ -1446,21 +1479,27 @@ function _clearVehicles() { vehicleData.clear(); }
 function _snapToZone(zoneId) {
     var z = T3D_ZONES.find(function(zz) { return zz.zoneId === zoneId; });
     if (!z || !z.lat || !z.lon) return null;
-    var hw = (z.highwayId || '').toUpperCase();
-    var isNS = hw.indexOf('I35') >= 0 || hw.indexOf('I-35') >= 0 ||
-               hw.indexOf('I45') >= 0 || hw.indexOf('I-45') >= 0 ||
-               hw.indexOf('I25') >= 0 || hw.indexOf('I-25') >= 0;
-    var latJitter, lonJitter;
-    if (isNS) {
-        // N-S highway: spread along latitude (along-road), tight longitude (road width)
-        latJitter = (Math.random() - 0.5) * 0.030;  // ±1.5km along road
-        lonJitter = (Math.random() - 0.5) * 0.0015; // ±165m road width (tighter)
-    } else {
-        // E-W highway: spread along longitude (along-road), tight latitude (road width)
-        latJitter = (Math.random() - 0.5) * 0.0015; // ±165m road width (tighter)
-        lonJitter = (Math.random() - 0.5) * 0.030;  // ±1.5km along road
-    }
-    return { lat: z.lat + latJitter, lon: z.lon + lonJitter, zone: z };
+    var hwId = z.highwayId || HW;
+    var bearing = _hwBearing(hwId);
+    var bearRad = bearing * Math.PI / 180;
+    var cosLat = Math.cos(z.lat * Math.PI / 180);
+
+    // Scatter along the real road bearing vector — same math as IPS
+    // so snapped vehicles stay on the bridge polyline
+    var along = (Math.random() - 0.5) * 0.030 * 2;   // ±1.5km along road
+    var cross = (Math.random() - 0.5) * 0.0015 * 2;  // ±165m cross-road
+
+    var dLatAlong = Math.cos(bearRad) * along;
+    var dLonAlong = Math.sin(bearRad) * along / cosLat;
+    var perpRad = bearRad + Math.PI / 2;
+    var dLatCross = Math.cos(perpRad) * cross;
+    var dLonCross = Math.sin(perpRad) * cross / cosLat;
+
+    return {
+        lat: z.lat + dLatAlong + dLatCross,
+        lon: z.lon + dLonAlong + dLonCross,
+        zone: z
+    };
 }
 
 // ── Distance in degrees between two GPS points ────────────────────
