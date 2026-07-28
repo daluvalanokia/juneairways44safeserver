@@ -1682,12 +1682,20 @@ function _clampToBounds(lat, lon) {
 
 function loadEvents(events) {
     if (!events || !events.length) { console.log('[T3D] loadEvents: none'); return; }
-    console.log('[T3D] loadEvents:', events.length);
+    console.log('[T3D] loadEvents:', events.length, 'simRunning=' + simRunning);
     var now = Date.now();
     events.forEach(function(ev) {
         // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
         var vid = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '';
         if (!vid) return;
+        // ── Sim-mode filter: reject non-simulation vehicles ──────────────
+        // When simRunning is true, only accept vehicles with IDs starting
+        // with "SIM-". This prevents historical/synthetic/test vehicles
+        // from polluting the sim animation scene.
+        if (simRunning && vid.indexOf('SIM-') !== 0) {
+            console.log('[T3D] loadEvents: REJECTED non-sim vehicle ' + vid + ' (sim is ON)');
+            return;
+        }
         // ── Vehicle acceptance filter ──────────────────────────────────────
         // The server (GetAnimationData) already filters by zone/server with
         // a highway-level fallback when the zone has 0 events. Do NOT re-filter
@@ -2316,16 +2324,16 @@ async function refreshScene() {
         // When sim is running, clear existing vehicles first so we only
         // show simulation data — no stale DB or synthetic vehicles.
         if (simRunning) {
-            // When sim is ON, ALWAYS clear existing vehicles before loading.
-            // This removes any stale non-sim vehicles that may have been loaded
-            // before the sim started. Only sim data (SIM-* vehicle IDs) from
-            // the DB + BroadcastChannel events should be shown.
-            _clearVehicles();
+            // When sim is ON, only clear + replace if DB has new sim vehicles.
+            // If DB returns 0 sim events, KEEP existing BroadcastChannel vehicles
+            // — clearing them would cause flickering every 3s poll cycle.
             if (data.vehicles && data.vehicles.length > 0) {
                 console.log('[T3D] refreshScene: sim ON — loading ' + data.vehicles.length + ' sim vehicles from DB');
+                _clearVehicles();
                 loadEvents(data.vehicles);
             } else {
-                console.log('[T3D] refreshScene: sim ON, 0 DB sim events — waiting for BroadcastChannel');
+                // DB has 0 sim events — don't clear BroadcastChannel vehicles
+                console.log('[T3D] refreshScene: sim ON, 0 DB sim events — keeping ' + vehicleData.size + ' BroadcastChannel vehicles');
             }
         } else {
             // Sim OFF — normal mode: load whatever the server returns
