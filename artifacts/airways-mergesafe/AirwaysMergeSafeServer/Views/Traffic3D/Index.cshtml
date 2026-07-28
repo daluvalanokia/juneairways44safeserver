@@ -1076,54 +1076,92 @@ function _updateVehiclePositions() {
     var lonPerM = 1 / (111000 * Math.cos(refLat * Math.PI / 180));
     var bounds  = _getSelectedBounds();
 
+    // ── Vehicle movement with lane-following on curved bridge path ───────
+    // Each frame: find nearest segment on bridge path -> use LOCAL bearing
+    // at that segment -> move along it -> re-project onto path + lane offset.
+    // This makes vehicles follow road curves naturally.
     vehicleData.forEach(function(vd, vid) {
         var spd = vd.speedMph || 0;
         if (spd < 1) return;
-        var ms  = spd * 0.44704;          // mph → m/s
+        var ms  = spd * 0.44704;          // mph -> m/s
         var dir = vd.direction || 0;
 
-        // ── Movement along the road bearing from server (hwBearing) ───────
-        // _hwBearingDeg is the actual road heading computed from zone GPS.
-        // Vehicles travel either in the forward or reverse bearing direction.
-        var useBearing = vd.direction || dir;
-        // Ensure useBearing is aligned with real road (not axis-aligned defaults)
-        var _brg2 = _hwBearingDeg;
-        var _brgRev2 = (_brg2 + 180) % 360;
-        function _ad(a,b){ return Math.abs(((a-b+540)%360)-180); }
-        if (_ad(useBearing, _brg2) > 45 && _ad(useBearing, _brgRev2) > 45) {
-            useBearing = (Math.random() > 0.5) ? _brg2 : _brgRev2;
+        // ── 1. Find nearest segment on bridge path ────────────────────────
+        var snap = _nearestOnBridgePath(vd.lat, vd.lon);
+        if (vd.laneSide === undefined) vd.laneSide = (Math.random() > 0.5) ? 1 : -1;
+
+        // ── 2. Determine movement bearing ─────────────────────────────────
+        // Use LOCAL segment bearing from snap (follows curves) when available;
+        // fall back to global _hwBearingDeg otherwise.
+        var useBearing;
+        if (snap) {
+            var localBrg = snap.bearing;
+            var localRev = (localBrg + 180) % 360;
+            function _ad(a,b){ return Math.abs(((a-b+540)%360)-180); }
+            if (dir > 0 && _ad(dir, localBrg) <= 90) {
+                useBearing = localBrg;
+            } else if (dir > 0 && _ad(dir, localRev) <= 90) {
+                useBearing = localRev;
+            } else {
+                useBearing = (vd.laneSide >= 0) ? localBrg : localRev;
+            }
+        } else {
+            // No bridge path -- use global highway bearing
+            var _brg = _hwBearingDeg;
+            var _brgRev = (_brg + 180) % 360;
+            function _ad2(a,b){ return Math.abs(((a-b+540)%360)-180); }
+            useBearing = dir;
+            if (_ad2(useBearing, _brg) > 45 && _ad2(useBearing, _brgRev) > 45) {
+                useBearing = (Math.random() > 0.5) ? _brg : _brgRev;
+            }
         }
 
+        // ── 3. Move along bearing ─────────────────────────────────────────
         var rad  = useBearing * Math.PI / 180;
         var dLat = ms * Math.cos(rad) * dt * latPerM;
         var dLon = ms * Math.sin(rad) * dt * lonPerM;
-
         var newLat = vd.lat + dLat;
         var newLon = vd.lon + dLon;
 
-        // ── Clamp to ±bridge road width ──────────────────────────────────
-        // Vehicles must stay within ±_bridgeRoadWidth of the bridge path.
-        if (snap) {
+        // ── 4. Re-project onto bridge path + lane offset ──────────────────
+        // After moving, find the nearest point on the bridge path and apply
+        // a perpendicular lane offset. This keeps vehicles ON the road even
+        // through curves, because we re-project every frame.
+        if (_bridgePathCoords.length >= 2) {
             var snap2 = _nearestOnBridgePath(newLat, newLon);
             if (snap2) {
-                if (snap2.perpDist > _bridgeRoadWidth) {
-                    newLat = snap2.clampedLat;
-                    newLon = snap2.clampedLon;
-                }
-                // Wrap at path endpoints (continuous flow)
                 var pathLen = _bridgePathCoords.length;
-                if (snap2.segIndex >= pathLen - 3) {
-                    var wi = Math.floor(Math.random() * 5) + 2;
-                    newLat = _bridgePathCoords[wi].lat + (Math.random() - 0.5) * _bridgeRoadWidth;
-                    newLon = _bridgePathCoords[wi].lon + (Math.random() - 0.5) * _bridgeRoadWidth;
+                // Wrap at path endpoints (continuous traffic flow)
+                if (snap2.segIndex >= pathLen - 4) {
+                    var wi = Math.floor(Math.random() * 8) + 2;
+                    vd.laneSide = (Math.random() > 0.5) ? 1 : -1;
+                    var snapW = _nearestOnBridgePath(_bridgePathCoords[wi].lat, _bridgePathCoords[wi].lon);
+                    if (snapW) {
+                        var perpRad = snapW.bearing * Math.PI / 180 + Math.PI / 2;
+                        var cosLat2 = Math.cos(snapW.lat * Math.PI / 180);
+                        newLat = snapW.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
+                        newLon = snapW.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
+                    }
                 } else if (snap2.segIndex <= 1) {
-                    var wi = pathLen - Math.floor(Math.random() * 5) - 3;
-                    newLat = _bridgePathCoords[wi].lat + (Math.random() - 0.5) * _bridgeRoadWidth;
-                    newLon = _bridgePathCoords[wi].lon + (Math.random() - 0.5) * _bridgeRoadWidth;
+                    var wi = pathLen - Math.floor(Math.random() * 8) - 4;
+                    vd.laneSide = (Math.random() > 0.5) ? 1 : -1;
+                    var snapW2 = _nearestOnBridgePath(_bridgePathCoords[wi].lat, _bridgePathCoords[wi].lon);
+                    if (snapW2) {
+                        var perpRad = snapW2.bearing * Math.PI / 180 + Math.PI / 2;
+                        var cosLat2 = Math.cos(snapW2.lat * Math.PI / 180);
+                        newLat = snapW2.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
+                        newLon = snapW2.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
+                    }
+                } else {
+                    // Normal: project onto path + perpendicular lane offset
+                    var perpRad = snap2.bearing * Math.PI / 180 + Math.PI / 2;
+                    var cosLat2 = Math.cos(snap2.lat * Math.PI / 180);
+                    newLat = snap2.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
+                    newLon = snap2.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
                 }
             }
         } else if (vd.zoneLat && vd.zoneLon) {
-            // Fallback: old zone-based clamping if no bridge path
+            // Fallback: zone-based clamping when no bridge path
             var crossLat = newLat - vd.zoneLat;
             var crossLon = newLon - vd.zoneLon;
             if (vd.isNSHwy) {
@@ -1139,17 +1177,25 @@ function _updateVehiclePositions() {
             }
         }
 
-        // ── Bounds validation ─────────────────────────────────────────────
+        // ── 5. Bounds validation ──────────────────────────────────────────
         if (bounds) {
             var outsideLat = newLat < bounds.minLat || newLat > bounds.maxLat;
             var outsideLon = newLon < bounds.minLon || newLon > bounds.maxLon;
             if (outsideLat || outsideLon) {
-                if (vd.zoneLat && vd.zoneLon) {
-                    var jLat = (Math.random() - 0.5) * (vd.isNSHwy ? 0.04 : 0.0006);
-                    var jLon = (Math.random() - 0.5) * (vd.isNSHwy ? 0.0006 : 0.04);
-                    newLat = vd.zoneLat + jLat;
-                    newLon = vd.zoneLon + jLon;
-                } else {
+                if (_bridgePathCoords.length >= 2) {
+                    var wi = Math.floor(Math.random() * (_bridgePathCoords.length - 4)) + 2;
+                    vd.laneSide = (Math.random() > 0.5) ? 1 : -1;
+                    var snapW3 = _nearestOnBridgePath(_bridgePathCoords[wi].lat, _bridgePathCoords[wi].lon);
+                    if (snapW3) {
+                        var perpRad = snapW3.bearing * Math.PI / 180 + Math.PI / 2;
+                        var cosLat2 = Math.cos(snapW3.lat * Math.PI / 180);
+                        newLat = snapW3.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
+                        newLon = snapW3.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
+                    }
+                } else if (vd.zoneLat && vd.zoneLon) {
+                    newLat = vd.zoneLat + (Math.random() - 0.5) * (vd.isNSHwy ? 0.04 : 0.0006);
+                    newLon = vd.zoneLon + (Math.random() - 0.5) * (vd.isNSHwy ? 0.0006 : 0.04);
+                } else if (bounds.centerLat) {
                     newLat = bounds.centerLat + (Math.random() - 0.5) * 0.002;
                     newLon = bounds.centerLon + (Math.random() - 0.5) * 0.005;
                 }
