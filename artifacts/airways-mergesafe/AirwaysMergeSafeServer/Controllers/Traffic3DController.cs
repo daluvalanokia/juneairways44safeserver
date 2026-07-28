@@ -284,8 +284,15 @@ public class Traffic3DController : Controller
         // the simulation's events. Also filter by the sim's exact zone/server.
         if (simOnly)
         {
+            // Filter to ONLY simulation events:
+            // 1. Time: last 10 minutes (sim heartbeat window)
+            // 2. VehicleId starts with "SIM-" (DIF controller prefixes all sim
+            //    vehicle IDs with "SIM-"). This excludes manual/test events
+            //    that happen to be within the time window.
             var cutoff = DateTime.UtcNow.AddMinutes(-10);
-            baseQuery = baseQuery.Where(e => e.CreatedDate >= cutoff);
+            baseQuery = baseQuery.Where(e => e.CreatedDate >= cutoff
+                              && e.VehicleId != null
+                              && e.VehicleId.StartsWith("SIM-"));
         }
 
         var eventsQuery = baseQuery;
