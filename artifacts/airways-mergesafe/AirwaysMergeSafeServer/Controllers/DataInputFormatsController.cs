@@ -296,6 +296,8 @@ public class DataInputFormatsController : Controller
                 simStatus.IsRunning  = false;
                 simStatus.StoppedAt  = DateTime.UtcNow;
                 simStatus.TotalPosted = 0;
+                // Reset vehicle position tracking so next sim starts fresh
+                InputPayloadService.ResetVehicleState();
                 _db.SimulationStatuses.Update(simStatus);
             }
 
