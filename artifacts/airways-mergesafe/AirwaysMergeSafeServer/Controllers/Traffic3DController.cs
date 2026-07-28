@@ -138,17 +138,17 @@ public class Traffic3DController : Controller
                     lat = z.Latitude!.Value, lon = z.Longitude!.Value,
                     highwayId = z.HighwayId, radius = z.GeofenceRadius
                 }).ToListAsync();
-            var zoneIds = zonesOnly.Select(z => z.zoneId).ToList();
+            var earlyZoneIds = zonesOnly.Select(z => z.zoneId).ToList();
             var serversOnly = await _db.SwitchServers.AsNoTracking()
-                .Where(s => s.ZoneId != null && zoneIds.Contains(s.ZoneId))
+                .Where(s => s.ZoneId != null && earlyZoneIds.Contains(s.ZoneId))
                 .OrderBy(s => s.ZoneId).ThenBy(s => s.ServerName)
                 .Select(s => new { serverId = s.ServerId, serverName = s.ServerName, zoneId = s.ZoneId ?? "" })
                 .ToListAsync();
-            var lats = zonesOnly.Select(z => (double)z.lat).ToList();
-            var lons = zonesOnly.Select(z => (double)z.lon).ToList();
-            object? boundsOnly = lats.Count > 0 ? new {
-                minLat = lats.Min() - 0.03, maxLat = lats.Max() + 0.03,
-                minLon = lons.Min() - 0.03, maxLon = lons.Max() + 0.03
+            var earlyLats = zonesOnly.Select(z => (double)z.lat).ToList();
+            var earlyLons = zonesOnly.Select(z => (double)z.lon).ToList();
+            object? boundsOnly = earlyLats.Count > 0 ? new {
+                minLat = earlyLats.Min() - 0.03, maxLat = earlyLats.Max() + 0.03,
+                minLon = earlyLons.Min() - 0.03, maxLon = earlyLons.Max() + 0.03
             } : null;
             var isEwOnly = !highwayId.Contains("I35") && !highwayId.Contains("I45") && !highwayId.Contains("I25");
             return Json(new {
