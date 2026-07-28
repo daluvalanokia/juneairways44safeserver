@@ -181,19 +181,20 @@ public class Traffic3DController : Controller
         }
 
         // 4. Fetch vehicle events for this highway
-        var eventsQuery = _db.VehicleEvents.AsNoTracking()
+        //    Zone/server filter tightens the query, but if it returns 0 vehicles
+        //    we fall back to highway-level so the animation never goes empty.
+        var zoneFilter = zoneId;
+        if (string.IsNullOrEmpty(zoneFilter) && !string.IsNullOrEmpty(serverId))
+            zoneFilter = await _db.SwitchServers.AsNoTracking()
+                .Where(s => s.ServerId == serverId).Select(s => s.ZoneId).FirstOrDefaultAsync();
+
+        var baseQuery = _db.VehicleEvents.AsNoTracking()
             .Where(e => e.HighwayId == highwayId
                      && (e.VehicleMode == "ground" || e.IsAirFlyCar == "N"));
 
-        if (!string.IsNullOrEmpty(zoneId))
-            eventsQuery = eventsQuery.Where(e => e.ZoneId == zoneId);
-        else if (!string.IsNullOrEmpty(serverId))
-        {
-            var srvZone = await _db.SwitchServers.AsNoTracking()
-                .Where(s => s.ServerId == serverId).Select(s => s.ZoneId).FirstOrDefaultAsync();
-            if (!string.IsNullOrEmpty(srvZone))
-                eventsQuery = eventsQuery.Where(e => e.ZoneId == srvZone);
-        }
+        var eventsQuery = baseQuery;
+        if (!string.IsNullOrEmpty(zoneFilter))
+            eventsQuery = eventsQuery.Where(e => e.ZoneId == zoneFilter);
 
         var rawEvents = await eventsQuery
             .OrderByDescending(e => e.CreatedDate)
@@ -205,6 +206,24 @@ public class Traffic3DController : Controller
                 e.IsAirFlyCar, e.CreatedDate, e.HighwayId
             })
             .ToListAsync();
+
+        // Fallback: if zone/server filter returned 0 vehicles, retry highway-level
+        // so the animation stays populated. Zone selection still tightens map bounds.
+        if (rawEvents.Count == 0 && !string.IsNullOrEmpty(zoneFilter))
+        {
+            TraceLogger.Info("Traffic3D", nameof(GetAnimationData),
+                $"Zone {zoneFilter} has 0 vehicles — falling back to highway {highwayId}");
+            rawEvents = await baseQuery
+                .OrderByDescending(e => e.CreatedDate)
+                .Take(100)
+                .Select(e => new {
+                    e.Id, e.VehicleId, e.EventType, e.ZoneId,
+                    e.SpeedMph, e.Latitude, e.Longitude, e.AltitudeMeters,
+                    e.VehicleMode, e.VehicleCategory, e.VehicleClassJson,
+                    e.IsAirFlyCar, e.CreatedDate, e.HighwayId
+                })
+                .ToListAsync();
+        }
 
         // 5. Validate each vehicle record's coordinates
         var validatedVehicles = new List<object>();
