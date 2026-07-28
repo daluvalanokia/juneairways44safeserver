@@ -531,11 +531,14 @@ function _projectLatLng(lat, lon) {
     };
 }
 
-// ── Dense bridge path from server (end-to-end GPS waypoints) ────────
-// Populated from GetAnimationData response. Used for vehicle clamping
-// and movement bearing — ensures vehicles stay ON the bridge.
+// ── Bridge path + bearing from server ───────────────────────────────
+// Populated from GetAnimationData response.
+// _hwBearingDeg: actual road bearing computed from zone GPS (0=N, 90=E)
+// _bridgePathCoords: dense GPS waypoints end-to-end (330m spacing)
+// _bridgeRoadWidth: perpendicular clamping width (~39m)
 var _bridgePathCoords = [];
-var _bridgeRoadWidth = 0.00035;  // ±road width in degrees (~39m)
+var _bridgeRoadWidth  = 0.00018;  // ±road width in degrees (~20m per lane)
+var _hwBearingDeg     = 90.0;     // updated from server on every fetch
 
 /// Find the nearest point on the bridge path to a GPS coordinate.
 /// Returns: { lat, lon, bearing, perpDist, clampedLat, clampedLon, segIndex }
@@ -1071,20 +1074,16 @@ function _updateVehiclePositions() {
         var ms  = spd * 0.44704;          // mph → m/s
         var dir = vd.direction || 0;
 
-        // ── Movement along the road bearing (from bridge path) ──────────
-        // Use the actual road bearing at the vehicle's position from the
-        // dense bridge path. This keeps vehicles ON the bridge even when
-        // the road curves (I-35 goes NW, I-10 goes NE).
-        var useBearing = dir;
-        var snap = _nearestOnBridgePath(vd.lat, vd.lon);
-        if (snap) {
-            // Align vehicle direction with the bridge path bearing
-            var diff = Math.abs(((snap.bearing - dir + 540) % 360) - 180);
-            if (diff > 90) {
-                useBearing = (snap.bearing + 180) % 360;  // opposite direction
-            } else {
-                useBearing = snap.bearing;
-            }
+        // ── Movement along the road bearing from server (hwBearing) ───────
+        // _hwBearingDeg is the actual road heading computed from zone GPS.
+        // Vehicles travel either in the forward or reverse bearing direction.
+        var useBearing = vd.direction || dir;
+        // Ensure useBearing is aligned with real road (not axis-aligned defaults)
+        var _brg2 = _hwBearingDeg;
+        var _brgRev2 = (_brg2 + 180) % 360;
+        function _ad(a,b){ return Math.abs(((a-b+540)%360)-180); }
+        if (_ad(useBearing, _brg2) > 45 && _ad(useBearing, _brgRev2) > 45) {
+            useBearing = (Math.random() > 0.5) ? _brg2 : _brgRev2;
         }
 
         var rad  = useBearing * Math.PI / 180;
@@ -1737,20 +1736,23 @@ function loadEvents(events) {
             }
         }
 
-        // ── ALWAYS project vehicle onto bridge path ───────────────────────
-        // The bridge path IS the ground truth. Regardless of what GPS the
-        // simulation generated, the vehicle is placed ON the path with a
-        // small perpendicular lane offset (±road width).
-        // This guarantees vehicle objects align with the bridge animation.
-        var bpClamp = _nearestOnBridgePath(lat, lon);
-        if (bpClamp) {
-            // Always clamp to bridge path — use the nearest point + lane offset
-            var laneSide = (Math.random() > 0.5) ? _bridgeRoadWidth : -_bridgeRoadWidth;
-            // Apply lane offset perpendicular to the path bearing
-            var perpRad = bpClamp.bearing * Math.PI / 180 + Math.PI / 2;
-            var cosLat = Math.cos(bpClamp.lat * Math.PI / 180);
-            lat = bpClamp.lat + Math.cos(perpRad) * laneSide;
-            lon = bpClamp.lon + Math.sin(perpRad) * laneSide / cosLat;
+        // ── ALWAYS project vehicle onto bridge path ──────────────────────
+        // bridgePath from server IS the ground truth for vehicle positions.
+        // Project every vehicle onto the nearest bridge path segment, then
+        // apply a ±lane offset perpendicular to the road bearing.
+        if (_bridgePathCoords.length >= 2) {
+            var bpClamp = _nearestOnBridgePath(lat, lon);
+            if (bpClamp) {
+                var laneSide = (Math.random() > 0.5) ? _bridgeRoadWidth : -_bridgeRoadWidth;
+                var perpRad  = bpClamp.bearing * Math.PI / 180 + Math.PI / 2;
+                var cosLat2  = Math.cos(bpClamp.lat * Math.PI / 180);
+                lat = bpClamp.lat + Math.cos(perpRad) * laneSide;
+                lon = bpClamp.lon + Math.sin(perpRad) * laneSide / cosLat2;
+            }
+        } else {
+            // Bridge path not yet loaded — snap to zone centre as fallback
+            if (zone && zone.lat) { lat = zone.lat; lon = zone.lon; }
+            console.warn('[T3D] loadEvents: bridge path empty — falling back to zone snap');
         }
 
         // Final safety: only clamp if vehicle is outside the HIGHWAY bounds
@@ -1776,15 +1778,14 @@ function loadEvents(events) {
                       hwId.indexOf('I45') >= 0 || hwId.indexOf('I-45') >= 0 ||
                       hwId.indexOf('I25') >= 0 || hwId.indexOf('I-25') >= 0;
         // If direction is missing or not aligned with highway axis, assign highway-correct direction
-        var isAligned;
-        if (isNSHwy) {
-            // N-S highway: valid dirs are 0±30 or 180±30
-            isAligned = dir >= 0 && (dir <= 30 || dir >= 150 && dir <= 210 || dir >= 330);
-            if (!isAligned) dir = (Math.random() > 0.5) ? 0 : 180;
-        } else {
-            // E-W highway (default): valid dirs are 90±30 or 270±30
-            isAligned = dir >= 60 && dir <= 120 || dir >= 240 && dir <= 300;
-            if (!isAligned) dir = (Math.random() > 0.5) ? 90 : 270;
+        // Use real highway bearing from server — not axis-aligned guesses
+        // Valid = within ±45° of bearing or reverse bearing
+        var _brg = _hwBearingDeg;
+        var _brgRev = (_brg + 180) % 360;
+        function _angleDiff(a, b) { return Math.abs(((a - b + 540) % 360) - 180); }
+        var isAligned = dir >= 0 && (_angleDiff(dir, _brg) <= 45 || _angleDiff(dir, _brgRev) <= 45);
+        if (!isAligned || dir < 0) {
+            dir = (Math.random() > 0.5) ? Math.round(_brg) : Math.round(_brgRev);
         }
         var existing = vehicleData.get(vid);
         if (existing && !isNaN(existing.lat) && !isNaN(existing.lon)
@@ -1919,13 +1920,13 @@ async function refreshAnimation() {
                         });
                     }
                     _hwyIsEW = d.isEW;
+                    if (typeof d.hwBearing === 'number') _hwBearingDeg = d.hwBearing;
                     if (d.bridgePath && d.bridgePath.length > 0) {
                         _bridgePathCoords = d.bridgePath.map(function(p) {
-                            return { lat: p.lat, lon: p.lon, zoom: p.zoom };
+                            return { lat: p.lat, lon: p.lon };
                         });
-                        console.log('[T3D] refreshAnimation: bridge path ' + _bridgePathCoords.length + ' waypoints');
                     }
-                    console.log('[T3D] refreshAnimation: fetched ' + T3D_ZONES.length + ' zones, isEW=' + _hwyIsEW);
+                    console.log('[T3D] refreshAnimation: ' + T3D_ZONES.length + ' zones bearing=' + _hwBearingDeg.toFixed(1) + '° bridge=' + _bridgePathCoords.length + 'pts isEW=' + _hwyIsEW);
                 }
             }
         } catch(e) { console.warn('[T3D] refreshAnimation: zone fetch failed:', e); }
@@ -2095,12 +2096,15 @@ async function refreshScene() {
                 return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
                          highwayId: z.highwayId, radius: z.radius };
             });
-            // Store dense bridge path from server for vehicle clamping
+            // Store bearing + dense bridge path from server
+            if (typeof data.hwBearing === 'number') {
+                _hwBearingDeg = data.hwBearing;
+            }
             if (data.bridgePath && data.bridgePath.length > 0) {
                 _bridgePathCoords = data.bridgePath.map(function(p) {
-                    return { lat: p.lat, lon: p.lon, zoom: p.zoom };
+                    return { lat: p.lat, lon: p.lon };
                 });
-                console.log('[T3D] Bridge path loaded: ' + _bridgePathCoords.length + ' waypoints');
+                console.log('[T3D] Bridge path: ' + _bridgePathCoords.length + ' pts bearing=' + _hwBearingDeg.toFixed(1) + '°');
             }
             // ── DO NOT rebuild dropdowns when all 3 are already set ──
             // The dropdowns were populated by t3dHighwayChanged. Rebuilding
@@ -2633,11 +2637,12 @@ window.addEventListener('resize', function() {
                             });
                         }
                         _hwyIsEW = d.isEW;
+                        if (typeof d.hwBearing === 'number') _hwBearingDeg = d.hwBearing;
                         if (d.bridgePath && d.bridgePath.length > 0) {
                             _bridgePathCoords = d.bridgePath.map(function(p) {
-                                return { lat: p.lat, lon: p.lon, zoom: p.zoom };
+                                return { lat: p.lat, lon: p.lon };
                             });
-                            console.log('[T3D] Boot: bridge path ' + _bridgePathCoords.length + ' waypoints');
+                            console.log('[T3D] Boot: bridge=' + _bridgePathCoords.length + 'pts bearing=' + _hwBearingDeg.toFixed(1) + '°');
                         }
                         var z0 = T3D_ZONES[0];
                         if (z0 && z0.lat) {
