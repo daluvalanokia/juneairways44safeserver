@@ -40,9 +40,9 @@ public static class DbInitializer
             logger?.LogInformation("Seed: inserting MergeZones");
             var now = DateTime.UtcNow;
             db.MergeZones.AddRange(
-                new MergeZone { ZoneName = "I20 Dallas West Merge",      ZoneId = "I20-Z001", HighwayId = "I20-TX", MileMarker = 458.2, Latitude = 32.7518, Longitude = -96.9870, GeofenceRadius = 600, Status = "active",      CreatedDate = now },
-                new MergeZone { ZoneName = "I20 Grand Prairie Exchange", ZoneId = "I20-Z002", HighwayId = "I20-TX", MileMarker = 444.5, Latitude = 32.7478, Longitude = -97.0207, GeofenceRadius = 500, Status = "active",      CreatedDate = now },
-                new MergeZone { ZoneName = "I20 Arlington Merge",        ZoneId = "I20-Z003", HighwayId = "I20-TX", MileMarker = 436.1, Latitude = 32.7386, Longitude = -97.1081, GeofenceRadius = 450, Status = "fault",       CreatedDate = now },
+                new MergeZone { ZoneName = "I20 Dallas West Merge",      ZoneId = "I20-Z001", HighwayId = "I20-TX", MileMarker = 458.2, Latitude = 32.7220, Longitude = -96.9870, GeofenceRadius = 600, Status = "active",      CreatedDate = now },
+                new MergeZone { ZoneName = "I20 Grand Prairie Exchange", ZoneId = "I20-Z002", HighwayId = "I20-TX", MileMarker = 444.5, Latitude = 32.7213, Longitude = -97.0207, GeofenceRadius = 500, Status = "active",      CreatedDate = now },
+                new MergeZone { ZoneName = "I20 Arlington Merge",        ZoneId = "I20-Z003", HighwayId = "I20-TX", MileMarker = 436.1, Latitude = 32.7199, Longitude = -97.1081, GeofenceRadius = 450, Status = "fault",       CreatedDate = now },
                 new MergeZone { ZoneName = "I35 Waco North Merge",       ZoneId = "I35-Z001", HighwayId = "I35-TX", MileMarker = 330.8, Latitude = 31.5497, Longitude = -97.1467, GeofenceRadius = 550, Status = "active",      CreatedDate = now },
                 new MergeZone { ZoneName = "I35 Temple Bypass Zone",     ZoneId = "I35-Z002", HighwayId = "I35-TX", MileMarker = 304.2, Latitude = 31.0985, Longitude = -97.3428, GeofenceRadius = 500, Status = "maintenance", CreatedDate = now },
                 new MergeZone { ZoneName = "I35 Georgetown Diverge",     ZoneId = "I35-Z003", HighwayId = "I35-TX", MileMarker = 261.5, Latitude = 30.6330, Longitude = -97.6775, GeofenceRadius = 480, Status = "active",      CreatedDate = now },
