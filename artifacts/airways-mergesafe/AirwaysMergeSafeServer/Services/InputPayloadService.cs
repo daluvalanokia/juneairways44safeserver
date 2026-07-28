@@ -137,8 +137,9 @@ public class InputPayloadService
         if (lat == 0 && lon == 0 || double.IsNaN(lat) || double.IsNaN(lon))
         {
             snapped = true;
-            lat = zoneLat ?? 32.7767;
-            lon = zoneLon ?? -96.7970;
+            // Per-highway accurate GPS fallback (not downtown Dallas generic)
+            lat = zoneLat ?? HighwayDefaultLat(highwayId);
+            lon = zoneLon ?? HighwayDefaultLon(highwayId);
         }
 
         if (zoneLat.HasValue && zoneLon.HasValue)
@@ -227,8 +228,8 @@ public class InputPayloadService
                 //               southbound (180°) on east side (+lon).
                 // Cross-axis spread is tight (±0.00008° ≈ ±9m within-lane jitter).
                 // Along-axis spread is wide (±0.025° ≈ ±2.5km highway segment).
-                "latitude"        => GenerateLaneLat(zoneLat ?? 32.7767, zoneLon ?? -96.7970, highwayId, rng),
-                "longitude"       => GenerateLaneLon(zoneLat ?? 32.7767, zoneLon ?? -96.7970, highwayId, rng),
+                "latitude"        => GenerateLaneLat(zoneLat ?? HighwayDefaultLat(highwayId), zoneLon ?? HighwayDefaultLon(highwayId), highwayId, rng),
+                "longitude"       => GenerateLaneLon(zoneLat ?? HighwayDefaultLat(highwayId), zoneLon ?? HighwayDefaultLon(highwayId), highwayId, rng),
                 "altitude_m"      => altitudeM,
                 "altitude_ft"     => Math.Round(altitudeM * 3.28084, 1),
                 "vehicle_type"    => vehicleType,
@@ -336,7 +337,7 @@ public class InputPayloadService
         string rotorHealth  = RotorHealthStates[rng.Next(RotorHealthStates.Length)];
 
         // Lat/lon: use zone coords if provided (so air vehicles stay near selected highway)
-        double baseLat = 32.7767, baseLon = -96.7970;
+        double baseLat = HighwayDefaultLat(highwayId), baseLon = HighwayDefaultLon(highwayId);
         // highwayId passed in from the outer Generate() call via the overload
         double lat = Math.Round(GenerateLaneLat(baseLat, baseLon, highwayId, rng), 6);
         double lon = Math.Round(GenerateLaneLon(baseLat, baseLon, highwayId, rng), 6);
@@ -446,4 +447,27 @@ public class InputPayloadService
         }
         catch (Exception ex) { TraceLogger.Error("InputPayloadService", nameof(GenerateAndSaveAsync), ex); throw; }
     }
+
+    /// <summary>Per-highway centreline latitude fallback — OSM-verified road midpoints.</summary>
+    private static double HighwayDefaultLat(string? highwayId)
+    {
+        var hw = (highwayId ?? "").ToUpperInvariant();
+        if (hw.Contains("I20")) return 32.7213;  // I-20 Grand Prairie centreline
+        if (hw.Contains("I35")) return 31.0985;  // I-35 Temple midpoint
+        if (hw.Contains("I10")) return 29.7855;  // I-10 Katy Freeway
+        if (hw.Contains("I45")) return 30.3119;  // I-45 Conroe Junction
+        return 32.7213;  // default: I-20 centreline
+    }
+
+    /// <summary>Per-highway centreline longitude fallback — OSM-verified road midpoints.</summary>
+    private static double HighwayDefaultLon(string? highwayId)
+    {
+        var hw = (highwayId ?? "").ToUpperInvariant();
+        if (hw.Contains("I20")) return -97.0207;  // I-20 Grand Prairie centreline
+        if (hw.Contains("I35")) return -97.3428;  // I-35 Temple midpoint
+        if (hw.Contains("I10")) return -95.7560;  // I-10 Katy Freeway
+        if (hw.Contains("I45")) return -95.4561;  // I-45 Conroe Junction
+        return -97.0207;  // default: I-20 centreline
+    }
+
 }
