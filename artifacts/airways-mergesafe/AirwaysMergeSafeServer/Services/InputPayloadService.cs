@@ -288,13 +288,13 @@ public class InputPayloadService
                 "vehicle_make"    => vehicleMake,
                 // Highway-aware direction: E-W highways travel east(90°) or west(270°)
                 //                          N-S highways travel north(0°) or south(180°)
-                "direction"       => (rng.Next(2) == 0) ? (int)Math.Round(highwayBearing) : (int)Math.Round((highwayBearing + 180) % 360),
+                "direction"       => (_vehicleCounter % 2 == 1) ? (int)Math.Round(highwayBearing) : (int)Math.Round((highwayBearing + 180) % 360),
                 "lane"            => isAirVehicle ? rng.Next(10, 20) : rng.Next(1, 5),
                 "event_type"      => new[] { "detection","merge","speeding","conflict","fault" }[rng.Next(5)],
                 "zone_id"         => !string.IsNullOrEmpty(zoneId) ? zoneId : $"ZONE-{rng.Next(1, 10):D3}",
                 "highway_id"      => !string.IsNullOrEmpty(highwayId) ? highwayId : "I20-TX",
                 "signal_strength" => sourceType == "telecom" ? rng.Next(-80, -30) : rng.Next(-95, -40),
-                "heading"         => (rng.Next(2) == 0) ? (int)Math.Round(highwayBearing) : (int)Math.Round((highwayBearing + 180) % 360),
+                "heading"         => (_vehicleCounter % 2 == 1) ? (int)Math.Round(highwayBearing) : (int)Math.Round((highwayBearing + 180) % 360),
                 "satellite_count" => rng.Next(4, 16),
                 "hdop"            => Math.Round(rng.NextDouble() * 2.5, 2),
                 "rsrp"            => rng.Next(-120, -70),
