@@ -1884,8 +1884,9 @@ var _serverBounds = null;
 async function refreshAnimation() {
     console.log('[T3D] refreshAnimation: called — checking simulation status');
 
-    // ── STEP 1: CHECK SIMULATION STATUS (DB authoritative) ──
+    // ── STEP 1: CHECK SIMULATION STATUS (DB is authoritative) ──
     var simActive = false;
+    var dbStatusOk = false;
     var simCtx = null;
     try { simCtx = JSON.parse(localStorage.getItem('airways_sim_context') || 'null'); } catch(e) {}
 
@@ -1893,21 +1894,47 @@ async function refreshAnimation() {
         var sr = await fetch('/DataInputFormats/SimulationStatus');
         if (sr.ok) {
             var dbStatus = await sr.json();
+            dbStatusOk = true;
             simActive = dbStatus.isRunning && !dbStatus.stale;
             console.log('[T3D] refreshAnimation: DB sim status = running=' + simActive +
                 ' stale=' + dbStatus.stale + ' total=' + (dbStatus.totalPosted || 0));
         }
     } catch(e) { console.warn('[T3D] refreshAnimation: sim status check failed', e); }
 
+    // ── If DB says sim is OFF, clear ALL stale sim localStorage ──
+    // This prevents the "sim is on even after app stops" issue. The DB
+    // is the source of truth — if it says NOT running, we clear all
+    // client-side sim state and treat the session as non-sim.
+    if (dbStatusOk && !simActive) {
+        localStorage.removeItem('airways_sim_state');
+        localStorage.removeItem('airways_sim_active');
+        localStorage.removeItem('airways_sim_heartbeat');
+        // Keep airways_sim_context for dropdown restoration, but don't
+        // use it to trigger sim mode.
+        if (simRunning) {
+            console.log('[T3D] refreshAnimation: DB says sim OFF — clearing stale sim state');
+            simRunning = false; feedHeld = false;
+            var badge = document.getElementById('simFeedBadge');
+            if (badge) badge.style.display = 'none';
+        }
+    }
+
     // ── STEP 2: IF SIM IS ON — sync to sim context ──
-    // Check both DB status and localStorage as fallback (DIF page might
-    // be open in another tab, broadcasting via BroadcastChannel but the
-    // DB heartbeat might be slightly stale).
-    var localSimActive = localStorage.getItem('airways_sim_active') === 'true';
-    var simHeartbeat = parseInt(localStorage.getItem('airways_sim_heartbeat') || '0');
-    var heartbeatAge = Date.now() - simHeartbeat;
-    var heartbeatFresh = simHeartbeat > 0 && heartbeatAge < 120000; // 2 min
-    if ((simActive || (localSimActive && heartbeatFresh)) && simCtx && simCtx.hwId) {
+    // Only use localStorage fallback if the DB status check FAILED
+    // (network error, server down). If the DB said sim is OFF, we
+    // respect that — no localStorage override.
+    var useLocalFallback = !dbStatusOk;
+    if (useLocalFallback) {
+        var localSimActive = localStorage.getItem('airways_sim_active') === 'true';
+        var simHeartbeat = parseInt(localStorage.getItem('airways_sim_heartbeat') || '0');
+        var heartbeatAge = Date.now() - simHeartbeat;
+        var heartbeatFresh = simHeartbeat > 0 && heartbeatAge < 120000;
+        if (localSimActive && heartbeatFresh && simCtx && simCtx.hwId) {
+            simActive = true;
+            console.log('[T3D] refreshAnimation: DB check failed — using localStorage fallback (sim ON)');
+        }
+    }
+    if (simActive && simCtx && simCtx.hwId) {
         console.log('[T3D] refreshAnimation: SIM IS ON — syncing to sim context', simCtx);
 
         // 2a. Clear current animation
@@ -2067,6 +2094,12 @@ async function refreshAnimation() {
     // ── STEP 4: SIM IS OFF — use current dropdown values ──
     console.log('[T3D] refreshAnimation: sim is OFF — using current dropdown values');
     simRunning = false; feedHeld = false;
+    // Clear stale sim localStorage so it doesn't interfere on next boot
+    if (dbStatusOk && !simActive) {
+        localStorage.removeItem('airways_sim_state');
+        localStorage.removeItem('airways_sim_active');
+        localStorage.removeItem('airways_sim_heartbeat');
+    }
     var badgeOff = document.getElementById('simFeedBadge');
     if (badgeOff) badgeOff.style.display = 'none';
 
@@ -2616,13 +2649,18 @@ async function _simRestoreState() {
     var st;
     try { st = JSON.parse(ls); } catch(_) { return; }
     if (!st.running) return;
-    // Verify DB still thinks sim is running
+    // Verify DB still thinks sim is running — DB is the source of truth
     try {
         var r = await fetch('/DataInputFormats/SimulationStatus');
         if (!r.ok) { console.warn('Sim status check failed'); return; }
         var dbStatus = await r.json();
         if (dbStatus.stale || !dbStatus.isRunning) {
+            // DB says sim is OFF — clear ALL stale sim localStorage
+            console.log('[T3D] _simRestoreState: DB says sim OFF — clearing all sim state');
             localStorage.removeItem('airways_sim_state');
+            localStorage.removeItem('airways_sim_active');
+            localStorage.removeItem('airways_sim_heartbeat');
+            simRunning = false; feedHeld = false;
             return;
         }
         simRunning = true; feedHeld = true;
