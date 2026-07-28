@@ -299,7 +299,7 @@ public class Traffic3DController : Controller
                 e.Id, e.VehicleId, e.EventType, e.ZoneId,
                 e.SpeedMph, e.Latitude, e.Longitude, e.AltitudeMeters,
                 e.VehicleMode, e.VehicleCategory, e.VehicleClassJson,
-                e.IsAirFlyCar, e.CreatedDate, e.HighwayId
+                e.IsAirFlyCar, e.CreatedDate, e.HighwayId, e.Payload
             })
             .ToListAsync();
 
@@ -318,7 +318,7 @@ public class Traffic3DController : Controller
                     e.Id, e.VehicleId, e.EventType, e.ZoneId,
                     e.SpeedMph, e.Latitude, e.Longitude, e.AltitudeMeters,
                     e.VehicleMode, e.VehicleCategory, e.VehicleClassJson,
-                    e.IsAirFlyCar, e.CreatedDate, e.HighwayId
+                    e.IsAirFlyCar, e.CreatedDate, e.HighwayId, e.Payload
                 })
                 .ToListAsync();
         }
