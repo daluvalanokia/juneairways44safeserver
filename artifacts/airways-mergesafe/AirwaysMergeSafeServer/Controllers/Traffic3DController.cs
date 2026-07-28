@@ -113,13 +113,48 @@ public class Traffic3DController : Controller
     {
         TraceLogger.Enter("Traffic3D", nameof(GetAnimationData), $"hw={highwayId} z={zoneId} s={serverId}");
         highwayId ??= HttpContext.Session.GetString("HighwayId") ?? "";
-        // Persist highway selection to session so page refresh preserves it
         if (!string.IsNullOrEmpty(highwayId))
             HttpContext.Session.SetString("HighwayId", highwayId);
-        if (string.IsNullOrEmpty(highwayId))
+
+        // ── Require all 3 parameters (highway + zone + server) ──
+        // If any is missing, return zones + servers (for dropdowns) but NO vehicles.
+        // Animation only loads when all 3 are provided.
+        bool hasAll3 = !string.IsNullOrEmpty(highwayId)
+                    && !string.IsNullOrEmpty(zoneId)
+                    && !string.IsNullOrEmpty(serverId);
+        if (!hasAll3)
         {
-            TraceLogger.Info("Traffic3D", nameof(GetAnimationData), "No highwayId");
-            return Json(new { highwayCoords = Array.Empty<object>(), vehicles = Array.Empty<object>(), bounds = (object?)null, isEW = true, servers = Array.Empty<object>() });
+            TraceLogger.Info("Traffic3D", nameof(GetAnimationData),
+                $"Incomplete: hw={highwayId} z={zoneId} s={serverId} — returning zones/servers only");
+            if (string.IsNullOrEmpty(highwayId))
+                return Json(new { highwayCoords = Array.Empty<object>(), vehicles = Array.Empty<object>(),
+                    bounds = (object?)null, isEW = true, servers = Array.Empty<object>() });
+            // Return zones + servers for dropdown population, but no vehicles
+            var zonesOnly = await _db.MergeZones.AsNoTracking()
+                .Where(z => z.HighwayId == highwayId && z.Latitude.HasValue && z.Longitude.HasValue)
+                .OrderBy(z => z.Longitude)
+                .Select(z => new {
+                    zoneId = z.ZoneId, zoneName = z.ZoneName,
+                    lat = z.Latitude!.Value, lon = z.Longitude!.Value,
+                    highwayId = z.HighwayId, radius = z.GeofenceRadius
+                }).ToListAsync();
+            var zoneIds = zonesOnly.Select(z => z.zoneId).ToList();
+            var serversOnly = await _db.SwitchServers.AsNoTracking()
+                .Where(s => s.ZoneId != null && zoneIds.Contains(s.ZoneId))
+                .OrderBy(s => s.ZoneId).ThenBy(s => s.ServerName)
+                .Select(s => new { serverId = s.ServerId, serverName = s.ServerName, zoneId = s.ZoneId ?? "" })
+                .ToListAsync();
+            var lats = zonesOnly.Select(z => (double)z.lat).ToList();
+            var lons = zonesOnly.Select(z => (double)z.lon).ToList();
+            object? boundsOnly = lats.Count > 0 ? new {
+                minLat = lats.Min() - 0.03, maxLat = lats.Max() + 0.03,
+                minLon = lons.Min() - 0.03, maxLon = lons.Max() + 0.03
+            } : null;
+            var isEwOnly = !highwayId.Contains("I35") && !highwayId.Contains("I45") && !highwayId.Contains("I25");
+            return Json(new {
+                highwayCoords = zonesOnly, vehicles = Array.Empty<object>(),
+                bounds = boundsOnly, isEW = isEwOnly, servers = serversOnly
+            });
         }
 
         // 1. Fetch ALL zones for this highway (for bridge path)
