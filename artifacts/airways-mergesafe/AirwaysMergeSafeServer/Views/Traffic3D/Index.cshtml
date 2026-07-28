@@ -78,7 +78,7 @@
         </div>
         <a href="/AirScene" class="btn btn-sm btn-outline-warning">🛫 Air Scene</a>
         <button id="btnAnimToggle" class="btn btn-sm btn-outline-warning" onclick="toggleFeed()">⏸ Hold Feed</button>
-        <button class="btn btn-sm btn-outline-success" onclick="refreshScene()">⟳ Live</button>
+        <button class="btn btn-sm btn-success" onclick="refreshAnimation()" title="Sync to simulation + load animation">⟳ Refresh</button>
     </div>
 </div>
 
@@ -1687,6 +1687,144 @@ function _updateStatsBar() {
 // Polls the controller's GetAnimationData endpoint for pre-validated
 // vehicle coordinates + highway zone coordinates.
 var _serverBounds = null;
+
+
+// ── Refresh Animation Button ───────────────────────────────────────────
+// Syncs T3D dropdowns to simulation context (if sim is running) and
+// loads the animation. Requires all 3 values (highway + zone + server).
+async function refreshAnimation() {
+    console.log('[T3D] refreshAnimation: called');
+
+    // 1. Check if simulation is running — read sim context from localStorage
+    var simCtx = null;
+    try { simCtx = JSON.parse(localStorage.getItem('airways_sim_context') || 'null'); } catch(e) {}
+
+    // Also check sim state
+    var simState = null;
+    try { simState = JSON.parse(localStorage.getItem('airways_sim_state') || 'null'); } catch(e) {}
+    var simActive = simState && simState.running;
+
+    if (simActive && simCtx && simCtx.hwId) {
+        console.log('[T3D] refreshAnimation: sim active — syncing to sim context', simCtx);
+
+        // Sync highway dropdown
+        if (simCtx.hwId !== HW) {
+            HW = simCtx.hwId;
+            localStorage.setItem('t3d_selectedHw', HW);
+            var hwSel = document.getElementById('hwSel');
+            if (hwSel) hwSel.value = HW;
+
+            // Fetch zones + servers for this highway
+            try {
+                var r = await fetch('/Traffic3D/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground');
+                if (r.ok) {
+                    var d = await r.json();
+                    if (d.highwayCoords && d.highwayCoords.length > 0) {
+                        T3D_ZONES = d.highwayCoords.map(function(z) {
+                            return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                                     highwayId: z.highwayId, radius: z.radius };
+                        });
+                        var zsel = document.getElementById('t3dZoneSel');
+                        if (zsel) {
+                            zsel.innerHTML = '<option value="">(Select Zone)</option>';
+                            T3D_ZONES.forEach(function(z) {
+                                var opt = document.createElement('option');
+                                opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
+                                opt.dataset.hw = z.highwayId || HW;
+                                opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                                opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                                zsel.appendChild(opt);
+                            });
+                        }
+                        var ssel = document.getElementById('t3dServerSel');
+                        if (ssel && d.servers) {
+                            ssel.innerHTML = '<option value="">(Select Server)</option>';
+                            d.servers.forEach(function(s) {
+                                var opt = document.createElement('option');
+                                opt.value = s.serverId;
+                                opt.textContent = s.serverName || s.serverId;
+                                opt.dataset.zone = s.zoneId || '';
+                                ssel.appendChild(opt);
+                            });
+                        }
+                        _hwyIsEW = d.isEW;
+                        var z0 = T3D_ZONES[0];
+                        if (z0 && z0.lat) {
+                            midLat = z0.lat; midLon = z0.lon;
+                            _panMapTo(z0.lat, z0.lon);
+                            _setHighwayCoords(z0.lat, z0.lon, HW);
+                        }
+                    }
+                }
+            } catch(e) { console.warn('[T3D] refreshAnimation: zone fetch failed:', e); }
+        }
+
+        // Sync zone dropdown
+        if (simCtx.zoneId) {
+            selectedZoneId = simCtx.zoneId;
+            localStorage.setItem('t3d_selectedZone', selectedZoneId);
+            var zsel2 = document.getElementById('t3dZoneSel');
+            if (zsel2) zsel2.value = selectedZoneId;
+            // Filter server dropdown
+            var ssel2 = document.getElementById('t3dServerSel');
+            if (ssel2) {
+                ssel2.querySelectorAll('option').forEach(function(o) {
+                    o.style.display = (!o.value || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+                });
+            }
+            // Pan map to zone
+            var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+            if (z && z.lat && z.lon) {
+                midLat = z.lat; midLon = z.lon;
+                _panMapTo(z.lat, z.lon);
+                _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
+            }
+        }
+
+        // Sync server dropdown
+        if (simCtx.serverId) {
+            selectedServerId = simCtx.serverId;
+            localStorage.setItem('t3d_selectedServer', selectedServerId);
+            var ssel3 = document.getElementById('t3dServerSel');
+            if (ssel3) ssel3.value = selectedServerId;
+        }
+
+        _forceBridgeRedraw();
+
+        // Now all 3 should be set — load animation
+        if (HW && selectedZoneId && selectedServerId) {
+            console.log('[T3D] refreshAnimation: all 3 set from sim — loading animation');
+            simRunning = true; feedHeld = true;
+            _clearVehicles();
+            var badge = document.getElementById('simFeedBadge');
+            if (badge) { badge.style.display = ''; badge.textContent = '● LIVE'; }
+            await refreshScene();
+        } else {
+            console.warn('[T3D] refreshAnimation: sim context incomplete — hw=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId);
+        }
+        return;
+    }
+
+    // 2. No sim active — use current dropdown values
+    var curHw = document.getElementById('hwSel') ? document.getElementById('hwSel').value : HW;
+    var curZone = document.getElementById('t3dZoneSel') ? document.getElementById('t3dZoneSel').value : selectedZoneId;
+    var curSrv = document.getElementById('t3dServerSel') ? document.getElementById('t3dServerSel').value : selectedServerId;
+
+    // Sync to global vars
+    HW = curHw; selectedZoneId = curZone; selectedServerId = curSrv;
+
+    if (HW && selectedZoneId && selectedServerId) {
+        console.log('[T3D] refreshAnimation: all 3 dropdowns set — loading animation');
+        await refreshScene();
+    } else {
+        var missing = [];
+        if (!HW) missing.push('Highway');
+        if (!selectedZoneId) missing.push('Zone');
+        if (!selectedServerId) missing.push('Server');
+        console.warn('[T3D] refreshAnimation: missing ' + missing.join(', '));
+        alert('Please select all 3 values before refreshing:\nMissing: ' + missing.join(', '));
+    }
+}
 
 async function refreshScene() {
     // ── GUARD: animation requires all 3 values (highway + zone + server) ──
