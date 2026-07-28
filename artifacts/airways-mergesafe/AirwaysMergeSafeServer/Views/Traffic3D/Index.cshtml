@@ -277,17 +277,28 @@ const CAT_SPEC = {
 // ── Vehicle classification heuristic ─────────────────────────────────
 function classifyVehicle(ev) {
     var cat = 'sedan';
+    // Check multiple field names: vehicle_category, vehicleCategory, vehicle_type, vehicleType
     var raw = (ev.vehicle_category || ev.vehicleCategory || ev.VehicleCategory ||
+               ev.vehicle_type || ev.vehicleType || ev.VehicleType ||
                ev.vehicle_mode || ev.vehicleMode || ev.VehicleMode || '').toLowerCase();
-    if (raw.includes('truck'))      cat = 'truck';
+    if (raw.includes('truck') || raw.includes('pickup'))   cat = 'truck';
     else if (raw.includes('suv'))   cat = 'suv';
     else if (raw.includes('motor') || raw.includes('bike')) cat = 'motorcycle';
     else if (raw.includes('van'))   cat = 'van';
+    else if (raw.includes('coupe')) cat = 'sedan';
+    else if (raw.includes('sedan'))  cat = 'sedan';
     else {
-        var sp = ev.speedMph || ev.SpeedMph || 0;
+        var sp = ev.speedMph || ev.SpeedMph || ev.speed_mph || 0;
         if (sp > 85) cat = 'motorcycle';
     }
-    return { category: cat, domain: 'ground', color: CAT_SPEC[cat]?.color || '#3b82f6' };
+    // Use classification data if available (from sim broadcast)
+    var domain = 'ground';
+    if (ev.classification_domain)  domain = ev.classification_domain;
+    else if (ev.classification && ev.classification.domain) domain = ev.classification.domain;
+    var color = CAT_SPEC[cat]?.color || '#3b82f6';
+    if (ev.classification_color) color = ev.classification_color;
+    else if (ev.classification && ev.classification.color) color = ev.classification.color;
+    return { category: cat, domain: domain, color: color };
 }
 
 // ── Simulation / feed state ───────────────────────────────────────────
@@ -1735,7 +1746,8 @@ function loadEvents(events) {
         var lat = parseFloat(ev.latitude  || ev.Latitude  || 0);
         var lon = parseFloat(ev.longitude || ev.Longitude || 0);
         var spd  = parseFloat(ev.speed_mph || ev.speedMph || ev.SpeedMph || 0);
-        var make = ev.vehicle_make || ev.vehicleMake || ev.VehicleMake || ev.make || '';
+        var make = ev.vehicle_make || ev.vehicleMake || ev.VehicleMake || ev.make ||
+                   (ev.classification && ev.classification.make) || '';
         var vc   = classifyVehicle(ev);
 
         // Resolve the zone this vehicle belongs to
@@ -1866,9 +1878,10 @@ function loadEvents(events) {
                                    lastSeen: now });
         }
     });
-    // Prune stale (>90s old)
+    // Prune stale vehicles — 30s during sim (fast turnover), 120s idle
+    var pruneMs = simRunning ? 30000 : 120000;
     vehicleData.forEach(function(vd, vid) {
-        if (now - vd.lastSeen > 120000) vehicleData.delete(vid);
+        if (now - vd.lastSeen > pruneMs) vehicleData.delete(vid);
     });
     _updateStatsBar();
     
@@ -2523,6 +2536,14 @@ function _onSimMsg(data) {
         }
         _forceBridgeRedraw();
         _updateSimPanel(ev);
+        // ── Merge classification data into the event so loadEvents has it ──
+        if (data.classification) {
+            var cls = data.classification;
+            if (cls.make)     ev.vehicle_make     = cls.make;
+            if (cls.category) ev.vehicle_category  = cls.category;
+            if (cls.domain)   ev.classification_domain = cls.domain;
+            if (cls.color)    ev.classification_color  = cls.color;
+        }
         // Validate sim event coordinates against selected bounds before loading
         var _simLat = parseFloat(ev.latitude || ev.Latitude || ev.lat || 0);
         var _simLon = parseFloat(ev.longitude || ev.Longitude || ev.lon || 0);
