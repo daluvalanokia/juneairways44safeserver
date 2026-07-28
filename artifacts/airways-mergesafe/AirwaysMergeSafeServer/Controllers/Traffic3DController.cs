@@ -400,12 +400,95 @@ public class Traffic3DController : Controller
         }
 
         ReturnResult:
-        // 6. Return sorted zone coordinates for the bridge path
+        // 6. Sort zone coordinates for the bridge path by road axis
         var sortedZones = isEW
             ? zones.OrderBy(z => z.lon).ToList()
             : zones.OrderBy(z => z.lat).ToList();
 
-        // 7. Fetch switch servers for this highway (for dropdown rebuild)
+        // 7. Compute real highway bearing from actual zone GPS
+        //    bearing = atan2(Δlon * cos(latMid), Δlat) → degrees from North
+        double hwBearing = 90.0;
+        if (sortedZones.Count >= 2)
+        {
+            var zFirst = sortedZones[0];
+            var zLast  = sortedZones[^1];
+            double midLat = (zFirst.lat + zLast.lat) / 2.0;
+            double cosLat = Math.Cos(midLat * Math.PI / 180.0);
+            double dLat   = zLast.lat - zFirst.lat;
+            double dLon   = zLast.lon - zFirst.lon;
+            hwBearing = Math.Atan2(dLon * cosLat, dLat) * 180.0 / Math.PI;
+            if (hwBearing < 0) hwBearing += 360;
+        }
+
+        // 8. Build dense bridge path: interpolate between zone anchors at
+        //    ~300m intervals and extend 3 km beyond first/last zone so the
+        //    polyline always fills the visible map area.
+        //    Each point: { lat, lon } — client uses this as ground truth
+        //    for vehicle positioning and movement bearing.
+        var bridgePath = new List<object>();
+        const int extSteps = 10;
+        const double extDeg = 0.027;   // ~3 km extension beyond each end
+        const double interpStep = 0.003; // ~330 m interpolation interval
+
+        if (sortedZones.Count >= 2)
+        {
+            // Extension before first zone (project backward along segment direction)
+            var z0 = sortedZones[0]; var z1 = sortedZones[1];
+            double eDlat = z0.lat - z1.lat; double eDlon = z0.lon - z1.lon;
+            double eLen  = Math.Sqrt(eDlat*eDlat + eDlon*eDlon);
+            if (eLen > 0) { eDlat /= eLen; eDlon /= eLen; }
+            for (int ei = extSteps; ei >= 1; ei--)
+            {
+                double t = extDeg * ei / extSteps;
+                bridgePath.Add(new { lat = Math.Round(z0.lat + eDlat*t, 6), lon = Math.Round(z0.lon + eDlon*t, 6) });
+            }
+
+            // Interpolate between consecutive zone waypoints
+            for (int si = 0; si < sortedZones.Count - 1; si++)
+            {
+                var zA = sortedZones[si]; var zB = sortedZones[si + 1];
+                double segLat = zB.lat - zA.lat, segLon = zB.lon - zA.lon;
+                double segLen = Math.Sqrt(segLat*segLat + segLon*segLon);
+                int steps = Math.Max(3, (int)(segLen / interpStep));
+                for (int st = 0; st < steps; st++)
+                {
+                    double t = (double)st / steps;
+                    bridgePath.Add(new { lat = Math.Round(zA.lat + segLat*t, 6), lon = Math.Round(zA.lon + segLon*t, 6) });
+                }
+            }
+            bridgePath.Add(new { lat = Math.Round(sortedZones[^1].lat, 6), lon = Math.Round(sortedZones[^1].lon, 6) });
+
+            // Extension after last zone
+            var zN1 = sortedZones[^1]; var zN2 = sortedZones[^2];
+            double lDlat = zN1.lat - zN2.lat; double lDlon = zN1.lon - zN2.lon;
+            double lLen  = Math.Sqrt(lDlat*lDlat + lDlon*lDlon);
+            if (lLen > 0) { lDlat /= lLen; lDlon /= lLen; }
+            for (int li = 1; li <= extSteps; li++)
+            {
+                double t = extDeg * li / extSteps;
+                bridgePath.Add(new { lat = Math.Round(zN1.lat + lDlat*t, 6), lon = Math.Round(zN1.lon + lDlon*t, 6) });
+            }
+        }
+        else if (sortedZones.Count == 1)
+        {
+            // Single zone — extend along bearing
+            var zOnly = sortedZones[0];
+            double bRad = hwBearing * Math.PI / 180.0;
+            double cosZ = Math.Cos(zOnly.lat * Math.PI / 180.0);
+            for (int si = -extSteps; si <= extSteps; si++)
+            {
+                double t = extDeg * si / extSteps;
+                bridgePath.Add(new {
+                    lat = Math.Round(zOnly.lat + Math.Cos(bRad)*t, 6),
+                    lon = Math.Round(zOnly.lon + Math.Sin(bRad)*t/cosZ, 6)
+                });
+            }
+        }
+
+        TraceLogger.Info("Traffic3D", nameof(GetAnimationData),
+            $"bridgePath={bridgePath.Count} pts hwBearing={hwBearing:F1}° isEW={isEW}");
+
+        // 9. Fetch switch servers for this highway
         var zoneIds = zones.Select(z => z.zoneId).ToList();
         var servers = await _db.SwitchServers.AsNoTracking()
             .Where(s => s.ZoneId != null && zoneIds.Contains(s.ZoneId))
@@ -419,15 +502,17 @@ public class Traffic3DController : Controller
 
         return Json(new
         {
-            highwayCoords = sortedZones,
-            vehicles = validatedVehicles,
-            bounds = new { minLat, maxLat, minLon, maxLon, isEW, tight = !string.IsNullOrEmpty(zoneId) },
-            isEW = isEW,
-            highwayId = highwayId,
-            selectedZoneId = zoneId ?? "",
+            highwayCoords    = sortedZones,
+            bridgePath       = bridgePath,
+            hwBearing        = Math.Round(hwBearing, 2),
+            vehicles         = validatedVehicles,
+            bounds           = new { minLat, maxLat, minLon, maxLon, isEW, tight = !string.IsNullOrEmpty(zoneId) },
+            isEW             = isEW,
+            highwayId        = highwayId,
+            selectedZoneId   = zoneId ?? "",
             selectedServerId = serverId ?? "",
-            servers = servers,
-            generatedAt = DateTime.UtcNow
+            servers          = servers,
+            generatedAt      = DateTime.UtcNow
         });
     }
 
