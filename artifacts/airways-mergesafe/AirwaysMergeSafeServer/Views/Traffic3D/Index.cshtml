@@ -48,7 +48,7 @@
         <!-- Zone dropdown -->
         <select id="t3dZoneSel" class="form-select form-select-sm" style="width:150px"
                 onchange="t3dZoneChanged()">
-            <option value="">(All Zones)</option>
+            <option value="">(Select Zone)</option>
             @foreach (var z in Model.Zones)
             {
                 <option value="@z.ZoneId"
@@ -60,7 +60,7 @@
         <!-- Switch Server dropdown -->
         <select id="t3dServerSel" class="form-select form-select-sm" style="width:160px"
                 onchange="t3dServerChanged()">
-            <option value="">(All Servers)</option>
+            <option value="">(Select Server)</option>
             @foreach (var s in Model.SwitchServers)
             {
                 var sZone = Model.Zones.FirstOrDefault(z => z.ZoneId == s.ZoneId);
@@ -1245,7 +1245,7 @@ async function t3dHighwayChanged(newHighwayId) {
     // Update HW variable + persist to localStorage
     HW = newHighwayId;
     localStorage.setItem('t3d_selectedHw', HW);
-    // Reset zone/server selection
+    // Reset zone/server selection (highway changed — old zone/server are invalid)
     selectedZoneId = ''; selectedServerId = '';
     localStorage.removeItem('t3d_selectedZone');
     localStorage.removeItem('t3d_selectedServer');
@@ -1254,23 +1254,22 @@ async function t3dHighwayChanged(newHighwayId) {
     if (zsel) zsel.value = '';
     if (ssel) {
         ssel.value = '';
-        // Reset all server options visible
         ssel.querySelectorAll('option').forEach(function(o) { o.style.display = ''; });
     }
-    // Fetch new zones for this highway from server
+    // Fetch zones + servers for this highway from server
+    // NOTE: We do NOT load vehicles here — animation requires all 3 values
+    // (highway + zone + server). We only set up the bridge path and dropdowns.
     try {
         var r = await fetch('/Traffic3D/GetAnimationData?highwayId=' + encodeURIComponent(newHighwayId) + '&mode=ground');
         if (!r.ok) return;
         var data = await r.json();
-        // Update T3D_ZONES from server response
         if (data.highwayCoords && data.highwayCoords.length > 0) {
             T3D_ZONES = data.highwayCoords.map(function(z) {
                 return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
                          highwayId: z.highwayId, radius: z.radius };
             });
-            // Update zone dropdown options WITH data attributes (matches Razor output)
             if (zsel) {
-                zsel.innerHTML = '<option value="">(All Zones)</option>';
+                zsel.innerHTML = '<option value="">(Select Zone)</option>';
                 T3D_ZONES.forEach(function(z) {
                     var opt = document.createElement('option');
                     opt.value = z.zoneId;
@@ -1281,34 +1280,27 @@ async function t3dHighwayChanged(newHighwayId) {
                     zsel.appendChild(opt);
                 });
             }
-            // Center map on first zone
             var z0 = T3D_ZONES[0];
             midLat = z0.lat; midLon = z0.lon;
             _panMapTo(z0.lat, z0.lon);
-            // Rebuild highway path and SORT it by axis via _setHighwayCoords
             _setHighwayCoords(z0.lat, z0.lon, HW);
-            // Override isEW from server (authoritative)
             _hwyIsEW = data.isEW;
             if (typeof roadGroup3 !== 'undefined') {
                 roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
             }
         } else {
-            // No zones returned — clear T3D_ZONES and highway path
             T3D_ZONES = [];
             _hwyPath = [];
-            if (zsel) zsel.innerHTML = '<option value="">(All Zones)</option>';
-            if (ssel) ssel.innerHTML = '<option value="">(All Servers)</option>';
+            if (zsel) zsel.innerHTML = '<option value="">(Select Zone)</option>';
+            if (ssel) ssel.innerHTML = '<option value="">(Select Server)</option>';
             console.warn('[T3D] Highway ' + newHighwayId + ' has no zones');
         }
-        // Store bounds
         if (data.bounds) _serverBounds = data.bounds;
-        // Rebuild server dropdown from server data (with zone info)
         if (data.servers && ssel) {
-            ssel.innerHTML = '<option value="">(All Servers)</option>';
+            ssel.innerHTML = '<option value="">(Select Server)</option>';
             data.servers.forEach(function(s) {
                 var opt = document.createElement('option');
                 opt.value = s.serverId;
-                // Find zone name from T3D_ZONES for display
                 var zn = '';
                 if (s.zoneId) {
                     var zMatch = T3D_ZONES.find(function(zz){ return zz.zoneId === s.zoneId; });
@@ -1319,11 +1311,7 @@ async function t3dHighwayChanged(newHighwayId) {
                 ssel.appendChild(opt);
             });
         }
-        // Load vehicles
-        _clearVehicles();
-        if (data.vehicles && data.vehicles.length > 0) {
-            loadEvents(data.vehicles);
-        }
+        // NO vehicle loading here — requires all 3 (highway + zone + server)
         _forceBridgeRedraw();
         if (_map) setTimeout(function() { if (_map) { _map.invalidateSize(true); _forceBridgeRedraw(); } }, 200);
     } catch(e) { console.warn('[T3D] Highway change error:', e); }
@@ -1333,8 +1321,9 @@ async function t3dHighwayChanged(newHighwayId) {
 async function t3dZoneChanged() {
     selectedZoneId = document.getElementById('t3dZoneSel').value;
     localStorage.setItem('t3d_selectedZone', selectedZoneId);
-    localStorage.removeItem('t3d_selectedServer');
+    // Reset server selection (zone changed — old server may not belong to this zone)
     selectedServerId = '';
+    localStorage.removeItem('t3d_selectedServer');
     document.getElementById('t3dServerSel').value = '';
     var srvSel = document.getElementById('t3dServerSel');
     // Filter server dropdown to show only servers for the selected zone
@@ -1346,7 +1335,6 @@ async function t3dZoneChanged() {
         ? T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
         : (T3D_ZONES.find(function(zz){ return zz.lat && zz.lon; }) || null);
     if (!z && selectedZoneId) {
-        // Fallback: read GPS directly from the <option> data attributes
         var zOpt = document.querySelector('#t3dZoneSel option[value="' + selectedZoneId + '"]');
         if (zOpt && zOpt.dataset.lat && zOpt.dataset.lon)
             z = { zoneId: selectedZoneId, lat: parseFloat(zOpt.dataset.lat),
@@ -1362,18 +1350,9 @@ async function t3dZoneChanged() {
         _panMapTo(z0.lat, z0.lon);
         _setHighwayCoords(z0.lat, z0.lon, HW);
     }
+    // NO refreshScene here — animation requires all 3 (highway + zone + server).
+    // Server is not yet selected. Just update bridge position.
     _bridgeDirty = true;
-    await refreshScene();
-    if (z && z.lat && z.lon) {
-        _panMapTo(z.lat, z.lon);
-    }
-    // Re-apply zone filter to server dropdown (refreshScene may have rebuilt it)
-    var srvSelAfter = document.getElementById('t3dServerSel');
-    if (srvSelAfter && selectedZoneId) {
-        srvSelAfter.querySelectorAll('option').forEach(function(o) {
-            o.style.display = (!o.value || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
-        });
-    }
     _forceBridgeRedraw();
     _validateSelectionState();
 }
@@ -1381,12 +1360,12 @@ async function t3dZoneChanged() {
 async function t3dServerChanged() {
     selectedServerId = document.getElementById('t3dServerSel').value;
     localStorage.setItem('t3d_selectedServer', selectedServerId);
-    if (selectedServerId) localStorage.setItem('t3d_selectedZone', selectedZoneId);
     var opt = document.querySelector('#t3dServerSel option[value="' + selectedServerId + '"]');
     // Sync zone dropdown with the server's zone
     if (opt && opt.dataset.zone) {
         document.getElementById('t3dZoneSel').value = opt.dataset.zone;
         selectedZoneId = opt.dataset.zone;
+        localStorage.setItem('t3d_selectedZone', selectedZoneId);
         var srvSel = document.getElementById('t3dServerSel');
         if (srvSel) {
             srvSel.querySelectorAll('option').forEach(function(o) {
@@ -1414,7 +1393,13 @@ async function t3dServerChanged() {
         _setHighwayCoords(z0.lat, z0.lon, HW);
     }
     _bridgeDirty = true;
-    await refreshScene();
+    // ── ALL 3 values are now set (highway + zone + server) ──
+    // This is the ONLY place animation loads via refreshScene.
+    if (HW && selectedZoneId && selectedServerId) {
+        await refreshScene();
+    } else {
+        console.log('[T3D] t3dServerChanged: skipping refresh — need all 3 (hw=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId + ')');
+    }
     if (z && z.lat && z.lon) {
         _panMapTo(z.lat, z.lon);
     }
@@ -1704,11 +1689,17 @@ function _updateStatsBar() {
 var _serverBounds = null;
 
 async function refreshScene() {
+    // ── GUARD: animation requires all 3 values (highway + zone + server) ──
+    // If any is missing, do NOT fetch and do NOT clear existing animation.
+    if (!HW || !selectedZoneId || !selectedServerId) {
+        console.log('[T3D] refreshScene: SKIPPED — need all 3 (hw=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId + ')');
+        return;
+    }
     try {
-        var params = 'highwayId=' + encodeURIComponent(HW);
-        if (selectedZoneId)   params += '&zoneId='   + encodeURIComponent(selectedZoneId);
-        if (selectedServerId) params += '&serverId=' + encodeURIComponent(selectedServerId);
-        params += '&mode=ground';
+        var params = 'highwayId=' + encodeURIComponent(HW) +
+                     '&zoneId='   + encodeURIComponent(selectedZoneId) +
+                     '&serverId=' + encodeURIComponent(selectedServerId) +
+                     '&mode=ground';
         console.log('[T3D] refreshScene:', params);
         var r = await fetch('/Traffic3D/GetAnimationData?' + params);
         if (!r.ok) { console.warn('[T3D] refreshScene HTTP', r.status); return; }
@@ -1729,7 +1720,7 @@ async function refreshScene() {
                 var changed = currentIds.length !== newIds.length || currentIds.some(function(id,i){ return id !== newIds[i]; });
                 if (changed) {
                     var prevZone = selectedZoneId;
-                    zsel.innerHTML = '<option value="">(All Zones)</option>';
+                    zsel.innerHTML = '<option value="">(Select Zone)</option>';
                     T3D_ZONES.forEach(function(z) {
                         var opt = document.createElement('option');
                         opt.value = z.zoneId;
@@ -1753,7 +1744,7 @@ async function refreshScene() {
                 var ssel = document.getElementById('t3dServerSel');
                 if (ssel) {
                     var prevSrv = selectedServerId;
-                    ssel.innerHTML = '<option value="">(All Servers)</option>';
+                    ssel.innerHTML = '<option value="">(Select Server)</option>';
                     data.servers.forEach(function(s) {
                         var opt = document.createElement('option');
                         opt.value = s.serverId;
@@ -1950,7 +1941,7 @@ function _onSimMsg(data) {
                             // Rebuild zone dropdown
                             var zsel = document.getElementById('t3dZoneSel');
                             if (zsel) {
-                                zsel.innerHTML = '<option value="">(All Zones)</option>';
+                                zsel.innerHTML = '<option value="">(Select Zone)</option>';
                                 T3D_ZONES.forEach(function(z) {
                                     var opt = document.createElement('option');
                                     opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
@@ -1963,7 +1954,7 @@ function _onSimMsg(data) {
                             // Rebuild server dropdown
                             var ssel = document.getElementById('t3dServerSel');
                             if (ssel && d.servers) {
-                                ssel.innerHTML = '<option value="">(All Servers)</option>';
+                                ssel.innerHTML = '<option value="">(Select Server)</option>';
                                 d.servers.forEach(function(s) {
                                     var opt = document.createElement('option');
                                     opt.value = s.serverId;
@@ -2063,7 +2054,8 @@ function _onSimMsg(data) {
         simRunning = false; feedHeld = false;
         var badge = document.getElementById('simFeedBadge');
         if (badge) badge.style.display = 'none';
-        refreshScene();
+        // Only refresh if all 3 values are set
+        if (HW && selectedZoneId && selectedServerId) refreshScene();
     }
 }
 
@@ -2089,7 +2081,7 @@ window.addEventListener('storage', function(e) {
                 var badge2 = document.getElementById('simFeedBadge');
                 if (badge2) badge2.style.display = 'none';
                 _clearVehicles();
-                refreshScene();
+                if (HW && selectedZoneId && selectedServerId) refreshScene();
             }
         } catch(_) {}
     }
@@ -2209,7 +2201,7 @@ window.addEventListener('resize', function() {
                         });
                         var zsel = document.getElementById('t3dZoneSel');
                         if (zsel) {
-                            zsel.innerHTML = '<option value="">(All Zones)</option>';
+                            zsel.innerHTML = '<option value="">(Select Zone)</option>';
                             T3D_ZONES.forEach(function(z) {
                                 var opt = document.createElement('option');
                                 opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
@@ -2221,7 +2213,7 @@ window.addEventListener('resize', function() {
                         }
                         var ssel = document.getElementById('t3dServerSel');
                         if (ssel && d.servers) {
-                            ssel.innerHTML = '<option value="">(All Servers)</option>';
+                            ssel.innerHTML = '<option value="">(Select Server)</option>';
                             d.servers.forEach(function(s) {
                                 var opt = document.createElement('option');
                                 opt.value = s.serverId;
@@ -2259,16 +2251,24 @@ window.addEventListener('resize', function() {
         console.log('[T3D] Boot: restored server=' + savedSrv);
     }
 
-    // 6. Initial server-side data fetch (skipped if sim is running)
+    // 6. Initial server-side data fetch — ONLY if all 3 values are set
+    //    (highway + zone + server). If any is missing, skip the fetch —
+    //    the user must select all 3 before animation loads.
     if (!simRunning) {
-        console.log('[T3D] Boot: fetching initial data');
-        await refreshScene();
-        console.log('[T3D] Boot: vehicles=' + vehicleData.size);
+        if (HW && selectedZoneId && selectedServerId) {
+            console.log('[T3D] Boot: all 3 set — fetching animation data');
+            await refreshScene();
+            console.log('[T3D] Boot: vehicles=' + vehicleData.size);
+        } else {
+            console.log('[T3D] Boot: skipping fetch — need all 3 (hw=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId + ')');
+            // Still draw the bridge from whatever zones are loaded
+            _forceBridgeRedraw();
+        }
     }
     console.log('[T3D] Boot complete: vehicles=' + vehicleData.size);
 })();
 
 // ── Slow poll: 30s, live mode only ───────────────────────────────────
-setInterval(function() { if (!simRunning && !feedHeld) refreshScene(); }, 30000);
+setInterval(function() { if (!simRunning && !feedHeld && HW && selectedZoneId && selectedServerId) refreshScene(); }, 30000);
 
 </script>
