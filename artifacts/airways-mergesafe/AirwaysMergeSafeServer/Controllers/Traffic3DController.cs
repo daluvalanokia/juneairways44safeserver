@@ -109,7 +109,8 @@ public class Traffic3DController : Controller
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetAnimationData(
-        string? highwayId, string? zoneId, string? serverId, string? mode = "ground")
+        string? highwayId, string? zoneId, string? serverId, string? mode = "ground",
+        bool simOnly = false)
     {
         TraceLogger.Enter("Traffic3D", nameof(GetAnimationData), $"hw={highwayId} z={zoneId} s={serverId}");
         highwayId ??= HttpContext.Session.GetString("HighwayId") ?? "";
@@ -227,6 +228,14 @@ public class Traffic3DController : Controller
             .Where(e => e.HighwayId == highwayId
                      && (e.VehicleMode == "ground" || e.IsAirFlyCar == "N"));
 
+        // When simOnly=true, only fetch recent events (last 10 min) — these are
+        // the simulation's events. Also filter by the sim's exact zone/server.
+        if (simOnly)
+        {
+            var cutoff = DateTime.UtcNow.AddMinutes(-10);
+            baseQuery = baseQuery.Where(e => e.CreatedDate >= cutoff);
+        }
+
         var eventsQuery = baseQuery;
         if (!string.IsNullOrEmpty(zoneFilter))
             eventsQuery = eventsQuery.Where(e => e.ZoneId == zoneFilter);
@@ -244,7 +253,9 @@ public class Traffic3DController : Controller
 
         // Fallback: if zone/server filter returned 0 vehicles, retry highway-level
         // so the animation stays populated. Zone selection still tightens map bounds.
-        if (rawEvents.Count == 0 && !string.IsNullOrEmpty(zoneFilter))
+        // SKIP this fallback when simOnly=true — we want ONLY the sim's exact
+        // zone/server events, not highway-wide data.
+        if (rawEvents.Count == 0 && !string.IsNullOrEmpty(zoneFilter) && !simOnly)
         {
             TraceLogger.Info("Traffic3D", nameof(GetAnimationData),
                 $"Zone {zoneFilter} has 0 vehicles — falling back to highway {highwayId}");
@@ -267,7 +278,8 @@ public class Traffic3DController : Controller
         //    synthetic vehicles from zone coordinates so the animation always
         //    has something to show. This covers highways with no VehicleEvents
         //    in the DB at all.
-        if (rawEvents.Count == 0)
+        // SKIP when simOnly=true — simulation data should not show synthetic vehicles.
+        if (rawEvents.Count == 0 && !simOnly)
         {
             TraceLogger.Info("Traffic3D", nameof(GetAnimationData),
                 $"No VehicleEvents for {highwayId} — generating synthetic vehicles from {zones.Count} zones");
