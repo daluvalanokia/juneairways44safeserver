@@ -1815,6 +1815,18 @@ async function refreshAnimation() {
 
     if (HW && selectedZoneId && selectedServerId) {
         console.log('[T3D] refreshAnimation: all 3 dropdowns set — loading animation');
+        // Pan map to selected zone before loading animation
+        var rz = T3D_ZONES.find(function(z){ return z.zoneId === selectedZoneId; });
+        if (rz && rz.lat && rz.lon) {
+            midLat = rz.lat; midLon = rz.lon;
+            _panMapTo(rz.lat, rz.lon);
+            _setHighwayCoords(rz.lat, rz.lon, rz.highwayId || HW);
+        } else if (T3D_ZONES.length > 0) {
+            midLat = T3D_ZONES[0].lat; midLon = T3D_ZONES[0].lon;
+            _panMapTo(midLat, midLon);
+            _setHighwayCoords(midLat, midLon, HW);
+        }
+        _forceBridgeRedraw();
         await refreshScene();
     } else {
         var missing = [];
@@ -1918,6 +1930,16 @@ async function refreshScene() {
             _hwyIsEW = data.isEW;
             if (typeof roadGroup3 !== 'undefined') {
                 roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
+            }
+            // ── PAN MAP to the selected zone (or first zone) ──
+            // Without this, the map stays at its previous location and the
+            // bridge is drawn off-screen — "unable to locate the highway."
+            var panZone = selectedZoneId
+                ? T3D_ZONES.find(function(z){ return z.zoneId === selectedZoneId; })
+                : T3D_ZONES[0];
+            if (panZone && panZone.lat && panZone.lon) {
+                midLat = panZone.lat; midLon = panZone.lon;
+                _panMapTo(panZone.lat, panZone.lon);
             }
         } else if (data.isEW !== undefined) {
             _hwyIsEW = data.isEW;
@@ -2326,8 +2348,11 @@ window.addEventListener('resize', function() {
         var hwSel = document.getElementById('hwSel');
         if (hwSel) hwSel.value = HW;
         console.log('[T3D] Boot: restored HW=' + HW + ' from sim context/localStorage');
-        // If sim is running, fetch zones for this highway now (boot-time zone rebuild)
-        if (simRunning) {
+        // Always fetch zones for this highway at boot — sim or not.
+        // Without this, the map stays at the Razor default center (first
+        // highway in DB) and the bridge for the restored highway is
+        // drawn off-screen.
+        {
             try {
                 var r = await fetch('/Traffic3D/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground');
                 if (r.ok) {
@@ -2379,7 +2404,14 @@ window.addEventListener('resize', function() {
             selectedZoneId = savedZone;
             var zSelEl = document.getElementById('t3dZoneSel');
             if (zSelEl) zSelEl.value = savedZone;
-            console.log('[T3D] Boot: restored zone=' + savedZone);
+            // Pan map to this zone so the bridge is visible
+            var bz = T3D_ZONES.find(function(z){ return z.zoneId === savedZone; });
+            if (bz && bz.lat && bz.lon) {
+                midLat = bz.lat; midLon = bz.lon;
+                _panMapTo(bz.lat, bz.lon);
+                _setHighwayCoords(bz.lat, bz.lon, bz.highwayId || HW);
+            }
+            console.log('[T3D] Boot: restored zone=' + savedZone + ' (map panned)');
         }
     }
     if (savedSrv) {
@@ -2399,9 +2431,10 @@ window.addEventListener('resize', function() {
             console.log('[T3D] Boot: vehicles=' + vehicleData.size);
         } else {
             console.log('[T3D] Boot: skipping fetch — need all 3 (hw=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId + ')');
-            // Still draw the bridge from whatever zones are loaded
-            _forceBridgeRedraw();
         }
+        // Always force bridge redraw — even if we skipped the fetch,
+        // the boot zone fetch above may have loaded new T3D_ZONES.
+        _forceBridgeRedraw();
     }
     console.log('[T3D] Boot complete: vehicles=' + vehicleData.size);
 })();
