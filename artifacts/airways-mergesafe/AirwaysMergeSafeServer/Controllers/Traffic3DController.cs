@@ -152,9 +152,61 @@ public class Traffic3DController : Controller
                 minLon = earlyLons.Min() - 0.03, maxLon = earlyLons.Max() + 0.03
             } : null;
             var isEwOnly = !highwayId.Contains("I35") && !highwayId.Contains("I45") && !highwayId.Contains("I25");
+
+            // ── Also compute bridgePath + hwBearing for the zone-only fetch ──
+            // This ensures dropdown-population fetches also return the dense
+            // bridge path and real bearing, so the bridge is correct from the
+            // very first frame — before zone/server are even selected.
+            var sortedEarly = isEwOnly
+                ? zonesOnly.OrderBy(z => z.lon).ToList()
+                : zonesOnly.OrderBy(z => z.lat).ToList();
+            double earlyBearing = 90.0;
+            if (sortedEarly.Count >= 2)
+            {
+                var e0 = sortedEarly[0]; var e1 = sortedEarly[^1];
+                double eMidLat = (e0.lat + e1.lat) / 2.0;
+                double eCosLat = Math.Cos(eMidLat * Math.PI / 180.0);
+                double eDLat = e1.lat - e0.lat; double eDLon = e1.lon - e0.lon;
+                earlyBearing = Math.Atan2(eDLon * eCosLat, eDLat) * 180.0 / Math.PI;
+                if (earlyBearing < 0) earlyBearing += 360;
+            }
+            var earlyBridgePath = new List<object>();
+            if (sortedEarly.Count >= 2)
+            {
+                var ez0 = sortedEarly[0]; var ez1 = sortedEarly[1];
+                double edLat = ez0.lat - ez1.lat; double edLon = ez0.lon - ez1.lon;
+                double edLen = Math.Sqrt(edLat*edLat + edLon*edLon);
+                if (edLen > 0) { edLat /= edLen; edLon /= edLen; }
+                for (int ei = 10; ei >= 1; ei--) {
+                    double t = 0.027 * ei / 10;
+                    earlyBridgePath.Add(new { lat = Math.Round(ez0.lat + edLat*t, 6), lon = Math.Round(ez0.lon + edLon*t, 6) });
+                }
+                for (int si = 0; si < sortedEarly.Count - 1; si++) {
+                    var zA = sortedEarly[si]; var zB = sortedEarly[si + 1];
+                    double segLat = zB.lat - zA.lat; double segLon = zB.lon - zA.lon;
+                    double segLen = Math.Sqrt(segLat*segLat + segLon*segLon);
+                    int steps = Math.Max(3, (int)(segLen / 0.003));
+                    for (int st = 0; st < steps; st++) {
+                        double t = (double)st / steps;
+                        earlyBridgePath.Add(new { lat = Math.Round(zA.lat + segLat*t, 6), lon = Math.Round(zA.lon + segLon*t, 6) });
+                    }
+                }
+                earlyBridgePath.Add(new { lat = Math.Round(sortedEarly[^1].lat, 6), lon = Math.Round(sortedEarly[^1].lon, 6) });
+                var ezN1 = sortedEarly[^1]; var ezN2 = sortedEarly[^2];
+                double ldLat = ezN1.lat - ezN2.lat; double ldLon = ezN1.lon - ezN2.lon;
+                double ldLen = Math.Sqrt(ldLat*ldLat + ldLon*ldLon);
+                if (ldLen > 0) { ldLat /= ldLen; ldLon /= ldLen; }
+                for (int li = 1; li <= 10; li++) {
+                    double t = 0.027 * li / 10;
+                    earlyBridgePath.Add(new { lat = Math.Round(ezN1.lat + ldLat*t, 6), lon = Math.Round(ezN1.lon + ldLon*t, 6) });
+                }
+            }
+
             return Json(new {
                 highwayCoords = zonesOnly, vehicles = Array.Empty<object>(),
-                bounds = boundsOnly, isEW = isEwOnly, servers = serversOnly
+                bounds = boundsOnly, isEW = isEwOnly, servers = serversOnly,
+                bridgePath = earlyBridgePath,
+                hwBearing = Math.Round(earlyBearing, 2)
             });
         }
 
