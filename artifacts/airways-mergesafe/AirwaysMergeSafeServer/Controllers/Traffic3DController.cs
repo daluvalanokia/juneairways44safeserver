@@ -445,6 +445,7 @@ public class Traffic3DController : Controller
                 vehicle_mode = ev.VehicleMode ?? "ground",
                 vehicle_category = ev.VehicleCategory ?? "",
                 vehicle_class_json = ev.VehicleClassJson ?? "",
+                vehicle_make = _extractMakeFromPayload(ev.Payload),
                 is_air_fly_car = ev.IsAirFlyCar ?? "N",
                 created_date = ev.CreatedDate,
                 validated = needsSnap // for debugging: true if coords were snapped
@@ -452,6 +453,21 @@ public class Traffic3DController : Controller
         }
 
         ReturnResult:
+
+        // ── Helper: extract vehicle_make from raw payload JSON ─────────────
+        static string _extractMakeFromPayload(string? payloadJson)
+        {
+            if (string.IsNullOrEmpty(payloadJson)) return "";
+            try
+            {
+                using var doc = JsonDocument.Parse(payloadJson);
+                if (doc.RootElement.TryGetProperty("vehicle_make", out var mk))
+                    return mk.GetString() ?? "";
+            }
+            catch { }
+            return "";
+        }
+
         // 6. Sort zone coordinates for the bridge path by road axis
         var sortedZones = isEW
             ? zones.OrderBy(z => z.lon).ToList()
