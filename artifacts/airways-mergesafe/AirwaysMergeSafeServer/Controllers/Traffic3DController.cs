@@ -426,18 +426,10 @@ public class Traffic3DController : Controller
                 lon = nearestZone.lon + jLon;
             }
 
-            // Validate direction — snap to highway axis
-            int direction = 90; // default E-W
-            if (!isEW)
-            {
-                // N-S highway: 0 (north) or 180 (south)
-                direction = Random.Shared.Next(2) == 0 ? 0 : 180;
-            }
-            else
-            {
-                // E-W highway: 90 (east) or 270 (west)
-                direction = Random.Shared.Next(2) == 0 ? 90 : 270;
-            }
+            // Parse direction from the event's payload JSON — the InputPayloadService
+            // stores the actual highway bearing (or reverse) as the "direction" field.
+            // This preserves the sim's intended direction instead of overriding it.
+            int direction = _extractDirectionFromPayload(ev.Payload, isEW);
 
             validatedVehicles.Add(new
             {
@@ -473,6 +465,25 @@ public class Traffic3DController : Controller
             }
             catch { }
             return "";
+        }
+
+        static int _extractDirectionFromPayload(string? payloadJson, bool isEW)
+        {
+            // Try to parse direction from the sim event's payload JSON
+            if (!string.IsNullOrEmpty(payloadJson))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(payloadJson);
+                    if (doc.RootElement.TryGetProperty("direction", out var dirEl) && dirEl.ValueKind == JsonValueKind.Number)
+                        return dirEl.GetInt32();
+                    if (doc.RootElement.TryGetProperty("heading", out var headEl) && headEl.ValueKind == JsonValueKind.Number)
+                        return headEl.GetInt32();
+                }
+                catch { }
+            }
+            // Fallback: use highway axis bearing (not random)
+            return isEW ? 90 : 0;
         }
 
         // 6. Sort zone coordinates for the bridge path by road axis
