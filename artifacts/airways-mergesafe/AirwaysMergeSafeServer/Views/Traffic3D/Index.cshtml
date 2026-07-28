@@ -1876,12 +1876,101 @@ try { _bc = new BroadcastChannel('airways_sim'); } catch(e) {}
 function _onSimMsg(data) {
     if (!data) return;
     if (data.type === 'sim_started') {
-        // Sim started on another tab — immediately clear all live DB vehicles
+        // Sim started on another tab — switch to sim's highway/zone/server context
         simRunning = true; feedHeld = true;
         _clearVehicles();
         var badge = document.getElementById('simFeedBadge');
         if (badge) { badge.style.display = ''; badge.textContent = '● LIVE'; }
+
+        // ── Sync T3D dropdowns to the simulation's context ──
+        var ctx = data.context || {};
+        if (ctx.hwId) {
+            _simHwId = ctx.hwId;
+            // If the sim's highway differs from current, switch it
+            if (ctx.hwId !== HW) {
+                HW = ctx.hwId;
+                localStorage.setItem('t3d_selectedHw', HW);
+                var hwSel = document.getElementById('hwSel');
+                if (hwSel) hwSel.value = HW;
+                // Fetch zones for this highway from server
+                fetch('/Traffic3D/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground')
+                    .then(function(r){ return r.json(); })
+                    .then(function(d) {
+                        if (d.highwayCoords && d.highwayCoords.length > 0) {
+                            T3D_ZONES = d.highwayCoords.map(function(z) {
+                                return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                                         highwayId: z.highwayId, radius: z.radius };
+                            });
+                            // Rebuild zone dropdown
+                            var zsel = document.getElementById('t3dZoneSel');
+                            if (zsel) {
+                                zsel.innerHTML = '<option value="">(All Zones)</option>';
+                                T3D_ZONES.forEach(function(z) {
+                                    var opt = document.createElement('option');
+                                    opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
+                                    opt.dataset.hw = z.highwayId || HW;
+                                    opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                                    opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                                    zsel.appendChild(opt);
+                                });
+                            }
+                            // Rebuild server dropdown
+                            var ssel = document.getElementById('t3dServerSel');
+                            if (ssel && d.servers) {
+                                ssel.innerHTML = '<option value="">(All Servers)</option>';
+                                d.servers.forEach(function(s) {
+                                    var opt = document.createElement('option');
+                                    opt.value = s.serverId;
+                                    opt.textContent = s.serverName || s.serverId;
+                                    opt.dataset.zone = s.zoneId || '';
+                                    ssel.appendChild(opt);
+                                });
+                            }
+                            // Center map on first zone
+                            var z0 = T3D_ZONES[0];
+                            if (z0 && z0.lat) {
+                                midLat = z0.lat; midLon = z0.lon;
+                                _panMapTo(z0.lat, z0.lon);
+                                _setHighwayCoords(z0.lat, z0.lon, HW);
+                                _hwyIsEW = d.isEW;
+                            }
+                        }
+                        // Now apply zone/server selection from sim context
+                        _applySimContext(ctx);
+                    })
+                    .catch(function(){});
+            } else {
+                // Same highway — just apply zone/server
+                _applySimContext(ctx);
+            }
+        }
         return;
+    }
+
+    // Helper: apply sim's zone/server selection to T3D dropdowns
+    function _applySimContext(ctx) {
+        if (ctx.zoneId) {
+            _simZoneId = ctx.zoneId;
+            selectedZoneId = ctx.zoneId;
+            localStorage.setItem('t3d_selectedZone', ctx.zoneId);
+            var zsel = document.getElementById('t3dZoneSel');
+            if (zsel) zsel.value = ctx.zoneId;
+            // Pan map to the selected zone
+            var z = T3D_ZONES.find(function(zz){ return zz.zoneId === ctx.zoneId; });
+            if (z && z.lat && z.lon) {
+                midLat = z.lat; midLon = z.lon;
+                _panMapTo(z.lat, z.lon);
+                _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
+            }
+        }
+        if (ctx.serverId) {
+            _simSrvId = ctx.serverId;
+            selectedServerId = ctx.serverId;
+            localStorage.setItem('t3d_selectedServer', ctx.serverId);
+            var ssel = document.getElementById('t3dServerSel');
+            if (ssel) ssel.value = ctx.serverId;
+        }
+        _forceBridgeRedraw();
     }
     if (data.type === 'sim_vehicle' || data.type === 'sim_event') {
         var ev = data.payload || data;
@@ -2049,14 +2138,64 @@ window.addEventListener('resize', function() {
     await _simRestoreState();
 
     // 5. Restore selection from localStorage (survives page refresh)
-    var savedHw   = localStorage.getItem('t3d_selectedHw');
-    var savedZone = localStorage.getItem('t3d_selectedZone');
-    var savedSrv  = localStorage.getItem('t3d_selectedServer');
+    //    Priority: simulation context (airways_sim_context) > T3D's own saved state
+    var simCtx = null;
+    try { simCtx = JSON.parse(localStorage.getItem('airways_sim_context') || 'null'); } catch(e) {}
+    var savedHw   = (simCtx && simCtx.hwId)    ? simCtx.hwId    : localStorage.getItem('t3d_selectedHw');
+    var savedZone = (simCtx && simCtx.zoneId)  ? simCtx.zoneId  : localStorage.getItem('t3d_selectedZone');
+    var savedSrv  = (simCtx && simCtx.serverId) ? simCtx.serverId : localStorage.getItem('t3d_selectedServer');
+    if (simCtx) console.log('[T3D] Boot: sim context = hw=' + simCtx.hwId + ' zone=' + simCtx.zoneId + ' srv=' + simCtx.serverId);
     if (savedHw && savedHw !== HW) {
         HW = savedHw;
         var hwSel = document.getElementById('hwSel');
         if (hwSel) hwSel.value = HW;
-        console.log('[T3D] Boot: restored HW=' + HW + ' from localStorage');
+        console.log('[T3D] Boot: restored HW=' + HW + ' from sim context/localStorage');
+        // If sim is running, fetch zones for this highway now (boot-time zone rebuild)
+        if (simRunning) {
+            try {
+                var r = await fetch('/Traffic3D/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground');
+                if (r.ok) {
+                    var d = await r.json();
+                    if (d.highwayCoords && d.highwayCoords.length > 0) {
+                        T3D_ZONES = d.highwayCoords.map(function(z) {
+                            return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                                     highwayId: z.highwayId, radius: z.radius };
+                        });
+                        var zsel = document.getElementById('t3dZoneSel');
+                        if (zsel) {
+                            zsel.innerHTML = '<option value="">(All Zones)</option>';
+                            T3D_ZONES.forEach(function(z) {
+                                var opt = document.createElement('option');
+                                opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
+                                opt.dataset.hw = z.highwayId || HW;
+                                opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                                opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                                zsel.appendChild(opt);
+                            });
+                        }
+                        var ssel = document.getElementById('t3dServerSel');
+                        if (ssel && d.servers) {
+                            ssel.innerHTML = '<option value="">(All Servers)</option>';
+                            d.servers.forEach(function(s) {
+                                var opt = document.createElement('option');
+                                opt.value = s.serverId;
+                                opt.textContent = s.serverName || s.serverId;
+                                opt.dataset.zone = s.zoneId || '';
+                                ssel.appendChild(opt);
+                            });
+                        }
+                        _hwyIsEW = d.isEW;
+                        var z0 = T3D_ZONES[0];
+                        if (z0 && z0.lat) {
+                            midLat = z0.lat; midLon = z0.lon;
+                            _panMapTo(z0.lat, z0.lon);
+                            _setHighwayCoords(z0.lat, z0.lon, HW);
+                        }
+                        _forceBridgeRedraw();
+                    }
+                }
+            } catch(e) { console.warn('[T3D] Boot zone fetch failed:', e); }
+        }
     }
     if (savedZone) {
         var validZone = T3D_ZONES.some(function(z){ return z.zoneId === savedZone; });
