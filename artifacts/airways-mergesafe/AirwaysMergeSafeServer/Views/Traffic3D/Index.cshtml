@@ -1946,7 +1946,8 @@ async function refreshScene() {
         var params = 'highwayId=' + encodeURIComponent(HW) +
                      '&zoneId='   + encodeURIComponent(selectedZoneId) +
                      '&serverId=' + encodeURIComponent(selectedServerId) +
-                     '&mode=ground';
+                     '&mode=ground' +
+                     (simRunning ? '&simOnly=true' : '');
         console.log('[T3D] refreshScene:', params);
         var r = await fetch('/Traffic3D/GetAnimationData?' + params);
         if (!r.ok) { console.warn('[T3D] refreshScene HTTP', r.status); return; }
@@ -2047,9 +2048,16 @@ async function refreshScene() {
             _serverBounds = data.bounds;
         }
         // Load validated vehicles
+        // When sim is running, clear existing vehicles first so we only
+        // show simulation data — no stale DB or synthetic vehicles.
+        if (simRunning) {
+            _clearVehicles();
+        }
         if (data.vehicles && data.vehicles.length > 0) {
             loadEvents(data.vehicles);
-        } else if (!simRunning && vehicleData.size === 0) {
+        } else if (simRunning) {
+            console.log('[T3D] refreshScene: sim active but 0 sim events — waiting for BroadcastChannel');
+        } else if (vehicleData.size === 0) {
             console.log('[T3D] No vehicles from server, scene already empty');
         }
         _forceBridgeRedraw();
