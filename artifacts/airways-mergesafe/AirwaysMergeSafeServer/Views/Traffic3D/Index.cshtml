@@ -842,17 +842,17 @@ function _drawHighwayOverlay() {
     // These show exactly where the bridge connects to the highway.
     _hwyPath.forEach(function(zp) {
         var pp = _projectLatLng(zp.lat, zp.lon);
-        // Pin circle
+        // Pin circle — small, just enough to mark the zone anchor
         _octx.beginPath();
-        _octx.arc(pp.x, pp.y, 6, 0, Math.PI * 2);
-        _octx.fillStyle = 'rgba(253,224,71,0.9)';
+        _octx.arc(pp.x, pp.y, 3, 0, Math.PI * 2);
+        _octx.fillStyle = 'rgba(253,224,71,0.85)';
         _octx.fill();
-        _octx.strokeStyle = 'rgba(0,0,0,0.7)';
-        _octx.lineWidth = 1.5;
+        _octx.strokeStyle = 'rgba(0,0,0,0.6)';
+        _octx.lineWidth = 1;
         _octx.stroke();
         // Inner dot
         _octx.beginPath();
-        _octx.arc(pp.x, pp.y, 2.5, 0, Math.PI * 2);
+        _octx.arc(pp.x, pp.y, 1.2, 0, Math.PI * 2);
         _octx.fillStyle = '#fff';
         _octx.fill();
         // Zone label
@@ -1864,12 +1864,19 @@ function loadEvents(events) {
                      && existing.lat !== 0 && existing.lon !== 0
                      && existing.zoneLat === (zone ? zone.lat : null)) {
             // Vehicle already animated — preserve current GPS position,
-            // only update speed/direction/metadata so animation continues smoothly.
+            // only update speed/metadata. Keep the original direction to
+            // prevent flipping — the sim now generates deterministic direction
+            // per vehicle ID, but keep this guard for safety.
             existing.ev       = ev;
             existing.vc       = vc;
             existing.speedMph = spd;
             existing.make     = make;
-            existing.direction = dir;
+            // Only update direction if the sim provides one AND it's
+            // different from the current — don't flip just because
+            // a new event arrived.
+            if (dir >= 0 && Math.abs(dir - (existing.direction || 0)) > 1) {
+                existing.direction = dir;
+            }
             existing.isNSHwy  = isNSHwy;
             existing.lastSeen = now;
         } else {
