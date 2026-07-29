@@ -1782,6 +1782,8 @@ window.addEventListener('mousemove', function(e) {
     theta3 -= (e.clientX - _prevM3.x) * 0.005;
     phi3 = Math.max(0.05, Math.min(1.4, phi3 - (e.clientY - _prevM3.y) * 0.005));
     _prevM3 = {x:e.clientX, y:e.clientY};
+    // Map stays centered on zone/server GPS — orbit doesn't pan the map
+    // Only the 3D camera orbits; the map remains locked to the center GPS
 });
 _3dCanvas.addEventListener('wheel', function(e) {
     e.preventDefault();
@@ -1885,15 +1887,12 @@ function _centerMapOnHighway() {
     var ctrLat = _mapCtrLat, ctrLon = _mapCtrLon;
     if (selectedZoneId && T3D_ZONES && T3D_ZONES.length) {
         var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
-        if (z && z.lat && z.lon) {
-            ctrLat = z.lat; ctrLon = z.lon;
-        }
+        if (z && z.lat && z.lon) { ctrLat = z.lat; ctrLon = z.lon; }
     }
 
-    // ── 2. Compute bridge path span and adjust XZ_SCALE ──
-    // The 3D road is 1800 units (±900). We want the full bridge path
-    // to fit within this range. XZ_SCALE maps GPS degrees → 3D units.
-    // spanDeg = max lat/lon span across bridge path from center
+    // ── 2. Compute bridge path span from center and set XZ_SCALE ──
+    // XZ_SCALE maps GPS degrees → 3D units. We want the furthest bridge
+    // path point from center to map to ±900 (the 3D road half-length).
     if (_bridgePathCoords && _bridgePathCoords.length >= 2) {
         var maxAbs = 0;
         for (var i = 0; i < _bridgePathCoords.length; i++) {
@@ -1907,23 +1906,55 @@ function _centerMapOnHighway() {
         }
     }
 
-    // ── 3. Update map center and global vars ──
-    _mapCtrLat = ctrLat;
-    _mapCtrLon = ctrLon;
-    // Update the norm() globals (midLat/midLon are used by norm())
-    // These are separate vars in the script scope
-    try { eval('midLat = ' + ctrLat + '; midLon = ' + ctrLon + ';'); } catch(e) {}
+    // ── 3. Update all coordinate globals ──
+    _mapCtrLat = ctrLat; _mapCtrLon = ctrLon;
+    midLat = ctrLat; midLon = ctrLon;
 
     _map.setView([ctrLat, ctrLon], _map.getZoom(), { animate: false });
-    console.log('[T3D] Map centered on zone/server: ' + ctrLat.toFixed(4) + ', ' + ctrLon.toFixed(4) +
-                ' XZ_SCALE=' + XZ_SCALE.toFixed(1));
+    console.log('[T3D] Aligned: center=(' + ctrLat.toFixed(4) + ',' + ctrLon.toFixed(4) +
+                ') XZ_SCALE=' + XZ_SCALE.toFixed(1) + ' bridgePts=' + (_bridgePathCoords||[]).length);
 
-    // ── 4. Adjust camera radius range proportionally to scene scale ──
-    // At XZ_SCALE=800 (default), radius3 range is 40-700.
-    // Scale proportionally so zoom feels consistent at any highway span.
-    var radiusScale = XZ_SCALE / 800;
-    // Don't change radius3 itself, just let the user zoom — the
-    // proportional XZ_SCALE means the same radius3 shows more/less road.
+    // ── 4. Update 3D zone marker pins on the road ──
+    _update3DZoneMarkers();
+
+    // ── 5. Sync map zoom to current 3D camera distance ──
+    _syncMapZoom3D();
+}
+
+// ── 3D zone marker pins ──
+// Places a visible marker (pole + sphere) at each bridge path coordinate
+// projected onto the 3D road, showing where each highway zone is located.
+var _zoneMarkers3D = [];
+function _update3DZoneMarkers() {
+    // Remove old markers
+    _zoneMarkers3D.forEach(function(m) { roadGroup3.remove(m); });
+    _zoneMarkers3D = [];
+    if (!_bridgePathCoords || _bridgePathCoords.length < 2) return;
+
+    // Place a marker at each bridge path coordinate
+    for (var i = 0; i < _bridgePathCoords.length; i++) {
+        var bp = _bridgePathCoords[i];
+        var p = norm(bp.lat, bp.lon);
+        // Only place markers at regular intervals (every ~5th point to avoid clutter)
+        if (i > 0 && i < _bridgePathCoords.length - 1 && i % 5 !== 0) continue;
+
+        // Pole
+        var poleGeo = new THREE.CylinderGeometry(0.3, 0.3, 8, 6);
+        var poleMat = new THREE.MeshPhongMaterial({ color: 0xffd700 });
+        var pole = new THREE.Mesh(poleGeo, poleMat);
+        pole.position.set(p.x, 4, p.z);
+        roadGroup3.add(pole);
+        _zoneMarkers3D.push(pole);
+
+        // Sphere on top
+        var sphGeo = new THREE.SphereGeometry(1.2, 8, 6);
+        var sphMat = new THREE.MeshPhongMaterial({ color: 0xffd700, emissive: 0x442200, emissiveIntensity: 0.3 });
+        var sph = new THREE.Mesh(sphGeo, sphMat);
+        sph.position.set(p.x, 9, p.z);
+        roadGroup3.add(sph);
+        _zoneMarkers3D.push(sph);
+    }
+    console.log('[T3D] Zone markers: ' + _zoneMarkers3D.length + ' placed');
 }
 
 // ── Sync Leaflet map zoom with 3D camera distance (radius3) ──
@@ -1931,14 +1962,22 @@ function _centerMapOnHighway() {
 // in/out the 3D scene also zooms the map proportionally.
 function _syncMapZoom3D() {
     if (!_map) return;
-    // Map radius3 (40-700) to Leaflet zoom (18-10) proportionally.
-    // The mapping accounts for XZ_SCALE so the map zoom matches the
-    // 3D scene's visible extent at any highway span.
-    var r = (radius3 - 40) / (700 - 40);   // 0..1
-    // Adjust for XZ_SCALE: larger scale = wider area = lower zoom
-    var scaleAdj = Math.log(XZ_SCALE / 800) / Math.log(2) * 0.5;
-    var z = 18 - r * 8 - scaleAdj;
-    z = Math.max(9, Math.min(18, Math.round(z)));
+    // ── Unified zoom: 3D camera distance ↔ Leaflet map zoom ──
+    // The 3D road (1800 units) represents the bridge path span.
+    // XZ_SCALE maps GPS degrees to 3D units, so the road's geographic
+    // extent = 1800 / XZ_SCALE degrees. The Leaflet zoom level that
+    // shows a similar geographic extent is computed logarithmically.
+    //
+    // At zoom Z, Leaflet shows ~360 / 2^Z degrees across 256px tiles.
+    // The 3D canvas is ~520px wide. The road fills ~80% at radius3=280.
+    // We map radius3 (40-700) to zoom (18-9) with XZ_SCALE adjustment.
+    var r = (radius3 - 40) / (700 - 40);       // 0 (close) .. 1 (far)
+    // Base zoom: r=0 → 18, r=1 → 9
+    var baseZoom = 18 - r * 9;
+    // Adjust for XZ_SCALE: larger scale = wider geographic span = lower zoom
+    var scaleAdj = Math.log(XZ_SCALE / 800) / Math.LN2 * 0.6;
+    var z = Math.round(baseZoom - scaleAdj);
+    z = Math.max(8, Math.min(18, z));
     if (z !== _map.getZoom()) {
         _map.setZoom(z, { animate: false });
     }
