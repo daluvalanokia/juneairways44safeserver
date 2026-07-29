@@ -1387,6 +1387,15 @@ document.querySelectorAll('#viewToggle button').forEach(function(btn) {
 // ── Highway dropdown change — AJAX refresh (no page reload) ──────────
 async function t3dHighwayChanged(newHighwayId) {
     if (!newHighwayId || newHighwayId === HW) return;
+    // When sim is ON, lock dropdowns — sim controls highway/zone/server.
+    // User changes are reverted to the sim's context.
+    if (simRunning) {
+        console.log('[T3D] t3dHighwayChanged: BLOCKED — sim is running (sim HW=' + (_simHwId || HW) + ')');
+        // Revert dropdown to sim's highway
+        var hwSel = document.getElementById('hwSel');
+        if (hwSel) hwSel.value = _simHwId || HW;
+        return;
+    }
     // Update HW variable + persist to localStorage
     HW = newHighwayId;
     localStorage.setItem('t3d_selectedHw', HW);
@@ -1464,6 +1473,14 @@ async function t3dHighwayChanged(newHighwayId) {
 }
 
 async function t3dZoneChanged() {
+    // When sim is ON, lock dropdowns — sim controls zone/server.
+    if (simRunning) {
+        console.log('[T3D] t3dZoneChanged: BLOCKED — sim is running (sim zone=' + (_simZoneId || selectedZoneId) + ')');
+        // Revert dropdown to sim's zone
+        var zsel = document.getElementById('t3dZoneSel');
+        if (zsel) zsel.value = _simZoneId || selectedZoneId;
+        return;
+    }
     selectedZoneId = document.getElementById('t3dZoneSel').value;
     localStorage.setItem('t3d_selectedZone', selectedZoneId);
     // Reset server selection (zone changed — old server may not belong to this zone)
@@ -1503,6 +1520,14 @@ async function t3dZoneChanged() {
 }
 
 async function t3dServerChanged() {
+    // When sim is ON, lock dropdowns — sim controls zone/server.
+    if (simRunning) {
+        console.log('[T3D] t3dServerChanged: BLOCKED — sim is running (sim srv=' + (_simSrvId || selectedServerId) + ')');
+        // Revert dropdown to sim's server
+        var ssel = document.getElementById('t3dServerSel');
+        if (ssel) ssel.value = _simSrvId || selectedServerId;
+        return;
+    }
     selectedServerId = document.getElementById('t3dServerSel').value;
     localStorage.setItem('t3d_selectedServer', selectedServerId);
     var opt = document.querySelector('#t3dServerSel option[value="' + selectedServerId + '"]');
