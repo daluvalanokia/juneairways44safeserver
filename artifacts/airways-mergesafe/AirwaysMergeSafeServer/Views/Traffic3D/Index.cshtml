@@ -905,7 +905,9 @@ function _drawVehicles() {
     // In top view, 3D meshes handle vehicle rendering.
     // The 2D overlay only draws labels and highway overlay.
     // In side/3D view, 2D overlay is not visible (canvas behind 3D).
-    var draw2DVehicles = false; // 3D meshes handle all vehicle rendering
+    // 2D vehicle bodies are only drawn if 3D rendering is not active
+    // (e.g., if WebGL failed to initialize). Otherwise 3D meshes handle it.
+    var draw2DVehicles = !_3dAnimRunning;
 
     vehicleData.forEach(function(vd, vid) {
         if (!vd.lat || !vd.lon) return;
@@ -961,81 +963,41 @@ function _drawVehicles() {
         var carW = 30, carH = 15;   // long=X, short=Y (body dimensions in px)
         var carRot = (dir - 90) * Math.PI / 180;
 
+        // 2D vehicle body drawing is disabled — 3D meshes handle all
+        // vehicle rendering. The 2D overlay only draws labels and indicators.
+        if (draw2DVehicles) {
         _octx.save();
         _octx.translate(sx, sy);
         _octx.rotate(carRot);
-
-        // ── Car body ──────────────────────────────────────────────────
         _octx.beginPath();
         _octx.roundRect(-carW/2, -carH/2, carW, carH, 5);
-        _octx.fillStyle = color;
-        _octx.fill();
-        _octx.strokeStyle = 'rgba(255,255,255,0.9)';
-        _octx.lineWidth = 1.8;
-        _octx.stroke();
-
-        // ── Roof / cabin highlight (raised section, centred) ──────────
+        _octx.fillStyle = color; _octx.fill();
+        _octx.strokeStyle = 'rgba(255,255,255,0.9)'; _octx.lineWidth = 1.8; _octx.stroke();
         _octx.beginPath();
         _octx.roundRect(-carW/2 + 5, -carH/2 + 2, carW - 10, carH - 4, 3);
-        _octx.fillStyle = 'rgba(255,255,255,0.18)';
-        _octx.fill();
-
-        // ── Front nose — brighter tint shows drive direction ──────────
+        _octx.fillStyle = 'rgba(255,255,255,0.18)'; _octx.fill();
         _octx.beginPath();
         _octx.roundRect(carW/2 - 6, -carH/2 + 2, 5, carH - 4, 2);
-        _octx.fillStyle = 'rgba(255,255,255,0.45)';
-        _octx.fill();
-
-        // ── Wheels — 4 ellipses perpendicular to car long-axis ────────
-        // Wheels are along the Y axis (short axis) so they are always
-        // perpendicular to the road — this is the natural result of the
-        // correct rotation formula above.
-        var wW = 4, wH = 7;   // wheel: narrow along car axis, tall across it
-        _octx.fillStyle = '#111827';
-        _octx.strokeStyle = 'rgba(255,255,255,0.6)';
-        _octx.lineWidth = 0.8;
-        // Front-left, front-right, rear-left, rear-right
-        [[carW/2 - 6,  carH/2 - 1],
-         [carW/2 - 6, -carH/2 - 2],
-         [-carW/2 + 3,  carH/2 - 1],
-         [-carW/2 + 3, -carH/2 - 2]].forEach(function(w) {
-            _octx.beginPath();
-            _octx.ellipse(w[0], w[1], wW/2, wH/2, 0, 0, Math.PI * 2);
-            _octx.fill();
-            _octx.stroke();
+        _octx.fillStyle = 'rgba(255,255,255,0.45)'; _octx.fill();
+        var wW = 4, wH = 7;
+        _octx.fillStyle = '#111827'; _octx.strokeStyle = 'rgba(255,255,255,0.6)'; _octx.lineWidth = 0.8;
+        [[carW/2-6,carH/2-1],[carW/2-6,-carH/2-2],[-carW/2+3,carH/2-1],[-carW/2+3,-carH/2-2]].forEach(function(w){
+            _octx.beginPath(); _octx.ellipse(w[0],w[1],wW/2,wH/2,0,0,Math.PI*2); _octx.fill(); _octx.stroke();
         });
-
-        // ── Brand side-view logo on car body ───────────────────────────
-        // Side-view logo: wider than tall (80x40 aspect ratio)
-        // Drawn over the car body to show make + side silhouette
         if (sideImg && sideImg.complete && sideImg.naturalWidth > 0) {
-            _octx.drawImage(sideImg, -carW/2 + 1, -carH/2 - 1, carW - 2, carH + 2);
+            _octx.drawImage(sideImg, -carW/2+1, -carH/2-1, carW-2, carH+2);
         } else if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
-            // Fallback: top-view logo
             _octx.drawImage(logoImg, -10, -7, 20, 14);
         } else if (badge) {
-            // Initials badge
-            _octx.beginPath();
-            _octx.arc(0, 0, 7, 0, Math.PI * 2);
-            _octx.fillStyle = badge.color;
-            _octx.fill();
-            _octx.strokeStyle = 'rgba(255,255,255,0.55)';
-            _octx.lineWidth = 1.2;
-            _octx.stroke();
-            _octx.fillStyle = '#fff';
-            _octx.font = badge.initials.length > 2 ? 'bold 6px Arial' : 'bold 9px Arial';
-            _octx.textAlign = 'center';
-            _octx.textBaseline = 'middle';
-            _octx.fillText(badge.initials, 0, 0.5);
+            _octx.beginPath(); _octx.arc(0,0,7,0,Math.PI*2); _octx.fillStyle = badge.color; _octx.fill();
+            _octx.strokeStyle='rgba(255,255,255,0.55)'; _octx.lineWidth=1.2; _octx.stroke();
+            _octx.fillStyle='#fff'; _octx.font=badge.initials.length>2?'bold 6px Arial':'bold 9px Arial';
+            _octx.textAlign='center'; _octx.textBaseline='middle'; _octx.fillText(badge.initials,0,0.5);
         } else {
-            // Generic dot fallback
-            _octx.beginPath();
-            _octx.arc(0, 0, 5, 0, Math.PI * 2);
-            _octx.fillStyle = 'rgba(255,255,255,0.4)';
-            _octx.fill();
+            _octx.beginPath(); _octx.arc(0,0,5,0,Math.PI*2); _octx.fillStyle='rgba(255,255,255,0.4)'; _octx.fill();
         }
-
         _octx.restore();
+        } // end draw2DVehicles
 
         // Heading arrow — extends from the front of the car
         if (dir && spd > 0) {
