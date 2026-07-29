@@ -905,7 +905,7 @@ function _drawVehicles() {
     // In top view, 3D meshes handle vehicle rendering.
     // The 2D overlay only draws labels and highway overlay.
     // In side/3D view, 2D overlay is not visible (canvas behind 3D).
-    var draw2DVehicles = (currentView === 'top' && !_3dAnimRunning);
+    var draw2DVehicles = false; // 3D meshes handle all vehicle rendering
 
     vehicleData.forEach(function(vd, vid) {
         if (!vd.lat || !vd.lon) return;
