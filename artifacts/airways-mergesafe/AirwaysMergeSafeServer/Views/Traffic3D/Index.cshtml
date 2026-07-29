@@ -389,23 +389,6 @@ function _initMap() {
         if (_map) {
             var c = _map.getCenter();
             _mapCtrLat = c.lat; _mapCtrLon = c.lng;
-            // Sync 3D top camera when map pans
-            if (currentView === 'top') _syncTopCamera();
-        }
-    });
-    _map.on('move', function() {
-        // Live sync during drag for smooth 3D vehicle follow
-        if (_map && currentView === 'top') {
-            var c = _map.getCenter();
-            _mapCtrLat = c.lat; _mapCtrLon = c.lng;
-            _syncTopCamera();
-        }
-    });
-    _map.on('zoom', function() {
-        // Live zoom sync
-        if (_map && currentView === 'top') {
-            _leafletZoom = _map.getZoom();
-            _syncTopCamera();
         }
     });
 }
@@ -902,13 +885,6 @@ function _drawVehicles() {
     var cw = _oc.width, ch = _oc.height;
     if (cw < 2 || ch < 2) return;
 
-    // In top view, 3D meshes handle vehicle rendering.
-    // The 2D overlay only draws labels and highway overlay.
-    // In side/3D view, 2D overlay is not visible (canvas behind 3D).
-    // 2D vehicle bodies are only drawn if 3D rendering is not active
-    // (e.g., if WebGL failed to initialize). Otherwise 3D meshes handle it.
-    var draw2DVehicles = !_3dAnimRunning;
-
     vehicleData.forEach(function(vd, vid) {
         if (!vd.lat || !vd.lon) return;
 
@@ -963,41 +939,81 @@ function _drawVehicles() {
         var carW = 30, carH = 15;   // long=X, short=Y (body dimensions in px)
         var carRot = (dir - 90) * Math.PI / 180;
 
-        // 2D vehicle body drawing is disabled — 3D meshes handle all
-        // vehicle rendering. The 2D overlay only draws labels and indicators.
-        if (draw2DVehicles) {
         _octx.save();
         _octx.translate(sx, sy);
         _octx.rotate(carRot);
+
+        // ── Car body ──────────────────────────────────────────────────
         _octx.beginPath();
         _octx.roundRect(-carW/2, -carH/2, carW, carH, 5);
-        _octx.fillStyle = color; _octx.fill();
-        _octx.strokeStyle = 'rgba(255,255,255,0.9)'; _octx.lineWidth = 1.8; _octx.stroke();
+        _octx.fillStyle = color;
+        _octx.fill();
+        _octx.strokeStyle = 'rgba(255,255,255,0.9)';
+        _octx.lineWidth = 1.8;
+        _octx.stroke();
+
+        // ── Roof / cabin highlight (raised section, centred) ──────────
         _octx.beginPath();
         _octx.roundRect(-carW/2 + 5, -carH/2 + 2, carW - 10, carH - 4, 3);
-        _octx.fillStyle = 'rgba(255,255,255,0.18)'; _octx.fill();
+        _octx.fillStyle = 'rgba(255,255,255,0.18)';
+        _octx.fill();
+
+        // ── Front nose — brighter tint shows drive direction ──────────
         _octx.beginPath();
         _octx.roundRect(carW/2 - 6, -carH/2 + 2, 5, carH - 4, 2);
-        _octx.fillStyle = 'rgba(255,255,255,0.45)'; _octx.fill();
-        var wW = 4, wH = 7;
-        _octx.fillStyle = '#111827'; _octx.strokeStyle = 'rgba(255,255,255,0.6)'; _octx.lineWidth = 0.8;
-        [[carW/2-6,carH/2-1],[carW/2-6,-carH/2-2],[-carW/2+3,carH/2-1],[-carW/2+3,-carH/2-2]].forEach(function(w){
-            _octx.beginPath(); _octx.ellipse(w[0],w[1],wW/2,wH/2,0,0,Math.PI*2); _octx.fill(); _octx.stroke();
+        _octx.fillStyle = 'rgba(255,255,255,0.45)';
+        _octx.fill();
+
+        // ── Wheels — 4 ellipses perpendicular to car long-axis ────────
+        // Wheels are along the Y axis (short axis) so they are always
+        // perpendicular to the road — this is the natural result of the
+        // correct rotation formula above.
+        var wW = 4, wH = 7;   // wheel: narrow along car axis, tall across it
+        _octx.fillStyle = '#111827';
+        _octx.strokeStyle = 'rgba(255,255,255,0.6)';
+        _octx.lineWidth = 0.8;
+        // Front-left, front-right, rear-left, rear-right
+        [[carW/2 - 6,  carH/2 - 1],
+         [carW/2 - 6, -carH/2 - 2],
+         [-carW/2 + 3,  carH/2 - 1],
+         [-carW/2 + 3, -carH/2 - 2]].forEach(function(w) {
+            _octx.beginPath();
+            _octx.ellipse(w[0], w[1], wW/2, wH/2, 0, 0, Math.PI * 2);
+            _octx.fill();
+            _octx.stroke();
         });
+
+        // ── Brand side-view logo on car body ───────────────────────────
+        // Side-view logo: wider than tall (80x40 aspect ratio)
+        // Drawn over the car body to show make + side silhouette
         if (sideImg && sideImg.complete && sideImg.naturalWidth > 0) {
-            _octx.drawImage(sideImg, -carW/2+1, -carH/2-1, carW-2, carH+2);
+            _octx.drawImage(sideImg, -carW/2 + 1, -carH/2 - 1, carW - 2, carH + 2);
         } else if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
+            // Fallback: top-view logo
             _octx.drawImage(logoImg, -10, -7, 20, 14);
         } else if (badge) {
-            _octx.beginPath(); _octx.arc(0,0,7,0,Math.PI*2); _octx.fillStyle = badge.color; _octx.fill();
-            _octx.strokeStyle='rgba(255,255,255,0.55)'; _octx.lineWidth=1.2; _octx.stroke();
-            _octx.fillStyle='#fff'; _octx.font=badge.initials.length>2?'bold 6px Arial':'bold 9px Arial';
-            _octx.textAlign='center'; _octx.textBaseline='middle'; _octx.fillText(badge.initials,0,0.5);
+            // Initials badge
+            _octx.beginPath();
+            _octx.arc(0, 0, 7, 0, Math.PI * 2);
+            _octx.fillStyle = badge.color;
+            _octx.fill();
+            _octx.strokeStyle = 'rgba(255,255,255,0.55)';
+            _octx.lineWidth = 1.2;
+            _octx.stroke();
+            _octx.fillStyle = '#fff';
+            _octx.font = badge.initials.length > 2 ? 'bold 6px Arial' : 'bold 9px Arial';
+            _octx.textAlign = 'center';
+            _octx.textBaseline = 'middle';
+            _octx.fillText(badge.initials, 0, 0.5);
         } else {
-            _octx.beginPath(); _octx.arc(0,0,5,0,Math.PI*2); _octx.fillStyle='rgba(255,255,255,0.4)'; _octx.fill();
+            // Generic dot fallback
+            _octx.beginPath();
+            _octx.arc(0, 0, 5, 0, Math.PI * 2);
+            _octx.fillStyle = 'rgba(255,255,255,0.4)';
+            _octx.fill();
         }
+
         _octx.restore();
-        } // end draw2DVehicles
 
         // Heading arrow — extends from the front of the car
         if (dir && spd > 0) {
@@ -1352,86 +1368,10 @@ camP3.position.set(-180, 45, 90); camP3.lookAt(60, 0, 0);
 // Side camera — positioned for a nice side-elevation view showing road + scenery
 const camS3 = new THREE.OrthographicCamera(-300, 300, 80, -80, 0.1, 3000);
 camS3.position.set(0, 40, 400); camS3.lookAt(0, 15, 0);
-// Top camera — orthographic straight down, synced to Leaflet map
-const camT3 = new THREE.OrthographicCamera(-300, 300, 300, -300, 0.1, 2000);
-camT3.position.set(0, 500, 0); camT3.lookAt(0, 0, 0);
-camT3.rotation.z = 0; // will be set by _hwBearingDeg for road alignment
 
 var currentView = 'top';
 var radius3 = 280, theta3 = 0.6, phi3 = 0.5;
 var vehicleMeshes3 = [];
-
-// ── Scenery groups (for per-view visibility toggling) ──
-var _sceneryGroups = []; // trees, lights, hills, sky, embankments, ground
-var _roadOnlyGroups = []; // road plane, lane markings, guard rails
-scene3.traverse(function(obj) {
-    if (obj === skyDome || obj === groundL || obj === groundR ||
-        obj === embankL || obj === embankR || obj === railL || obj === railR) {
-        _sceneryGroups.push(obj);
-    }
-});
-// Collect tree groups, light groups, and hills from roadGroup3 children
-roadGroup3.children.forEach(function(c) {
-    if (c instanceof THREE.Group && c.children.length > 1) {
-        // Tree groups have trunk + leaves, light groups have pole + arm + lamp
-        _sceneryGroups.push(c);
-    }
-    if (c instanceof THREE.Mesh && c.geometry instanceof THREE.SphereGeometry) {
-        // Hills
-        _sceneryGroups.push(c);
-    }
-});
-// Road plane + centre line + dashes are road-only
-roadGroup3.children.forEach(function(c) {
-    if (c instanceof THREE.Mesh && c.geometry instanceof THREE.PlaneGeometry) {
-        _roadOnlyGroups.push(c);
-    }
-});
-
-// ── Leaflet ↔ Three.js camera sync for top view ──
-function _syncTopCamera() {
-    if (!_map || !_mapReady) return;
-    var zoom = _map.getZoom();
-    // Map Leaflet zoom → orthographic half-size
-    // Zoom 15 = ~300 units, each zoom level halves/doubles
-    var half = 300 / Math.pow(2, zoom - 15);
-    var cw = _3dCanvas.clientWidth, ch = _3dCanvas.clientHeight;
-    var aspect = cw / ch;
-    camT3.left = -half * aspect;
-    camT3.right = half * aspect;
-    camT3.top = half;
-    camT3.bottom = -half;
-    camT3.updateProjectionMatrix();
-    // Rotate camera to align with highway bearing
-    var bearingRad = (_hwBearingDeg || 0) * Math.PI / 180;
-    camT3.position.set(0, 500, 0);
-    camT3.lookAt(0, 0, 0);
-    camT3.rotation.z = bearingRad;
-    // Update midLat/midLon from map center for norm()
-    var c = _map.getCenter();
-    midLat = c.lat; midLon = c.lng;
-}
-
-// ── Per-view layer visibility ──
-function _setViewLayers(view) {
-    var isTop = (view === 'top');
-    var isSide = (view === 'side');
-    var is3D = (view === 'perspective' || view === 'split');
-    // Scenery (trees, lights, hills, sky, embankments, ground) — only in 3D
-    _sceneryGroups.forEach(function(g) { g.visible = is3D; });
-    // Road markings (plane, lines, dashes, rails) — show in 3D and side, hide in top
-    _roadOnlyGroups.forEach(function(g) { g.visible = !isTop; });
-    railL.visible = !isTop;
-    railR.visible = !isTop;
-    // Sky dome — only in 3D
-    skyDome.visible = is3D;
-    // Ground — show in 3D and side (faint), hide in top (map is the ground)
-    groundL.visible = is3D;
-    groundR.visible = is3D;
-    // Embankments — only in 3D
-    embankL.visible = is3D;
-    embankR.visible = is3D;
-}
 
 // ── Side-view texture cache (CanvasTexture from SVG images) ──
 var _sideTexCache = {};
@@ -1521,34 +1461,6 @@ function _make3DVehicle(ev, vc) {
         group.add(sideR);
     }
 
-    // ── Roof texture: brand colour panel + initials (visible from top) ──
-    var badge = BRAND_BADGES[make];
-    var roofColor = badge ? badge.color : '#3b82f6';
-    var roofCanvas = document.createElement('canvas');
-    roofCanvas.width = 128; roofCanvas.height = 64;
-    var rcx = roofCanvas.getContext('2d');
-    rcx.fillStyle = roofColor;
-    rcx.fillRect(0, 0, 128, 64);
-    rcx.strokeStyle = 'rgba(255,255,255,0.5)';
-    rcx.lineWidth = 3;
-    rcx.strokeRect(2, 2, 124, 60);
-    if (badge) {
-        rcx.fillStyle = '#fff';
-        rcx.font = 'bold 32px Arial Black,Arial,sans-serif';
-        rcx.textAlign = 'center';
-        rcx.textBaseline = 'middle';
-        rcx.fillText(badge.initials, 64, 34);
-    }
-    var roofTex = new THREE.CanvasTexture(roofCanvas);
-    roofTex.needsUpdate = true;
-    var roofGeo2 = new THREE.PlaneGeometry(l * 0.8, w * 0.8);
-    var roofMat2 = new THREE.MeshBasicMaterial({ map: roofTex, transparent: true });
-    var roofMesh2 = new THREE.Mesh(roofGeo2, roofMat2);
-    roofMesh2.rotation.x = -Math.PI / 2;
-    roofMesh2.position.y = h + 0.02;
-    group.add(roofMesh2);
-    group.userData.roofMesh = roofMesh2;
-
     // Headlights (front) + taillights (rear)
     var hlGeo = new THREE.SphereGeometry(0.3, 6, 4);
     var hlMat = new THREE.MeshPhongMaterial({ color: 0xffffe0, emissive: 0xffffaa, emissiveIntensity: 0.5 });
@@ -1607,84 +1519,40 @@ var _tick3 = 0;
 function _animate3D() {
     if (!_3dAnimRunning) return;
     requestAnimationFrame(_animate3D); _tick3++;
+    // Gentle camera orbit for perspective view
+    camP3.position.x = -180 + radius3 * 0.3 * Math.sin(theta3 * 0.2);
+    camP3.position.y = Math.max(15, radius3 * Math.sin(phi3));
+    camP3.position.z =  90 + radius3 * 0.2 * Math.cos(theta3 * 0.2);
+    camP3.lookAt(60, 5, 0);
+
+    // Animate vehicles
+    vehicleMeshes3.forEach(function(m) {
+        var ud = m.userData;
+        if (ud.isNS) {
+            m.position.z += ud.vz;
+            m.position.x += (ud.laneX - m.position.x) * 0.05;
+            if (m.position.z >  850) m.position.z = -850;
+            if (m.position.z < -850) m.position.z =  850;
+        } else {
+            m.position.x += ud.vx;
+            m.position.z += (ud.laneZ - m.position.z) * 0.05;
+            if (m.position.x >  850) m.position.x = -850;
+            if (m.position.x < -850) m.position.x =  850;
+        }
+    });
+
+    // Street light flicker
+    if (_tick3 % 180 === 0) {
+        scene3.children.forEach(function(c) {
+            if (c.userData && c.userData.isLamp) c.material.emissiveIntensity = 0.2 + Math.random() * 0.2;
+        });
+    }
 
     var cw = _3dCanvas.clientWidth, ch = _3dCanvas.clientHeight;
     renderer.setSize(cw, ch, false);
-
-    if (currentView === 'top') {
-        // ── Top view: sync camera to Leaflet, position vehicles from GPS ──
-        _syncTopCamera();
-
-        // Re-position vehicles from their live GPS coordinates
-        vehicleMeshes3.forEach(function(m) {
-            var vd = vehicleData.get(m.userData.vid);
-            if (vd && vd.lat && vd.lon) {
-                var p = norm(vd.lat, vd.lon);
-                m.position.x = p.x;
-                m.position.z = p.z;
-                m.position.y = 0;
-                // Rotate vehicle to match direction
-                var dir = vd.direction || _hwBearingDeg || 0;
-                m.rotation.y = -(dir - 90) * Math.PI / 180;
-                // Scale vehicle to be visible at map zoom
-                var zoom = _map ? _map.getZoom() : 15;
-                var scale = Math.pow(2, zoom - 13) * 0.5;
-                scale = Math.max(0.5, Math.min(4, scale));
-                m.scale.setScalar(scale);
-            }
-        });
-        renderer.render(scene3, camT3);
-    } else if (currentView === 'side') {
-        // ── Side view: orthographic elevation ──
-        vehicleMeshes3.forEach(function(m) {
-            var ud = m.userData;
-            if (ud.isNS) {
-                m.position.z += ud.vz;
-                m.position.x += (ud.laneX - m.position.x) * 0.05;
-                if (m.position.z >  850) m.position.z = -850;
-                if (m.position.z < -850) m.position.z =  850;
-            } else {
-                m.position.x += ud.vx;
-                m.position.z += (ud.laneZ - m.position.z) * 0.05;
-                if (m.position.x >  850) m.position.x = -850;
-                if (m.position.x < -850) m.position.x =  850;
-            }
-            m.scale.setScalar(1);
-        });
-        if (camS3.left !== -300) { camS3.left = -300; camS3.right = 300; camS3.top = 80; camS3.bottom = -80; camS3.updateProjectionMatrix(); }
-        renderer.render(scene3, camS3);
-    } else {
-        // ── 3D perspective view ──
-        camP3.position.x = -180 + radius3 * 0.3 * Math.sin(theta3 * 0.2);
-        camP3.position.y = Math.max(15, radius3 * Math.sin(phi3));
-        camP3.position.z =  90 + radius3 * 0.2 * Math.cos(theta3 * 0.2);
-        camP3.lookAt(60, 5, 0);
-        if (camP3.aspect !== cw/ch) { camP3.aspect = cw/ch; camP3.updateProjectionMatrix(); }
-
-        vehicleMeshes3.forEach(function(m) {
-            var ud = m.userData;
-            if (ud.isNS) {
-                m.position.z += ud.vz;
-                m.position.x += (ud.laneX - m.position.x) * 0.05;
-                if (m.position.z >  850) m.position.z = -850;
-                if (m.position.z < -850) m.position.z =  850;
-            } else {
-                m.position.x += ud.vx;
-                m.position.z += (ud.laneZ - m.position.z) * 0.05;
-                if (m.position.x >  850) m.position.x = -850;
-                if (m.position.x < -850) m.position.x =  850;
-            }
-            m.scale.setScalar(1);
-        });
-
-        // Street light flicker
-        if (_tick3 % 180 === 0) {
-            scene3.children.forEach(function(c) {
-                if (c.userData && c.userData.isLamp) c.material.emissiveIntensity = 0.2 + Math.random() * 0.2;
-            });
-        }
-        renderer.render(scene3, camP3);
-    }
+    var cam = currentView === 'side' ? camS3 : camP3;
+    if (cam.isPerspectiveCamera) { cam.aspect = cw/ch; cam.updateProjectionMatrix(); }
+    renderer.render(scene3, cam);
 }
 
 // 3D camera drag
@@ -1705,29 +1573,22 @@ _3dCanvas.addEventListener('wheel', function(e) {
 // ── View toggle ───────────────────────────────────────────────────────
 function setViewport(view) {
     currentView = view;
-    // Three.js canvas is ALWAYS visible now — vehicles render in all views
-    _3dCanvas.style.display = '';
-    // Overlay canvas for labels (kept for 2D label rendering)
+    var is2D = (view === 'top');
+    // Show Three.js canvas only for 3D views
+    _3dCanvas.style.display = is2D ? 'none' : '';
+    // Overlay canvas always visible
     _oc.style.display = '';
 
-    // Per-view layer visibility (scenery, road, sky)
-    _setViewLayers(view);
-
-    // Start 3D render loop for all views
-    if (!_3dAnimRunning) {
+    // Start/stop 3D render loop
+    if (!is2D && !_3dAnimRunning) {
         _3dAnimRunning = true; _sync3DMeshes(); _animate3D();
+    } else if (is2D) {
+        _3dAnimRunning = false;
+        renderer.clear();   // blank the 3D canvas when not in use
     }
 
-    // Leaflet map: always visible — it's the geographic base in all views
-    // In top view it's the primary view (vehicles overlay on top)
-    // In side/3D view it's a faint background visible through transparent 3D canvas
-    document.getElementById('t3dMiniMap').style.visibility = 'visible';
-
-    // In top view, reduce 2D vehicle drawing (3D meshes handle it)
-    // The 2D overlay still draws labels/highway overlay
-    if (view === 'top') {
-        _syncTopCamera();
-    }
+    // Show Leaflet map for top view; hide for 3D (it shows through alpha)
+    document.getElementById('t3dMiniMap').style.visibility = is2D ? 'visible' : 'hidden';
 
     // Split mode labels
     ['labelA','labelB','labelC'].forEach(function(id) {
@@ -1736,7 +1597,7 @@ function setViewport(view) {
     // Force bridge re-projection — canvas dimensions may have changed
     _bridgeDirty = true;
     if (_map) _map.invalidateSize();
-    console.log('[T3D] Viewport set: ' + view + ' — 3D vehicles active, map visible');
+    console.log('[T3D] Viewport set: ' + view + ' bridge dirty');
 }
 
 // View buttons
