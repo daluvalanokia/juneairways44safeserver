@@ -139,6 +139,17 @@
          style="top:6px;right:6px;font-size:.72rem;opacity:0;transition:opacity .5s ease;pointer-events:none;z-index:10">
         🛰 Live Sim — Vehicle Added
     </div>
+    <div id="t3dLocationBadge" class="position-absolute"
+         style="bottom:10px;left:10px;display:none;z-index:10;
+                background:rgba(15,23,42,0.85);color:#e2e8f0;
+                border:1px solid rgba(255,255,255,0.25);
+                border-radius:8px;padding:8px 12px;
+                font-size:.78rem;line-height:1.5;pointer-events:none;
+                max-width:280px;backdrop-filter:blur(4px)">
+        <div style="font-weight:700;color:#60a5fa;font-size:.85rem;margin-bottom:2px" id="t3dLocHwy">-</div>
+        <div id="t3dLocZone">-</div>
+        <div id="t3dLocCoords" style="font-family:monospace;font-size:.72rem;color:#94a3b8">-</div>
+    </div>
     <!-- Zoom controls (bottom-right) -->
     <div style="position:absolute;bottom:10px;right:10px;z-index:8;display:flex;flex-direction:column;gap:4px">
         <button id="btnZoomIn" onclick="t3dZoomIn()" title="Zoom In"
@@ -389,6 +400,7 @@ function _initMap() {
         if (_map) {
             var c = _map.getCenter();
             _mapCtrLat = c.lat; _mapCtrLon = c.lng;
+            if (currentView !== 'top') _updateLocationBadge();
         }
     });
 }
@@ -1244,6 +1256,7 @@ dir3b.position.set(-100, 120, -80); scene3.add(dir3b);
 var skyGeo = new THREE.SphereGeometry(1800, 32, 16);
 var skyMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
+    transparent: true,
     uniforms: {
         topColor:    { value: new THREE.Color(0x2a6ab5) },
         bottomColor: { value: new THREE.Color(0xd0e8f0) },
@@ -1251,7 +1264,7 @@ var skyMat = new THREE.ShaderMaterial({
         exponent:    { value: 0.7 }
     },
     vertexShader: 'varying vec3 vWorldPos; void main() { vec4 wp = modelMatrix * vec4(position, 1.0); vWorldPos = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }',
-    fragmentShader: 'uniform vec3 topColor; uniform vec3 bottomColor; uniform float offset; uniform float exponent; varying vec3 vWorldPos; void main() { float h = normalize(vWorldPos + vec3(0.0, offset, 0.0)).y; float t = max(pow(max(h, 0.0), exponent), 0.0); gl_FragColor = vec4(mix(bottomColor, topColor, t), 1.0); }'
+    fragmentShader: 'uniform vec3 topColor; uniform vec3 bottomColor; uniform float offset; uniform float exponent; varying vec3 vWorldPos; void main() { float h = normalize(vWorldPos + vec3(0.0, offset, 0.0)).y; float t = max(pow(max(h, 0.0), exponent), 0.0); gl_FragColor = vec4(mix(bottomColor, topColor, t), 0.65); }'
 });
 var skyDome = new THREE.Mesh(skyGeo, skyMat);
 scene3.add(skyDome);
@@ -1284,7 +1297,7 @@ for (var di = -20; di <= 20; di++) {
 // ── Roadside ground (grass/dirt strips on both sides) ──
 var groundGeo = new THREE.PlaneGeometry(1800, 400);
 groundGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-var groundMat = new THREE.MeshPhongMaterial({ color: 0x4a6b3a, opacity: 0.8, transparent: true });
+var groundMat = new THREE.MeshPhongMaterial({ color: 0x4a6b3a, opacity: 0.5, transparent: true });
 var groundL = new THREE.Mesh(groundGeo, groundMat);
 groundL.position.set(0, -0.1, 240); roadGroup3.add(groundL);
 var groundR = new THREE.Mesh(groundGeo.clone(), groundMat);
@@ -1769,31 +1782,54 @@ _3dCanvas.addEventListener('wheel', function(e) {
 function setViewport(view) {
     currentView = view;
     var is2D = (view === 'top');
-    // Show Three.js canvas only for 3D views
     _3dCanvas.style.display = is2D ? 'none' : '';
-    // Overlay canvas: visible only in top view (2D vehicle rendering).
-    // In 3D views, hide it so flat 2D cars don't appear on top of 3D meshes.
+    _3dCanvas.style.opacity = is2D ? '1.0' : '0.72';
     _oc.style.display = is2D ? '' : 'none';
 
-    // Start/stop 3D render loop
     if (!is2D && !_3dAnimRunning) {
         _3dAnimRunning = true; _sync3DMeshes(); _animate3D();
     } else if (is2D) {
         _3dAnimRunning = false;
-        renderer.clear();   // blank the 3D canvas when not in use
+        renderer.clear();
     }
 
-    // Show Leaflet map for top view; hide for 3D (it shows through alpha)
-    document.getElementById('t3dMiniMap').style.visibility = is2D ? 'visible' : 'hidden';
+    var mapEl = document.getElementById('t3dMiniMap');
+    mapEl.style.visibility = 'visible';
+    mapEl.style.opacity = is2D ? '1.0' : '0.55';
 
-    // Split mode labels
+    var locBadge = document.getElementById('t3dLocationBadge');
+    if (locBadge) {
+        locBadge.style.display = is2D ? 'none' : '';
+        _updateLocationBadge();
+    }
+
     ['labelA','labelB','labelC'].forEach(function(id) {
         document.getElementById(id).style.display = view === 'split' ? '' : 'none';
     });
-    // Force bridge re-projection — canvas dimensions may have changed
     _bridgeDirty = true;
     if (_map) _map.invalidateSize();
     console.log('[T3D] Viewport set: ' + view + ' bridge dirty');
+}
+
+function _updateLocationBadge() {
+    var hwyEl = document.getElementById('t3dLocHwy');
+    var zoneEl = document.getElementById('t3dLocZone');
+    var coordsEl = document.getElementById('t3dLocCoords');
+    if (!hwyEl || !zoneEl || !coordsEl) return;
+    var hwSelect = document.getElementById('t3dHighway');
+    var hwName = '-';
+    if (hwSelect && hwSelect.selectedIndex >= 0) {
+        hwName = hwSelect.options[hwSelect.selectedIndex].text.trim();
+    }
+    if (HW) hwName = HW;
+    var zoneName = '-';
+    if (selectedZoneId && T3D_ZONES && T3D_ZONES.length) {
+        var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+        if (z) zoneName = z.zoneName || z.zoneId || '-';
+    }
+    hwyEl.textContent = hwName;
+    zoneEl.textContent = zoneName !== '-' ? ('Zone: ' + zoneName) : '';
+    coordsEl.textContent = _mapCtrLat.toFixed(4) + 'N, ' + _mapCtrLon.toFixed(4) + 'W';
 }
 
 // View buttons
