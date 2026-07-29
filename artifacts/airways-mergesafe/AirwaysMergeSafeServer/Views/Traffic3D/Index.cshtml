@@ -1482,89 +1482,94 @@ function _make3DVehicle(ev, vc, vd) {
     });
 
     // ── Vehicle ID + maker logo label sprite ──
-    // Creates a floating canvas-textured sprite above the vehicle showing
-    // the vehicle ID and the maker's logo. Always faces the camera.
-    var vidShort = (vd && vd.vid) ? vd.vid.slice(0, 12) : '';
+    // Floating canvas-textured sprite above the vehicle. NOT added to the
+    // vehicle group — it's added to the scene directly so it doesn't rotate
+    // with the vehicle and always stays above it. Positioned in _animate3D.
+    var vidShort = (vd && vd.vid) ? vd.vid.slice(0, 14) : '';
     var makeName = (vd && vd.make) ? vd.make : '';
     var badge = BRAND_BADGES[makeName];
     var logoImg = BRAND_LOGO_IMAGES[makeName];
 
-    // Create label canvas
+    // High-res canvas for crisp text at distance
     var labelCanvas = document.createElement('canvas');
-    labelCanvas.width = 320; labelCanvas.height = 80;
+    labelCanvas.width = 512; labelCanvas.height = 128;
     var lx = labelCanvas.getContext('2d');
 
-    // Background pill (semi-transparent dark)
-    lx.fillStyle = 'rgba(20, 30, 45, 0.82)';
-    lx.roundRect(4, 8, 312, 64, 12);
+    // Background pill (darker for readability)
+    lx.fillStyle = 'rgba(15, 20, 35, 0.92)';
+    lx.beginPath();
+    lx.roundRect(6, 12, 500, 104, 16);
     lx.fill();
-    lx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-    lx.lineWidth = 1.5;
+    lx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    lx.lineWidth = 2.5;
     lx.stroke();
 
-    // Maker logo on the left
+    // Maker logo on the left (larger)
     if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
-        // Draw circular logo
         lx.save();
         lx.beginPath();
-        lx.arc(36, 40, 24, 0, Math.PI * 2);
+        lx.arc(56, 64, 38, 0, Math.PI * 2);
         lx.clip();
-        lx.drawImage(logoImg, 12, 16, 48, 48);
+        lx.drawImage(logoImg, 18, 26, 76, 76);
         lx.restore();
-        // Ring around logo
         lx.beginPath();
-        lx.arc(36, 40, 25, 0, Math.PI * 2);
-        lx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-        lx.lineWidth = 1.5;
+        lx.arc(56, 64, 40, 0, Math.PI * 2);
+        lx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        lx.lineWidth = 2;
         lx.stroke();
     } else if (badge) {
-        // Colored circle with initials
         lx.beginPath();
-        lx.arc(36, 40, 22, 0, Math.PI * 2);
+        lx.arc(56, 64, 35, 0, Math.PI * 2);
         lx.fillStyle = badge.color;
         lx.fill();
-        lx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-        lx.lineWidth = 1.5;
+        lx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+        lx.lineWidth = 2.5;
         lx.stroke();
         lx.fillStyle = '#fff';
-        lx.font = 'bold 18px Arial';
+        lx.font = 'bold 28px Arial';
         lx.textAlign = 'center';
         lx.textBaseline = 'middle';
-        lx.fillText(badge.initials.slice(0, 3), 36, 41);
+        lx.fillText(badge.initials.slice(0, 3), 56, 66);
     }
 
-    // Vehicle ID text (bold, white)
+    // Vehicle ID text (bold, white, larger)
     lx.fillStyle = '#ffffff';
-    lx.font = 'bold 18px monospace';
+    lx.font = 'bold 30px monospace';
     lx.textAlign = 'left';
     lx.textBaseline = 'middle';
-    lx.fillText(vidShort, 72, 28);
+    lx.fillText(vidShort, 110, 42);
 
-    // Make name + category (smaller, light grey)
+    // Make name + category (light grey)
     var catName = vc ? vc.category : '';
     var subText = makeName + (makeName && catName ? ' · ' : '') + catName;
-    lx.fillStyle = 'rgba(200, 210, 225, 0.9)';
-    lx.font = '14px Arial';
-    lx.fillText(subText.slice(0, 28), 72, 54);
+    lx.fillStyle = 'rgba(210, 220, 235, 0.95)';
+    lx.font = '22px Arial';
+    lx.fillText(subText.slice(0, 26), 110, 84);
 
-    // Speed badge (right side)
+    // Speed badge (amber, right side)
     if (vd && vd.speedMph) {
         var spdText = Math.round(vd.speedMph) + ' mph';
-        lx.fillStyle = 'rgba(253, 224, 71, 0.9)';
-        lx.font = 'bold 14px monospace';
+        lx.fillStyle = 'rgba(253, 224, 71, 1.0)';
+        lx.font = 'bold 22px monospace';
         lx.textAlign = 'right';
-        lx.fillText(spdText, 308, 40);
+        lx.fillText(spdText, 494, 64);
     }
 
     var labelTex = new THREE.CanvasTexture(labelCanvas);
     labelTex.needsUpdate = true;
-    var labelMat = new THREE.SpriteMaterial({ map: labelTex, transparent: true, depthTest: false });
+    labelTex.minFilter = THREE.LinearFilter;
+    labelTex.magFilter = THREE.LinearFilter;
+    var labelMat = new THREE.SpriteMaterial({
+        map: labelTex, transparent: true, depthTest: false,
+        depthWrite: false, sizeAttenuation: true
+    });
     var labelSprite = new THREE.Sprite(labelMat);
-    labelSprite.scale.set(16, 4, 1);
-    labelSprite.position.y = h + 3.5;
+    labelSprite.scale.set(50, 12.5, 1);
     labelSprite.renderOrder = 999;
-    group.add(labelSprite);
+    // Do NOT add to group — add to scene directly so it doesn't rotate
+    // with the vehicle. Position is updated in _animate3D.
     group.userData.labelSprite = labelSprite;
+    group.userData.labelHeight = h + 6;
 
     return group;
 }
@@ -1573,7 +1578,11 @@ function _make3DVehicle(ev, vc, vd) {
 function _sync3DMeshes() {
     // Remove stale meshes (vehicle no longer in vehicleData)
     vehicleMeshes3 = vehicleMeshes3.filter(function(m) {
-        if (!vehicleData.has(m.userData.vid)) { scene3.remove(m); return false; }
+        if (!vehicleData.has(m.userData.vid)) {
+            if (m.userData.labelSprite) scene3.remove(m.userData.labelSprite);
+            scene3.remove(m);
+            return false;
+        }
         return true;
     });
     // Add new meshes for vehicles not yet in the 3D scene
@@ -1697,11 +1706,13 @@ function _animate3D() {
         // Vehicles past the end of the highway are removed from the scene
         if (ud.isNS) {
             if (m.position.z > 880 || m.position.z < -880) {
+                if (m.userData.labelSprite) scene3.remove(m.userData.labelSprite);
                 scene3.remove(m);
                 vehicleMeshes3 = vehicleMeshes3.filter(function(x){ return x !== m; });
             }
         } else {
             if (m.position.x > 880 || m.position.x < -880) {
+                if (m.userData.labelSprite) scene3.remove(m.userData.labelSprite);
                 scene3.remove(m);
                 vehicleMeshes3 = vehicleMeshes3.filter(function(x){ return x !== m; });
             }
@@ -1715,12 +1726,20 @@ function _animate3D() {
         });
     }
 
-    // Scale label sprites based on camera distance for consistent readability
+    // ── Position and scale label sprites in scene coordinates ──
+    // Labels are NOT children of the vehicle group (so they don't rotate).
+    // We update their world position to follow the vehicle each frame.
     vehicleMeshes3.forEach(function(m) {
         if (m.userData.labelSprite) {
+            var spr = m.userData.labelSprite;
+            // Only add to scene once
+            if (!spr.parent) scene3.add(spr);
+            // Position above the vehicle in world coords
+            spr.position.set(m.position.x, m.position.y + (m.userData.labelHeight || 6), m.position.z);
+            // Scale based on camera distance for consistent readability
             var dist = camP3.position.distanceTo(m.position);
-            var scale = Math.max(8, Math.min(28, dist * 0.08));
-            m.userData.labelSprite.scale.set(scale, scale * 0.25, 1);
+            var w = Math.max(30, Math.min(80, dist * 0.22));
+            spr.scale.set(w, w * 0.25, 1);
         }
     });
 
