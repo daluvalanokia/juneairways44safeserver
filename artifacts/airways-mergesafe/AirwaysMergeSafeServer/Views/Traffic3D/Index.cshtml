@@ -1387,6 +1387,14 @@ document.querySelectorAll('#viewToggle button').forEach(function(btn) {
 // ── Highway dropdown change — AJAX refresh (no page reload) ──────────
 async function t3dHighwayChanged(newHighwayId) {
     if (!newHighwayId || newHighwayId === HW) return;
+    // When sim is ON, do NOT change anything — the sim controls the highway.
+    // Changing the dropdown would clear zone/server and break the 3s sim poll.
+    if (simRunning) {
+        console.log('[T3D] t3dHighwayChanged: BLOCKED — sim is running (HW stays ' + (_simHwId || HW) + ')');
+        var hwSelEl = document.getElementById('hwSel');
+        if (hwSelEl) hwSelEl.value = _simHwId || HW;
+        return;
+    }
     HW = newHighwayId;
     localStorage.setItem('t3d_selectedHw', HW);
     selectedZoneId = ''; selectedServerId = '';
