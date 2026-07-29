@@ -1399,7 +1399,7 @@ function _getSideTexture(make) {
 }
 
 // ── 3D vehicle mesh factory — textured box with side-view logo ──
-function _make3DVehicle(ev, vc) {
+function _make3DVehicle(ev, vc, vd) {
     var l = 4.5, w = 1.9, h = 1.4;
     if (vc.category === 'truck') { l = 9; w = 2.4; h = 2.8; }
     else if (vc.category === 'suv') { l = 5; w = 2.1; h = 1.8; }
@@ -1481,6 +1481,91 @@ function _make3DVehicle(ev, vc) {
         });
     });
 
+    // ── Vehicle ID + maker logo label sprite ──
+    // Creates a floating canvas-textured sprite above the vehicle showing
+    // the vehicle ID and the maker's logo. Always faces the camera.
+    var vidShort = (vd && vd.vid) ? vd.vid.slice(0, 12) : '';
+    var makeName = (vd && vd.make) ? vd.make : '';
+    var badge = BRAND_BADGES[makeName];
+    var logoImg = BRAND_LOGO_IMAGES[makeName];
+
+    // Create label canvas
+    var labelCanvas = document.createElement('canvas');
+    labelCanvas.width = 320; labelCanvas.height = 80;
+    var lx = labelCanvas.getContext('2d');
+
+    // Background pill (semi-transparent dark)
+    lx.fillStyle = 'rgba(20, 30, 45, 0.82)';
+    lx.roundRect(4, 8, 312, 64, 12);
+    lx.fill();
+    lx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    lx.lineWidth = 1.5;
+    lx.stroke();
+
+    // Maker logo on the left
+    if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
+        // Draw circular logo
+        lx.save();
+        lx.beginPath();
+        lx.arc(36, 40, 24, 0, Math.PI * 2);
+        lx.clip();
+        lx.drawImage(logoImg, 12, 16, 48, 48);
+        lx.restore();
+        // Ring around logo
+        lx.beginPath();
+        lx.arc(36, 40, 25, 0, Math.PI * 2);
+        lx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        lx.lineWidth = 1.5;
+        lx.stroke();
+    } else if (badge) {
+        // Colored circle with initials
+        lx.beginPath();
+        lx.arc(36, 40, 22, 0, Math.PI * 2);
+        lx.fillStyle = badge.color;
+        lx.fill();
+        lx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        lx.lineWidth = 1.5;
+        lx.stroke();
+        lx.fillStyle = '#fff';
+        lx.font = 'bold 18px Arial';
+        lx.textAlign = 'center';
+        lx.textBaseline = 'middle';
+        lx.fillText(badge.initials.slice(0, 3), 36, 41);
+    }
+
+    // Vehicle ID text (bold, white)
+    lx.fillStyle = '#ffffff';
+    lx.font = 'bold 18px monospace';
+    lx.textAlign = 'left';
+    lx.textBaseline = 'middle';
+    lx.fillText(vidShort, 72, 28);
+
+    // Make name + category (smaller, light grey)
+    var catName = vc ? vc.category : '';
+    var subText = makeName + (makeName && catName ? ' · ' : '') + catName;
+    lx.fillStyle = 'rgba(200, 210, 225, 0.9)';
+    lx.font = '14px Arial';
+    lx.fillText(subText.slice(0, 28), 72, 54);
+
+    // Speed badge (right side)
+    if (vd && vd.speedMph) {
+        var spdText = Math.round(vd.speedMph) + ' mph';
+        lx.fillStyle = 'rgba(253, 224, 71, 0.9)';
+        lx.font = 'bold 14px monospace';
+        lx.textAlign = 'right';
+        lx.fillText(spdText, 308, 40);
+    }
+
+    var labelTex = new THREE.CanvasTexture(labelCanvas);
+    labelTex.needsUpdate = true;
+    var labelMat = new THREE.SpriteMaterial({ map: labelTex, transparent: true, depthTest: false });
+    var labelSprite = new THREE.Sprite(labelMat);
+    labelSprite.scale.set(16, 4, 1);
+    labelSprite.position.y = h + 3.5;
+    labelSprite.renderOrder = 999;
+    group.add(labelSprite);
+    group.userData.labelSprite = labelSprite;
+
     return group;
 }
 
@@ -1495,7 +1580,7 @@ function _sync3DMeshes() {
     vehicleData.forEach(function(vd, vid) {
         var exists = vehicleMeshes3.find(function(m){ return m.userData.vid === vid; });
         if (!exists) {
-            var mesh = _make3DVehicle(vd.ev, vd.vc);
+            var mesh = _make3DVehicle(vd.ev, vd.vc, vd);
 
             // ── Position vehicle along the 3D road based on its relative ──
             // ── position along the highway bridge path ───────────────────
@@ -1629,6 +1714,15 @@ function _animate3D() {
             if (c.userData && c.userData.isLamp) c.material.emissiveIntensity = 0.2 + Math.random() * 0.2;
         });
     }
+
+    // Scale label sprites based on camera distance for consistent readability
+    vehicleMeshes3.forEach(function(m) {
+        if (m.userData.labelSprite) {
+            var dist = camP3.position.distanceTo(m.position);
+            var scale = Math.max(8, Math.min(28, dist * 0.08));
+            m.userData.labelSprite.scale.set(scale, scale * 0.25, 1);
+        }
+    });
 
     var cw = _3dCanvas.clientWidth, ch = _3dCanvas.clientHeight;
     renderer.setSize(cw, ch, false);
