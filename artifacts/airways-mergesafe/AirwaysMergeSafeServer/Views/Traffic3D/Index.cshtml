@@ -1425,14 +1425,16 @@ async function t3dHighwayChanged(newHighwayId) {
                     zsel.appendChild(opt);
                 });
             }
-            _hwyIsEW = data.isEW;
+            // Do NOT update _hwyIsEW, _bridgePathCoords, _serverBounds,
+            // or _hwBearingDeg here — those are view variables that affect
+            // bridge rendering. They are applied only when the Refresh
+            // button is clicked (refreshAnimation STEP 4).
         } else {
             T3D_ZONES = [];
             if (zsel) zsel.innerHTML = '<option value="">(Select Zone)</option>';
             if (ssel) ssel.innerHTML = '<option value="">(Select Server)</option>';
             console.warn('[T3D] Highway ' + newHighwayId + ' has no zones');
         }
-        if (data.bounds) _serverBounds = data.bounds;
         if (data.servers && ssel) {
             ssel.innerHTML = '<option value="">(Select Server)</option>';
             data.servers.forEach(function(s) {
@@ -1447,10 +1449,6 @@ async function t3dHighwayChanged(newHighwayId) {
                 opt.dataset.zone = s.zoneId || '';
                 ssel.appendChild(opt);
             });
-        }
-        if (typeof data.hwBearing === 'number') _hwBearingDeg = data.hwBearing;
-        if (data.bridgePath && data.bridgePath.length > 0) {
-            _bridgePathCoords = data.bridgePath.map(function(p) { return { lat: p.lat, lon: p.lon }; });
         }
         console.log('[T3D] t3dHighwayChanged: dropdowns updated — click Refresh to apply');
     } catch(e) { console.warn('[T3D] Highway fetch failed:', e); }
@@ -2052,8 +2050,28 @@ async function refreshAnimation() {
     if (badgeOff) badgeOff.style.display = 'none';
 
     // ── Apply dropdown selections to the map view ──
-    // Since dropdown handlers no longer pan the map or redraw the bridge,
-    // we do it here when the Refresh button is clicked.
+    // Fetch highway data fresh (zones, bridge path, bearing, bounds) and
+    // apply ALL view variables here. Dropdown handlers only update state;
+    // the actual view changes happen only when Refresh is clicked.
+    try {
+        var r = await fetch('/Traffic3D/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground');
+        if (r.ok) {
+            var d = await r.json();
+            if (d.highwayCoords && d.highwayCoords.length > 0) {
+                T3D_ZONES = d.highwayCoords.map(function(z) {
+                    return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                             highwayId: z.highwayId, radius: z.radius };
+                });
+            }
+            if (typeof d.isEW === 'boolean') _hwyIsEW = d.isEW;
+            if (typeof d.hwBearing === 'number') _hwBearingDeg = d.hwBearing;
+            if (d.bridgePath && d.bridgePath.length > 0) {
+                _bridgePathCoords = d.bridgePath.map(function(p) { return { lat: p.lat, lon: p.lon }; });
+            }
+            if (d.bounds) _serverBounds = d.bounds;
+        }
+    } catch(e) { console.warn('[T3D] Refresh: highway data fetch failed:', e); }
+
     if (HW && T3D_ZONES.length > 0) {
         var rz = selectedZoneId
             ? T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
