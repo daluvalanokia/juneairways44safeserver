@@ -69,7 +69,12 @@ public class Traffic3DController : Controller
         // Serialize brand logos from VehicleRegistry for 3D scene rendering
         var brandLogos = _vehicleRegistry.All
             .GroupBy(v => v.Make)
-            .ToDictionary(g => g.Key, g => new { svgDataUri = g.First().BrandLogo, sideViewLogo = g.First().SideViewLogo });
+            .ToDictionary(g => g.Key, g => new {
+                svgDataUri    = g.First().BrandLogo,
+                sideViewLogo  = g.First().SideViewLogo,
+                initials      = g.Key.Length >= 2 ? g.Key.Substring(0, 2) : g.Key,
+                color         = g.First().Colors.Length > 0 ? g.First().Colors[0] : "#334155"
+            });
 
         return View(new Traffic3DViewModel
         {
