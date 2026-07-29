@@ -13,6 +13,7 @@ public sealed record VehicleSpec(
     string   Size,
     string   Icon,
     string   BrandLogo,
+    string   SideViewLogo,
     string[] Colors,
     float    LengthM,
     float    WidthM,
