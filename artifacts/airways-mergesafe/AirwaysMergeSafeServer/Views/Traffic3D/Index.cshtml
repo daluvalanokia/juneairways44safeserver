@@ -1589,6 +1589,26 @@ function _make3DVehicle(ev, vc, vd) {
 }
 
 // Build or update 3D mesh from vehicleData
+// ── Compute 3D bounds of the bridge path for vehicle containment ──
+// Returns { minX, maxX, minZ, maxZ } in 3D scene coordinates using norm().
+var _3DBridgeBoundsCache = null;
+function _get3DBridgeBounds() {
+    if (_3DBridgeBoundsCache) return _3DBridgeBoundsCache;
+    var r = { minX: -900, maxX: 900, minZ: -900, maxZ: 900 };
+    if (!_bridgePathCoords || _bridgePathCoords.length < 2) return r;
+    var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (var i = 0; i < _bridgePathCoords.length; i++) {
+        var p = norm(_bridgePathCoords[i].lat, _bridgePathCoords[i].lon);
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.z < minZ) minZ = p.z;
+        if (p.z > maxZ) maxZ = p.z;
+    }
+    r = { minX: minX, maxX: maxX, minZ: minZ, maxZ: maxZ };
+    _3DBridgeBoundsCache = r;
+    return r;
+}
+
 function _sync3DMeshes() {
     // Remove stale meshes (vehicle no longer in vehicleData)
     vehicleMeshes3 = vehicleMeshes3.filter(function(m) {
@@ -1610,48 +1630,38 @@ function _sync3DMeshes() {
             // The 3D road spans -850 to +850 units. Map the vehicle's GPS
             // position to a fraction (0..1) along the bridge path, then
             // scale to the 3D road range.
-            var roadPos = 0;  // center of road by default
-            if (_bridgePathCoords.length >= 2) {
-                var bpStart = _bridgePathCoords[0];
-                var bpEnd   = _bridgePathCoords[_bridgePathCoords.length - 1];
-                var totalLat = bpEnd.lat - bpStart.lat;
-                var totalLon = bpEnd.lon - bpStart.lon;
-                if (Math.abs(totalLat) > Math.abs(totalLon)) {
-                    // N-S highway
-                    roadPos = (vd.lat - bpStart.lat) / totalLat;
-                } else {
-                    // E-W highway
-                    roadPos = (vd.lon - bpStart.lon) / totalLon;
-                }
-                // Clamp to road bounds, then scale to -800..+800
-                roadPos = Math.max(0, Math.min(1, roadPos));
-                roadPos = (roadPos - 0.5) * 1600;  // -800..+800
-            }
+            // ── Position vehicle using norm() — maps GPS to 3D coords ──
+            // norm() uses midLat/midLon (zone/server GPS) as origin and
+            // XZ_SCALE (fits bridge path to ±900). This places the vehicle
+            // at the correct 3D coordinate matching its GPS on the map.
+            var p3 = norm(vd.lat, vd.lon);
 
+            // Lane offset: perpendicular to road direction
             var spd3 = vd.speedMph || 30;
             var dir3v = vd.direction || _hwBearingDeg || 0;
-            var isNS = vd.isNSHwy || false;
-            var lane = (Math.random() - 0.5) * 16;  // lane offset
-            var vx3, vz3, laneX, laneZ;
+            if (dir3v < 0 || isNaN(dir3v)) dir3v = _hwBearingDeg || 90;
+            var rad3 = dir3v * Math.PI / 180;
 
-            if (isNS) {
-                // N-S highway: vehicles travel along Z axis
-                vz3 = spd3 * 0.025 * (Math.cos(dir3v * Math.PI / 180) >= 0 ? 1 : -1);
-                vx3 = 0;
-                laneX = lane;
-                laneZ = 0;
-                mesh.position.set(laneX, 0, roadPos);
-            } else {
-                // E-W highway: vehicles travel along X axis
-                vx3 = spd3 * 0.025 * (Math.cos(dir3v * Math.PI / 180) >= 0 ? 1 : -1);
-                vz3 = 0;
-                laneX = 0;
-                laneZ = lane;
-                mesh.position.set(roadPos, 0, laneZ);
-            }
+            // ── Bearing-based velocity decomposition (matches 2D overlay) ──
+            // bearing 0°=N → +Z, 90°=E → +X, 180°=S → -Z, 270°=W → -X
+            var vx3 = spd3 * 0.025 * Math.sin(rad3);
+            var vz3 = spd3 * 0.025 * Math.cos(rad3);
+
+            // Perpendicular lane offset (perpendicular to bearing)
+            var perpRad = rad3 + Math.PI / 2;
+            var laneOff = (Math.random() - 0.5) * 16;
+            var laneX = Math.cos(perpRad) * laneOff;
+            var laneZ = -Math.sin(perpRad) * laneOff;
+
+            // Clamp initial position to bridge path bounds
+            var bp3 = _get3DBridgeBounds();
+            var px = Math.max(bp3.minX, Math.min(bp3.maxX, p3.x + laneX));
+            var pz = Math.max(bp3.minZ, Math.min(bp3.maxZ, p3.z + laneZ));
+
+            mesh.position.set(px, 0, pz);
             mesh.rotation.y = -(dir3v - 90) * Math.PI / 180;
-            mesh.userData = { vid: vid, vx: vx3, vz: vz3, isNS: isNS,
-                              laneZ: laneZ, laneX: laneX,
+            mesh.userData = { vid: vid, vx: vx3, vz: vz3,
+                              laneX: laneX, laneZ: laneZ,
                               baseY: 0, phase: Math.random() * Math.PI * 2,
                               spd: spd3, dir: dir3v };
             scene3.add(mesh);
@@ -1689,47 +1699,40 @@ function _animate3D() {
         var ud = m.userData;
         var vd = vehicleData.get(ud.vid);
 
-        // Update velocity from live sim data if available
+        // ── Update velocity from live sim data using bearing decomposition ──
         if (vd) {
             var spd = vd.speedMph || 0;
             var dir = vd.direction || _hwBearingDeg || 0;
+            if (dir < 0 || isNaN(dir)) dir = _hwBearingDeg || 90;
             ud.spd = spd;
             ud.dir = dir;
-            if (ud.isNS) {
-                ud.vz = spd * 0.025 * (Math.cos(dir * Math.PI / 180) >= 0 ? 1 : -1);
-            } else {
-                ud.vx = spd * 0.025 * (Math.cos(dir * Math.PI / 180) >= 0 ? 1 : -1);
-            }
-            // Update rotation to match direction
+            // Bearing 0°=N→+Z, 90°=E→+X, 180°=S→-Z, 270°=W→-X
+            var rad = dir * Math.PI / 180;
+            ud.vx = spd * 0.025 * Math.sin(rad);
+            ud.vz = spd * 0.025 * Math.cos(rad);
+            // Update rotation to match direction from input data
             m.rotation.y = -(dir - 90) * Math.PI / 180;
         }
 
-        // Move vehicle in 3D scene coordinates
-        if (ud.isNS) {
-            m.position.z += ud.vz;
-            m.position.x += (ud.laneX - m.position.x) * 0.05;
-        } else {
-            m.position.x += ud.vx;
-            m.position.z += (ud.laneZ - m.position.z) * 0.05;
-        }
+        // Move vehicle in 3D scene coordinates — both X and Z from bearing
+        m.position.x += ud.vx;
+        m.position.z += ud.vz;
+        // Gentle lane keeping — nudge toward lane offset
+        m.position.x += (ud.laneX - (m.position.x - ud.vx)) * 0.02;
+        m.position.z += (ud.laneZ - (m.position.z - ud.vz)) * 0.02;
 
         // Gentle bob for visual life
         m.position.y = (ud.baseY || 0) + Math.sin(_tick3 * 0.15 + ud.phase) * 0.15;
 
-        // Remove vehicles that have exited the road bounds (not wrap)
-        // Vehicles past the end of the highway are removed from the scene
-        if (ud.isNS) {
-            if (m.position.z > 880 || m.position.z < -880) {
-                if (m.userData.labelSprite) scene3.remove(m.userData.labelSprite);
-                scene3.remove(m);
-                vehicleMeshes3 = vehicleMeshes3.filter(function(x){ return x !== m; });
-            }
-        } else {
-            if (m.position.x > 880 || m.position.x < -880) {
-                if (m.userData.labelSprite) scene3.remove(m.userData.labelSprite);
-                scene3.remove(m);
-                vehicleMeshes3 = vehicleMeshes3.filter(function(x){ return x !== m; });
-            }
+        // ── Remove vehicles that exit bridge path coordinate bounds ──
+        // Uses actual bridge path extent in 3D coordinates, not hardcoded ±880
+        var bp = _get3DBridgeBounds();
+        var margin = 30;  // small margin beyond path endpoints
+        if (m.position.x > bp.maxX + margin || m.position.x < bp.minX - margin ||
+            m.position.z > bp.maxZ + margin || m.position.z < bp.minZ - margin) {
+            if (m.userData.labelSprite) scene3.remove(m.userData.labelSprite);
+            scene3.remove(m);
+            vehicleMeshes3 = vehicleMeshes3.filter(function(x){ return x !== m; });
         }
     });
 
@@ -1914,7 +1917,8 @@ function _centerMapOnHighway() {
     console.log('[T3D] Aligned: center=(' + ctrLat.toFixed(4) + ',' + ctrLon.toFixed(4) +
                 ') XZ_SCALE=' + XZ_SCALE.toFixed(1) + ' bridgePts=' + (_bridgePathCoords||[]).length);
 
-    // ── 4. Update 3D zone marker pins on the road ──
+    // ── 4. Invalidate 3D bridge bounds cache + update zone pins ──
+    _3DBridgeBoundsCache = null;
     _update3DZoneMarkers();
 
     // ── 5. Sync map zoom to current 3D camera distance ──
