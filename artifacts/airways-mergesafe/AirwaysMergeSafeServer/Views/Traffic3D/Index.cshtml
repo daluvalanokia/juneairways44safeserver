@@ -1321,6 +1321,14 @@ function _buildRoad3D() {
         em.position.set(0, 0.02, ez);
         roadGroup3.add(em); _roadMeshes3D.push(em);
     });
+
+    // Guard rails (both sides)
+    var railGeo = new THREE.BoxGeometry(1800, 1.2, 0.4);
+    var railMat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa });
+    var rL = new THREE.Mesh(railGeo, railMat); rL.position.set(0, 1.5, rw * 0.5);
+    roadGroup3.add(rL); _roadMeshes3D.push(rL);
+    var rR = new THREE.Mesh(railGeo.clone(), railMat); rR.position.set(0, 1.5, -rw * 0.5);
+    roadGroup3.add(rR); _roadMeshes3D.push(rR);
 }
 _buildRoad3D();
 
@@ -1375,11 +1383,7 @@ for (var li = -15; li <= 15; li += 5) {
     pr.position.set(lx, 0, -40); roadGroup3.add(pr);
 }
 
-// ── Guard rail (both sides of road) ──
-var railGeo = new THREE.BoxGeometry(1800, 1.2, 0.4);
-var railMat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa, metalness: 0.5 });
-var railL = new THREE.Mesh(railGeo, railMat); railL.position.set(0, 1.5, _roadWidth3D * 0.5); roadGroup3.add(railL);
-var railR = new THREE.Mesh(railGeo.clone(), railMat); railR.position.set(0, 1.5, -_roadWidth3D * 0.5); roadGroup3.add(railR);
+// Guard rails moved into _buildRoad3D() above
 
 // ── Distant hills (low-poly ridge on both sides) ──
 for (var hi = 0; hi < 8; hi++) {
