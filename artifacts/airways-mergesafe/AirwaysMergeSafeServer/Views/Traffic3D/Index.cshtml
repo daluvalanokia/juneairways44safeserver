@@ -519,7 +519,7 @@ function _setHighwayCoords(lat, lon, hwId) {
         });
         console.log('[T3D] _setHighwayCoords: using server bridgePath (' + _hwyPath.length + ' pts)');
         if (typeof roadGroup3 !== 'undefined') {
-            roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
+            roadGroup3.rotation.y = -((_hwBearingDeg || 90) - 90) * Math.PI / 180;
         }
         return;
     }
@@ -544,7 +544,7 @@ function _setHighwayCoords(lat, lon, hwId) {
         _hwyPath = [{ lat: lat, lon: lon, zoneId: '' }];
     }
     if (typeof roadGroup3 !== 'undefined') {
-        roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
+        roadGroup3.rotation.y = -((_hwBearingDeg || 90) - 90) * Math.PI / 180;
     }
 }
 
@@ -1674,11 +1674,11 @@ function _animate3D() {
         _sync3DMeshes();
     }
 
-    // Gentle camera orbit for perspective view
-    camP3.position.x = -180 + radius3 * 0.3 * Math.sin(theta3 * 0.2);
+    // Camera orbits around the highway center (3D scene origin = highway midpoint)
+    camP3.position.x = radius3 * 0.35 * Math.sin(theta3);
     camP3.position.y = Math.max(15, radius3 * Math.sin(phi3));
-    camP3.position.z =  90 + radius3 * 0.2 * Math.cos(theta3 * 0.2);
-    camP3.lookAt(60, 5, 0);
+    camP3.position.z = radius3 * 0.35 * Math.cos(theta3);
+    camP3.lookAt(0, 0, 0);
 
     // ── Velocity-driven vehicle movement (3D scene scale) ──
     // The 3D road is 1800 units long. Vehicles move at speed * 0.025
@@ -1787,6 +1787,8 @@ _3dCanvas.addEventListener('wheel', function(e) {
     e.preventDefault();
     e.stopPropagation();
     radius3 = Math.max(40, Math.min(700, radius3 + e.deltaY * 0.3));
+    // Sync Leaflet map zoom with 3D camera distance
+    _syncMapZoom3D();
 }, { passive: false });
 // Touch support — pinch zoom + drag
 var _touchPrev = null, _touchDist = null;
@@ -1813,6 +1815,7 @@ _3dCanvas.addEventListener('touchmove', function(e) {
         var d = Math.sqrt(dx*dx + dy*dy);
         radius3 = Math.max(40, Math.min(700, radius3 + (_touchDist - d) * 0.5));
         _touchDist = d;
+        _syncMapZoom3D();
     }
     e.preventDefault();
 }, { passive: false });
@@ -1829,7 +1832,6 @@ function setViewport(view) {
     var is2D = (view === 'top');
     _3dCanvas.style.display = is2D ? 'none' : '';
     _3dCanvas.style.opacity = is2D ? '1.0' : '0.72';
-    // Ensure 3D canvas captures pointer events in 3D view
     _3dCanvas.style.pointerEvents = is2D ? 'none' : 'auto';
     _oc.style.display = is2D ? '' : 'none';
 
@@ -1844,9 +1846,6 @@ function setViewport(view) {
     mapEl.style.visibility = 'visible';
     mapEl.style.opacity = is2D ? '1.0' : '0.55';
 
-    // ── Disable Leaflet interactions in 3D view to prevent event conflicts ──
-    // Leaflet's drag handler and event listeners interfere with the 3D
-    // canvas zoom/drag. Disable them when the 3D canvas is active.
     if (_map) {
         if (is2D) {
             _map.dragging.enable();
@@ -1854,6 +1853,9 @@ function setViewport(view) {
         } else {
             _map.dragging.disable();
             _map.getContainer().style.pointerEvents = 'none';
+            // ── Center map on highway midpoint + sync zoom ──
+            _centerMapOnHighway();
+            _syncMapZoom3D();
         }
     }
 
@@ -1869,6 +1871,35 @@ function setViewport(view) {
     _bridgeDirty = true;
     if (_map) _map.invalidateSize();
     console.log('[T3D] Viewport set: ' + view + ' bridge dirty');
+}
+
+// ── Center the Leaflet map on the highway midpoint GPS ──
+// Computes the midpoint of the bridge path and pans the map there so
+// the zone/server GPS is centered, matching the 3D scene origin.
+function _centerMapOnHighway() {
+    if (!_map || !_bridgePathCoords || _bridgePathCoords.length < 2) return;
+    var bp0 = _bridgePathCoords[0];
+    var bpN = _bridgePathCoords[_bridgePathCoords.length - 1];
+    var midLat = (bp0.lat + bpN.lat) / 2;
+    var midLon = (bp0.lon + bpN.lon) / 2;
+    _mapCtrLat = midLat;
+    _mapCtrLon = midLon;
+    midLat = midLat;  // update global for norm()
+    midLon = midLon;
+    _map.setView([midLat, midLon], _map.getZoom(), { animate: false });
+    console.log('[T3D] Map centered on highway midpoint: ' + midLat.toFixed(4) + ', ' + midLon.toFixed(4));
+}
+
+// ── Sync Leaflet map zoom with 3D camera distance (radius3) ──
+// Maps radius3 range (40-700) to Leaflet zoom (18-11) so zooming
+// in/out the 3D scene also zooms the map proportionally.
+function _syncMapZoom3D() {
+    if (!_map) return;
+    var z = 18 - (radius3 - 40) / (700 - 40) * 7;
+    z = Math.max(10, Math.min(18, Math.round(z)));
+    if (z !== _map.getZoom()) {
+        _map.setZoom(z, { animate: false });
+    }
 }
 
 function _updateLocationBadge() {
@@ -2602,7 +2633,7 @@ async function refreshAnimation() {
             _setHighwayCoords(rz.lat, rz.lon, rz.highwayId || HW);
         }
         if (typeof roadGroup3 !== 'undefined') {
-            roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
+            roadGroup3.rotation.y = -((_hwBearingDeg || 90) - 90) * Math.PI / 180;
         }
         _bridgeDirty = true;
         _forceBridgeRedraw();
@@ -2798,7 +2829,7 @@ async function refreshScene() {
             _setHighwayCoords(T3D_ZONES[0].lat, T3D_ZONES[0].lon, HW);
             _hwyIsEW = data.isEW;
             if (typeof roadGroup3 !== 'undefined') {
-                roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
+                roadGroup3.rotation.y = -((_hwBearingDeg || 90) - 90) * Math.PI / 180;
             }
             // ── PAN MAP to the selected zone (or first zone) ──
             // Without this, the map stays at its previous location and the
