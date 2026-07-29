@@ -1205,11 +1205,15 @@ function _renderLoop() {
         if (_octx && _oc) {
             _octx.clearRect(0, 0, _oc.width, _oc.height);
             _updateVehiclePositions();
-            // Skip 2D bridge overlay when 3D perspective view is active —
-            // the Three.js scene renders its own road, and the 2D bridge
-            // polyline would overlap/clutter the 3D canvas.
-            if (currentView !== 'perspective') _drawHighwayOverlay();
-            _drawVehicles();
+            // ── 2D overlay only renders in top view ──
+            // In perspective/side views, the Three.js 3D meshes handle
+            // vehicle rendering. Drawing 2D flat cars on the overlay canvas
+            // (z-index:2, above the 3D canvas at z-index:1) would show
+            // flat vehicles on top of the 3D scene.
+            if (currentView === 'top') {
+                _drawHighwayOverlay();
+                _drawVehicles();
+            }
         }
     } catch(e) {
         _renderErrors++;
@@ -1615,8 +1619,9 @@ function setViewport(view) {
     var is2D = (view === 'top');
     // Show Three.js canvas only for 3D views
     _3dCanvas.style.display = is2D ? 'none' : '';
-    // Overlay canvas always visible
-    _oc.style.display = '';
+    // Overlay canvas: visible only in top view (2D vehicle rendering).
+    // In 3D views, hide it so flat 2D cars don't appear on top of 3D meshes.
+    _oc.style.display = is2D ? '' : 'none';
 
     // Start/stop 3D render loop
     if (!is2D && !_3dAnimRunning) {
