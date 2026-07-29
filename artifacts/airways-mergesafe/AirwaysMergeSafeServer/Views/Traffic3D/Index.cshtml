@@ -751,7 +751,7 @@ function _drawHighwayOverlay() {
     } else {
         zoomFactor = Math.pow(2, (_leafletZoom || 15) - 15);
     }
-    var roadPx = Math.max(10, Math.round(20 * zoomFactor));
+    var roadPx = Math.max(4, Math.round(6 * zoomFactor));
 
     // ── Project ALL highway zone points to screen coords ────────────────
     var pts = _hwyPath.map(function(p) {
@@ -1274,44 +1274,55 @@ var roadGroup3 = new THREE.Group();
 scene3.add(roadGroup3);
 
 // Road surface
-var _roadWidth3D = Math.max(12, Math.min(52, 52 * (XZ_SCALE / 800) * 0.3 + 12));
-var roadGeo3 = new THREE.PlaneGeometry(1800, _roadWidth3D);
-roadGeo3.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-var roadMat3 = new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.92, transparent: true });
-roadGroup3.add(new THREE.Mesh(roadGeo3, roadMat3));
+// ── Dynamic road geometry — rebuilt when highway loads ──────────────
+// Road width is fixed at a visually appropriate size (20 units) — it
+// represents the visual lane structure, not real-world meters.
+// Ground planes removed: they were enormous cream strips obscuring the map.
+var _roadWidth3D = 20;   // fixed visual width, NOT scaled with XZ_SCALE
+var _roadMeshes3D = [];  // rebuildable road elements
 
-// Centre line (yellow)
-var clGeo = new THREE.PlaneGeometry(1800, 1.5);
-clGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-var clMesh = new THREE.Mesh(clGeo, new THREE.MeshPhongMaterial({ color: 0xfde047 }));
-clMesh.position.y = 0.02; roadGroup3.add(clMesh);
+function _buildRoad3D() {
+    // Remove old road elements
+    _roadMeshes3D.forEach(function(m) { roadGroup3.remove(m); });
+    _roadMeshes3D = [];
 
-// Lane dashes (white)
-for (var di = -20; di <= 20; di++) {
-    var dg = new THREE.PlaneGeometry(14, 0.5);
-    dg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-    var dm = new THREE.Mesh(dg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
-    dm.position.set(di * 40, 0.02, -_roadWidth3D * 0.25); roadGroup3.add(dm.clone());
-    dm.position.z = _roadWidth3D * 0.25; roadGroup3.add(dm);
+    var rw = _roadWidth3D;
+
+    // Road surface
+    var roadGeo3 = new THREE.PlaneGeometry(1800, rw);
+    roadGeo3.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+    var roadMat3 = new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.92, transparent: true });
+    var roadMesh = new THREE.Mesh(roadGeo3, roadMat3);
+    roadGroup3.add(roadMesh); _roadMeshes3D.push(roadMesh);
+
+    // Centre line (yellow)
+    var clGeo = new THREE.PlaneGeometry(1800, 0.6);
+    clGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+    var clMesh = new THREE.Mesh(clGeo, new THREE.MeshPhongMaterial({ color: 0xfde047 }));
+    clMesh.position.y = 0.02;
+    roadGroup3.add(clMesh); _roadMeshes3D.push(clMesh);
+
+    // Lane dashes (white) — 4 lanes, ±rw/4 from centre
+    [-rw * 0.25, rw * 0.25].forEach(function(lz) {
+        for (var di = -20; di <= 20; di++) {
+            var dg = new THREE.PlaneGeometry(8, 0.3);
+            dg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+            var dm = new THREE.Mesh(dg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
+            dm.position.set(di * 40, 0.02, lz);
+            roadGroup3.add(dm); _roadMeshes3D.push(dm);
+        }
+    });
+
+    // Road edge lines (white solid)
+    [-rw * 0.5 + 0.3, rw * 0.5 - 0.3].forEach(function(ez) {
+        var eg = new THREE.PlaneGeometry(1800, 0.4);
+        eg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+        var em = new THREE.Mesh(eg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
+        em.position.set(0, 0.02, ez);
+        roadGroup3.add(em); _roadMeshes3D.push(em);
+    });
 }
-
-// ── Roadside ground (grass/dirt strips on both sides) ──
-var groundGeo = new THREE.PlaneGeometry(1800, 400);
-groundGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-var groundMat = new THREE.MeshPhongMaterial({ color: 0x4a6b3a, opacity: 0.5, transparent: true });
-var groundL = new THREE.Mesh(groundGeo, groundMat);
-groundL.position.set(0, -0.1, 240); roadGroup3.add(groundL);
-var groundR = new THREE.Mesh(groundGeo.clone(), groundMat);
-groundR.position.set(0, -0.1, -240); roadGroup3.add(groundR);
-
-// ── Roadside embankment (raised terrain on both sides) ──
-var _embankW3D = _roadWidth3D * 0.8;
-var embankGeo = new THREE.BoxGeometry(1800, 8, _embankW3D);
-var embankMat = new THREE.MeshPhongMaterial({ color: 0x6b7d5a });
-var embankL = new THREE.Mesh(embankGeo, embankMat);
-embankL.position.set(0, 2, _roadWidth3D * 1.3); roadGroup3.add(embankL);
-var embankR = new THREE.Mesh(embankGeo.clone(), embankMat);
-embankR.position.set(0, 2, -_roadWidth3D * 1.3); roadGroup3.add(embankR);
+_buildRoad3D();
 
 // ── Roadside trees (cone + trunk) ──
 var trunkGeo = new THREE.CylinderGeometry(1.2, 1.5, 6, 6);
@@ -1651,7 +1662,7 @@ function _sync3DMeshes() {
 
             // Perpendicular lane offset (perpendicular to bearing)
             var perpRad = rad3 + Math.PI / 2;
-            var laneOff = (Math.random() - 0.5) * 16;
+            var laneOff = (Math.random() - 0.5) * _roadWidth3D * 0.7;
             var laneX = Math.cos(perpRad) * laneOff;
             var laneZ = -Math.sin(perpRad) * laneOff;
 
@@ -1919,7 +1930,9 @@ function _centerMapOnHighway() {
     console.log('[T3D] Aligned: center=(' + ctrLat.toFixed(4) + ',' + ctrLon.toFixed(4) +
                 ') XZ_SCALE=' + XZ_SCALE.toFixed(1) + ' bridgePts=' + (_bridgePathCoords||[]).length);
 
-    // ── 4. Invalidate 3D bridge bounds cache + update zone pins ──
+    // ── 4. Rebuild road geometry + invalidate cache + update zone pins ──
+    // Road geometry uses bearing-aligned rotation; road width is fixed.
+    if (typeof _buildRoad3D === 'function') _buildRoad3D();
     _3DBridgeBoundsCache = null;
     _update3DZoneMarkers();
 
