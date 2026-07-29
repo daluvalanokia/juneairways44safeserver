@@ -1419,10 +1419,11 @@ function _make3DVehicle(ev, vc, vd) {
     else if (vc.category === 'van') { l = 5.5; w = 2.1; h = 2.2; }
     else if (vc.category === 'motorcycle') { l = 2.2; w = 0.6; h = 1.1; }
 
-    var make = (ev && ev.vehicle_id) ? ev.vehicle_id.split('-')[0] : '';
-    // Try to find brand from vehicle data
-    var vd = vehicleData.get(ev && ev.id ? ev.id : '');
-    if (vd && vd.make) make = vd.make;
+    // Extract make from the passed vd parameter (from _sync3DMeshes).
+    // Do NOT re-lookup by ev.id — that's the DB integer ID, not the
+    // vehicle_id string used as the vehicleData Map key.
+    var make = (vd && vd.make) ? vd.make
+             : (ev && ev.vehicle_id) ? ev.vehicle_id.split('-')[0] : '';
 
     var group = new THREE.Group();
 
