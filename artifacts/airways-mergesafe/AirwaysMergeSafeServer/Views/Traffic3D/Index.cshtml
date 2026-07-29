@@ -220,7 +220,7 @@
 
 // ── Constants ─────────────────────────────────────────────────────────
 let  HW        = '@hw';
-const XZ_SCALE  = 800;   // kept for 3D perspective view
+let  XZ_SCALE  = 800;   // dynamic: updated to fit highway bridge path span
 const ALT_SCALE = 0.05;
 
 // ── Initial events preloaded by controller ────────────────────────────
@@ -751,7 +751,7 @@ function _drawHighwayOverlay() {
     } else {
         zoomFactor = Math.pow(2, (_leafletZoom || 15) - 15);
     }
-    var roadPx = Math.max(24, Math.round(48 * zoomFactor));
+    var roadPx = Math.max(10, Math.round(20 * zoomFactor));
 
     // ── Project ALL highway zone points to screen coords ────────────────
     var pts = _hwyPath.map(function(p) {
@@ -1873,21 +1873,57 @@ function setViewport(view) {
     console.log('[T3D] Viewport set: ' + view + ' bridge dirty');
 }
 
-// ── Center the Leaflet map on the highway midpoint GPS ──
-// Computes the midpoint of the bridge path and pans the map there so
-// the zone/server GPS is centered, matching the 3D scene origin.
+// ── Center the Leaflet map on the selected zone/server GPS ──
+// The 3D scene origin (0,0,0) represents the zone/server coordinate.
+// The bridge path extends in both directions from this center point.
+// XZ_SCALE is adjusted so the full bridge path fits within the 3D road
+// (±900 units), making the 3D animation align with the map highway.
 function _centerMapOnHighway() {
-    if (!_map || !_bridgePathCoords || _bridgePathCoords.length < 2) return;
-    var bp0 = _bridgePathCoords[0];
-    var bpN = _bridgePathCoords[_bridgePathCoords.length - 1];
-    var midLat = (bp0.lat + bpN.lat) / 2;
-    var midLon = (bp0.lon + bpN.lon) / 2;
-    _mapCtrLat = midLat;
-    _mapCtrLon = midLon;
-    midLat = midLat;  // update global for norm()
-    midLon = midLon;
-    _map.setView([midLat, midLon], _map.getZoom(), { animate: false });
-    console.log('[T3D] Map centered on highway midpoint: ' + midLat.toFixed(4) + ', ' + midLon.toFixed(4));
+    if (!_map) return;
+
+    // ── 1. Find the selected zone/server GPS as the center ──
+    var ctrLat = _mapCtrLat, ctrLon = _mapCtrLon;
+    if (selectedZoneId && T3D_ZONES && T3D_ZONES.length) {
+        var z = T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+        if (z && z.lat && z.lon) {
+            ctrLat = z.lat; ctrLon = z.lon;
+        }
+    }
+
+    // ── 2. Compute bridge path span and adjust XZ_SCALE ──
+    // The 3D road is 1800 units (±900). We want the full bridge path
+    // to fit within this range. XZ_SCALE maps GPS degrees → 3D units.
+    // spanDeg = max lat/lon span across bridge path from center
+    if (_bridgePathCoords && _bridgePathCoords.length >= 2) {
+        var maxAbs = 0;
+        for (var i = 0; i < _bridgePathCoords.length; i++) {
+            var dLat = Math.abs(_bridgePathCoords[i].lat - ctrLat);
+            var dLon = Math.abs(_bridgePathCoords[i].lon - ctrLon);
+            if (dLat > maxAbs) maxAbs = dLat;
+            if (dLon > maxAbs) maxAbs = dLon;
+        }
+        if (maxAbs > 0.0001) {
+            XZ_SCALE = 900 / maxAbs;
+        }
+    }
+
+    // ── 3. Update map center and global vars ──
+    _mapCtrLat = ctrLat;
+    _mapCtrLon = ctrLon;
+    // Update the norm() globals (midLat/midLon are used by norm())
+    // These are separate vars in the script scope
+    try { eval('midLat = ' + ctrLat + '; midLon = ' + ctrLon + ';'); } catch(e) {}
+
+    _map.setView([ctrLat, ctrLon], _map.getZoom(), { animate: false });
+    console.log('[T3D] Map centered on zone/server: ' + ctrLat.toFixed(4) + ', ' + ctrLon.toFixed(4) +
+                ' XZ_SCALE=' + XZ_SCALE.toFixed(1));
+
+    // ── 4. Adjust camera radius range proportionally to scene scale ──
+    // At XZ_SCALE=800 (default), radius3 range is 40-700.
+    // Scale proportionally so zoom feels consistent at any highway span.
+    var radiusScale = XZ_SCALE / 800;
+    // Don't change radius3 itself, just let the user zoom — the
+    // proportional XZ_SCALE means the same radius3 shows more/less road.
 }
 
 // ── Sync Leaflet map zoom with 3D camera distance (radius3) ──
@@ -1895,8 +1931,14 @@ function _centerMapOnHighway() {
 // in/out the 3D scene also zooms the map proportionally.
 function _syncMapZoom3D() {
     if (!_map) return;
-    var z = 18 - (radius3 - 40) / (700 - 40) * 7;
-    z = Math.max(10, Math.min(18, Math.round(z)));
+    // Map radius3 (40-700) to Leaflet zoom (18-10) proportionally.
+    // The mapping accounts for XZ_SCALE so the map zoom matches the
+    // 3D scene's visible extent at any highway span.
+    var r = (radius3 - 40) / (700 - 40);   // 0..1
+    // Adjust for XZ_SCALE: larger scale = wider area = lower zoom
+    var scaleAdj = Math.log(XZ_SCALE / 800) / Math.log(2) * 0.5;
+    var z = 18 - r * 8 - scaleAdj;
+    z = Math.max(9, Math.min(18, Math.round(z)));
     if (z !== _map.getZoom()) {
         _map.setZoom(z, { animate: false });
     }
@@ -2761,6 +2803,8 @@ async function refreshScene() {
                     return { lat: p.lat, lon: p.lon };
                 });
                 console.log('[T3D] Bridge path: ' + _bridgePathCoords.length + ' pts bearing=' + _hwBearingDeg.toFixed(1) + '°');
+                // Re-center map on zone/server GPS with updated bridge path
+                if (currentView !== 'top') _centerMapOnHighway();
             }
             // ── DO NOT rebuild dropdowns when all 3 are already set ──
             // The dropdowns were populated by t3dHighwayChanged. Rebuilding
