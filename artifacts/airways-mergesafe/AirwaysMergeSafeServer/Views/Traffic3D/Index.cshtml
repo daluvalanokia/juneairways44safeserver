@@ -240,6 +240,7 @@ function norm(lat, lon) {
 // ── Brand badges from VehicleRegistry ────────────────────────────────
 var BRAND_BADGES = {};
 var BRAND_LOGO_IMAGES = {};
+var BRAND_SIDEVIEW_IMAGES = {};
 (function() {
     try {
         var raw = document.getElementById('brandLogosData');
@@ -249,12 +250,22 @@ var BRAND_LOGO_IMAGES = {};
         Object.keys(data).forEach(function(make) {
             var d = data[make];
             BRAND_BADGES[make] = { color: d.color || '#334155', initials: d.initials || make.slice(0,2).toUpperCase() };
+            // Top-view logo (BrandLogo field)
             if (d.svgDataUri) {
                 var img = new Image();
                 img.src = d.svgDataUri;
                 BRAND_LOGO_IMAGES[make] = img;
             }
+            // Side-view logo (SideViewLogo field)
+            if (d.sideViewLogo) {
+                var img2 = new Image();
+                img2.src = d.sideViewLogo;
+                BRAND_SIDEVIEW_IMAGES[make] = img2;
+            }
         });
+        console.log('[T3D] Brand logos loaded:', Object.keys(BRAND_BADGES).length,
+                     'top-view:', Object.keys(BRAND_LOGO_IMAGES).length,
+                     'side-view:', Object.keys(BRAND_SIDEVIEW_IMAGES).length);
     } catch(e) { console.warn('Brand badge load error:', e); }
 })();
 
@@ -914,6 +925,7 @@ function _drawVehicles() {
         var make  = vd.make || '';
         var badge = BRAND_BADGES[make];
         var logoImg = BRAND_LOGO_IMAGES[make];
+        var sideImg = BRAND_SIDEVIEW_IMAGES[make];
         var dir = vd.direction || 0;
         var spd = vd.speedMph || 0;
 
@@ -971,8 +983,13 @@ function _drawVehicles() {
             _octx.stroke();
         });
 
-        // ── Brand logo centered on car body ───────────────────────────
-        if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
+        // ── Brand side-view logo on car body ───────────────────────────
+        // Side-view logo: wider than tall (80x40 aspect ratio)
+        // Drawn over the car body to show make + side silhouette
+        if (sideImg && sideImg.complete && sideImg.naturalWidth > 0) {
+            _octx.drawImage(sideImg, -carW/2 + 1, -carH/2 - 1, carW - 2, carH + 2);
+        } else if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
+            // Fallback: top-view logo
             _octx.drawImage(logoImg, -10, -7, 20, 14);
         } else if (badge) {
             // Initials badge
