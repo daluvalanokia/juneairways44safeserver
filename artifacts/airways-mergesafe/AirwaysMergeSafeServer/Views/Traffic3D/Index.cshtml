@@ -1522,25 +1522,61 @@ var _tick3 = 0;
 function _animate3D() {
     if (!_3dAnimRunning) return;
     requestAnimationFrame(_animate3D); _tick3++;
+
+    // ── Periodically sync new vehicles from vehicleData into 3D meshes ──
+    // This picks up simulation vehicles that arrived via loadEvents after
+    // the 3D view was activated. Throttled to every ~0.5s (30 frames).
+    if (_tick3 % 30 === 0) {
+        _sync3DMeshes();
+    }
+
     // Gentle camera orbit for perspective view
     camP3.position.x = -180 + radius3 * 0.3 * Math.sin(theta3 * 0.2);
     camP3.position.y = Math.max(15, radius3 * Math.sin(phi3));
     camP3.position.z =  90 + radius3 * 0.2 * Math.cos(theta3 * 0.2);
     camP3.lookAt(60, 5, 0);
 
-    // Animate vehicles
+    // ── Update vehicle positions from live GPS data ──
+    // For sim vehicles, _updateVehiclePositions() keeps the GPS in
+    // vehicleData updated every frame. We read that back to position
+    // the 3D meshes so they follow the actual simulation trajectory.
     vehicleMeshes3.forEach(function(m) {
         var ud = m.userData;
-        if (ud.isNS) {
-            m.position.z += ud.vz;
-            m.position.x += (ud.laneX - m.position.x) * 0.05;
-            if (m.position.z >  850) m.position.z = -850;
-            if (m.position.z < -850) m.position.z =  850;
+        var vd = vehicleData.get(ud.vid);
+
+        if (vd && vd.lat && vd.lon) {
+            // ── GPS-driven position (simulation mode) ──
+            // Use norm() to convert live GPS → 3D scene coordinates.
+            // This ensures 3D vehicles follow the same trajectory as
+            // the 2D overlay vehicles.
+            var p = norm(vd.lat, vd.lon);
+            // Apply lane offset perpendicular to travel direction
+            var laneOff = ud.laneZ || 0;
+            if (ud.isNS) {
+                m.position.x = p.x;
+                m.position.z = p.z;
+            } else {
+                m.position.x = p.x;
+                m.position.z = p.z;
+            }
+            // Rotate vehicle to match direction
+            var dir = vd.direction || _hwBearingDeg || 0;
+            m.rotation.y = -(dir - 90) * Math.PI / 180;
+            // Gentle bob for visual life
+            m.position.y = (ud.baseY || 0) + Math.sin(_tick3 * 0.15 + ud.phase) * 0.15;
         } else {
-            m.position.x += ud.vx;
-            m.position.z += (ud.laneZ - m.position.z) * 0.05;
-            if (m.position.x >  850) m.position.x = -850;
-            if (m.position.x < -850) m.position.x =  850;
+            // ── Velocity-driven fallback (non-sim / no GPS) ──
+            if (ud.isNS) {
+                m.position.z += ud.vz;
+                m.position.x += (ud.laneX - m.position.x) * 0.05;
+                if (m.position.z >  850) m.position.z = -850;
+                if (m.position.z < -850) m.position.z =  850;
+            } else {
+                m.position.x += ud.vx;
+                m.position.z += (ud.laneZ - m.position.z) * 0.05;
+                if (m.position.x >  850) m.position.x = -850;
+                if (m.position.x < -850) m.position.x =  850;
+            }
         }
     });
 
