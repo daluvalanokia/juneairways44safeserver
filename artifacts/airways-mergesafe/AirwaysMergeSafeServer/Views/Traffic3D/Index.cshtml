@@ -1213,10 +1213,11 @@ function _renderLoop() {
         if (_renderErrors <= 5) console.warn('[T3D] Render error #' + _renderErrors + ':', e);
     }
 }
-
 // ── THREE.JS SCENE (Perspective/Side/Split views) ─────────────────────
-// Three.js is kept for the 3D perspective and side-elevation views.
-// In Top view, we use the 2D canvas overlay above instead.
+// Enhanced 3D side-view with textured vehicles, roadside scenery, and
+// a richer camera perspective showing vehicles moving along the road
+// with background scenery (trees, lights, terrain, sky gradient).
+
 const _3dCanvas = document.getElementById('mainCanvas');
 const renderer  = new THREE.WebGLRenderer({ canvas: _3dCanvas, antialias: true, alpha: true });
 renderer.setClearColor(0x000000, 0);
@@ -1224,69 +1225,271 @@ renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(_3dCanvas.clientWidth, _3dCanvas.clientHeight);
 
 const scene3 = new THREE.Scene();
-scene3.fog = new THREE.Fog(0x2a3a2a, 800, 1400);
-scene3.add(new THREE.HemisphereLight(0xbfd4ea, 0x4a6b3a, 0.55));
-scene3.add(new THREE.AmbientLight(0xffffff, 0.45));
-var dir3 = new THREE.DirectionalLight(0xffffff, 1.2);
-dir3.position.set(120, 200, 80); scene3.add(dir3);
+scene3.fog = new THREE.Fog(0xa0c0e0, 600, 1800);
+scene3.add(new THREE.HemisphereLight(0xbfd4ea, 0x4a6b3a, 0.65));
+scene3.add(new THREE.AmbientLight(0xffffff, 0.5));
+var dir3 = new THREE.DirectionalLight(0xfff5e0, 1.4);
+dir3.position.set(120, 250, 80); scene3.add(dir3);
+var dir3b = new THREE.DirectionalLight(0xb0d0ff, 0.5);
+dir3b.position.set(-100, 120, -80); scene3.add(dir3b);
 
-// Road for 3D view — parent group so we can rotate by highway heading
+// ── Sky gradient background (large sphere with gradient material) ──
+var skyGeo = new THREE.SphereGeometry(1800, 32, 16);
+var skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    uniforms: {
+        topColor:    { value: new THREE.Color(0x2a6ab5) },
+        bottomColor: { value: new THREE.Color(0xd0e8f0) },
+        offset:      { value: 200 },
+        exponent:    { value: 0.7 }
+    },
+    vertexShader: 'varying vec3 vWorldPos; void main() { vec4 wp = modelMatrix * vec4(position, 1.0); vWorldPos = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }',
+    fragmentShader: 'uniform vec3 topColor; uniform vec3 bottomColor; uniform float offset; uniform float exponent; varying vec3 vWorldPos; void main() { float h = normalize(vWorldPos + vec3(0.0, offset, 0.0)).y; float t = max(pow(max(h, 0.0), exponent), 0.0); gl_FragColor = vec4(mix(bottomColor, topColor, t), 1.0); }'
+});
+var skyDome = new THREE.Mesh(skyGeo, skyMat);
+scene3.add(skyDome);
+
+// ── Road group (rotatable parent) ──
 var roadGroup3 = new THREE.Group();
 scene3.add(roadGroup3);
-var roadGeo3 = new THREE.PlaneGeometry(1400, 48);
+
+// Road surface
+var roadGeo3 = new THREE.PlaneGeometry(1800, 52);
 roadGeo3.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-roadGroup3.add(new THREE.Mesh(roadGeo3, new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.9, transparent: true })));
-// Centre line
-var clGeo = new THREE.PlaneGeometry(1400, 1.5);
+var roadMat3 = new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.92, transparent: true });
+roadGroup3.add(new THREE.Mesh(roadGeo3, roadMat3));
+
+// Centre line (yellow)
+var clGeo = new THREE.PlaneGeometry(1800, 1.5);
 clGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
 var clMesh = new THREE.Mesh(clGeo, new THREE.MeshPhongMaterial({ color: 0xfde047 }));
 clMesh.position.y = 0.02; roadGroup3.add(clMesh);
-// Lane dashes
-for (var di = -13; di <= 13; di++) {
+
+// Lane dashes (white)
+for (var di = -20; di <= 20; di++) {
     var dg = new THREE.PlaneGeometry(14, 0.5);
     dg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
     var dm = new THREE.Mesh(dg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
-    dm.position.set(di * 40, 0.02, -10); roadGroup3.add(dm.clone());
-    dm.position.z = 10; roadGroup3.add(dm);
+    dm.position.set(di * 40, 0.02, -12); roadGroup3.add(dm.clone());
+    dm.position.z = 12; roadGroup3.add(dm);
 }
 
-// Cameras
-const camP3 = new THREE.PerspectiveCamera(55, _3dCanvas.clientWidth / _3dCanvas.clientHeight, 0.1, 3000);
-camP3.position.set(-220, 55, 120); camP3.lookAt(60, 0, 0);
-const camS3 = new THREE.OrthographicCamera(-240, 240, 90, -90, 0.1, 2000);
-camS3.position.set(0, 0, 500); camS3.lookAt(0, 0, 0);
+// ── Roadside ground (grass/dirt strips on both sides) ──
+var groundGeo = new THREE.PlaneGeometry(1800, 400);
+groundGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+var groundMat = new THREE.MeshPhongMaterial({ color: 0x4a6b3a, opacity: 0.8, transparent: true });
+var groundL = new THREE.Mesh(groundGeo, groundMat);
+groundL.position.set(0, -0.1, 240); roadGroup3.add(groundL);
+var groundR = new THREE.Mesh(groundGeo.clone(), groundMat);
+groundR.position.set(0, -0.1, -240); roadGroup3.add(groundR);
 
-var currentView = 'top';   // default to top (uses 2D overlay)
+// ── Roadside embankment (raised terrain on both sides) ──
+var embankGeo = new THREE.BoxGeometry(1800, 8, 40);
+var embankMat = new THREE.MeshPhongMaterial({ color: 0x6b7d5a });
+var embankL = new THREE.Mesh(embankGeo, embankMat);
+embankL.position.set(0, 2, 65); roadGroup3.add(embankL);
+var embankR = new THREE.Mesh(embankGeo.clone(), embankMat);
+embankR.position.set(0, 2, -65); roadGroup3.add(embankR);
+
+// ── Roadside trees (cone + trunk) ──
+var trunkGeo = new THREE.CylinderGeometry(1.2, 1.5, 6, 6);
+var trunkMat = new THREE.MeshPhongMaterial({ color: 0x5a3a1a });
+var leavesGeo = new THREE.ConeGeometry(5, 14, 7);
+var leavesMat = new THREE.MeshPhongMaterial({ color: 0x2d6a2d });
+var leavesMat2 = new THREE.MeshPhongMaterial({ color: 0x3a7a3a });
+
+for (var ti = -18; ti <= 18; ti += 3) {
+    var tx = ti * 45;
+    // Left side trees
+    var tl = new THREE.Group();
+    tl.add(new THREE.Mesh(trunkGeo, trunkMat));
+    var leafL = new THREE.Mesh(leavesGeo, leavesMat);
+    leafL.position.y = 9; tl.add(leafL);
+    tl.position.set(tx + (Math.random() - 0.5) * 10, 0, 90 + Math.random() * 30);
+    tl.scale.setScalar(0.7 + Math.random() * 0.5);
+    roadGroup3.add(tl);
+    // Right side trees
+    var tr = new THREE.Group();
+    tr.add(new THREE.Mesh(trunkGeo, trunkMat));
+    var leafR = new THREE.Mesh(leavesGeo, leavesMat2);
+    leafR.position.y = 9; tr.add(leafR);
+    tr.position.set(tx + (Math.random() - 0.5) * 10, 0, -90 - Math.random() * 30);
+    tr.scale.setScalar(0.7 + Math.random() * 0.5);
+    roadGroup3.add(tr);
+}
+
+// ── Street lights (pole + lamp head) ──
+var poleGeo = new THREE.CylinderGeometry(0.5, 0.6, 18, 6);
+var poleMat = new THREE.MeshPhongMaterial({ color: 0x555555 });
+var lampGeo = new THREE.SphereGeometry(1.5, 8, 6);
+var lampMat = new THREE.MeshPhongMaterial({ color: 0xfff9c4, emissive: 0xfff5b0, emissiveIntensity: 0.3 });
+
+for (var li = -15; li <= 15; li += 5) {
+    var lx = li * 55;
+    // Left
+    var pl = new THREE.Group();
+    var poleL = new THREE.Mesh(poleGeo, poleMat); poleL.position.y = 9; pl.add(poleL);
+    var armL = new THREE.Mesh(new THREE.BoxGeometry(5, 0.5, 0.5), poleMat);
+    armL.position.set(2, 17, 0); pl.add(armL);
+    var lampL = new THREE.Mesh(lampGeo, lampMat); lampL.position.set(4.5, 16.5, 0); pl.add(lampL);
+    pl.position.set(lx, 0, 40); roadGroup3.add(pl);
+    // Right
+    var pr = new THREE.Group();
+    var poleR = new THREE.Mesh(poleGeo, poleMat); poleR.position.y = 9; pr.add(poleR);
+    var armR = new THREE.Mesh(new THREE.BoxGeometry(5, 0.5, 0.5), poleMat);
+    armR.position.set(-2, 17, 0); pr.add(armR);
+    var lampR = new THREE.Mesh(lampGeo, lampMat); lampR.position.set(-4.5, 16.5, 0); pr.add(lampR);
+    pr.position.set(lx, 0, -40); roadGroup3.add(pr);
+}
+
+// ── Guard rail (both sides of road) ──
+var railGeo = new THREE.BoxGeometry(1800, 1.2, 0.4);
+var railMat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa, metalness: 0.5 });
+var railL = new THREE.Mesh(railGeo, railMat); railL.position.set(0, 1.5, 28); roadGroup3.add(railL);
+var railR = new THREE.Mesh(railGeo.clone(), railMat); railR.position.set(0, 1.5, -28); roadGroup3.add(railR);
+
+// ── Distant hills (low-poly ridge on both sides) ──
+for (var hi = 0; hi < 8; hi++) {
+    var hillGeo = new THREE.SphereGeometry(80 + Math.random() * 60, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+    var hillMat = new THREE.MeshPhongMaterial({ color: 0x3a5a3a });
+    var hillL = new THREE.Mesh(hillGeo, hillMat);
+    hillL.position.set(-700 + hi * 180, -2, 350 + Math.random() * 100);
+    hillL.scale.set(1.5, 0.4 + Math.random() * 0.3, 1);
+    roadGroup3.add(hillL);
+    var hillR = new THREE.Mesh(hillGeo.clone(), hillMat);
+    hillR.position.set(-700 + hi * 180, -2, -350 - Math.random() * 100);
+    hillR.scale.set(1.5, 0.4 + Math.random() * 0.3, 1);
+    roadGroup3.add(hillR);
+}
+
+// ── Cameras ──
+const camP3 = new THREE.PerspectiveCamera(50, _3dCanvas.clientWidth / _3dCanvas.clientHeight, 0.1, 4000);
+camP3.position.set(-180, 45, 90); camP3.lookAt(60, 0, 0);
+// Side camera — positioned for a nice side-elevation view showing road + scenery
+const camS3 = new THREE.OrthographicCamera(-300, 300, 80, -80, 0.1, 3000);
+camS3.position.set(0, 40, 400); camS3.lookAt(0, 15, 0);
+
+var currentView = 'top';
 var radius3 = 280, theta3 = 0.6, phi3 = 0.5;
-var vehicleMeshes3 = [];  // THREE.Group objects for 3D perspective view
+var vehicleMeshes3 = [];
 
-// 3D mesh factory — simple coloured box per vehicle type
+// ── Side-view texture cache (CanvasTexture from SVG images) ──
+var _sideTexCache = {};
+function _getSideTexture(make) {
+    if (_sideTexCache[make]) return _sideTexCache[make];
+    var img = BRAND_SIDEVIEW_IMAGES[make];
+    if (!img || !img.complete || img.naturalWidth <= 0) return null;
+    var c = document.createElement('canvas');
+    c.width = 256; c.height = 128;
+    var cx = c.getContext('2d');
+    cx.fillStyle = '#2a3a5a';
+    cx.fillRect(0, 0, 256, 128);
+    cx.drawImage(img, 8, 8, 240, 112);
+    var tex = new THREE.CanvasTexture(c);
+    tex.needsUpdate = true;
+    _sideTexCache[make] = tex;
+    return tex;
+}
+
+// ── 3D vehicle mesh factory — textured box with side-view logo ──
 function _make3DVehicle(ev, vc) {
     var l = 4.5, w = 1.9, h = 1.4;
     if (vc.category === 'truck') { l = 9; w = 2.4; h = 2.8; }
     else if (vc.category === 'suv') { l = 5; w = 2.1; h = 1.8; }
     else if (vc.category === 'van') { l = 5.5; w = 2.1; h = 2.2; }
     else if (vc.category === 'motorcycle') { l = 2.2; w = 0.6; h = 1.1; }
+
+    var make = (ev && ev.vehicle_id) ? ev.vehicle_id.split('-')[0] : '';
+    // Try to find brand from vehicle data
+    var vd = vehicleData.get(ev && ev.id ? ev.id : '');
+    if (vd && vd.make) make = vd.make;
+
+    var group = new THREE.Group();
+
+    // Body mesh — coloured box
+    var bodyColor = vc.color || '#3b82f6';
     var geo = new THREE.BoxGeometry(l, h, w);
-    var mat = new THREE.MeshPhongMaterial({ color: new THREE.Color(vc.color || '#3b82f6') });
-    return new THREE.Mesh(geo, mat);
+    var mat = new THREE.MeshPhongMaterial({ color: new THREE.Color(bodyColor) });
+    var body = new THREE.Mesh(geo, mat);
+    body.position.y = h / 2;
+    group.add(body);
+
+    // Roof/cabin — slightly smaller box on top (sedan/suv/van only)
+    if (vc.category !== 'motorcycle' && vc.category !== 'truck') {
+        var roofGeo = new THREE.BoxGeometry(l * 0.55, h * 0.55, w * 0.85);
+        var roofMat = new THREE.MeshPhongMaterial({ color: new THREE.Color(bodyColor), transparent: true, opacity: 0.85 });
+        var roof = new THREE.Mesh(roofGeo, roofMat);
+        roof.position.y = h + h * 0.25;
+        group.add(roof);
+    }
+    // Truck cab
+    if (vc.category === 'truck') {
+        var cabGeo = new THREE.BoxGeometry(l * 0.3, h * 0.85, w);
+        var cab = new THREE.Mesh(cabGeo, mat);
+        cab.position.set(l * 0.3, h / 2, 0);
+        group.add(cab);
+    }
+
+    // Wheels — 4 cylinders (or 6 for truck)
+    var wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.4, 10);
+    var wheelMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a });
+    var wheelPositions = vc.category === 'truck'
+        ? [[l*0.3, 0, w/2], [l*0.3, 0, -w/2], [-l*0.2, 0, w/2], [-l*0.2, 0, -w/2], [-l*0.4, 0, w/2], [-l*0.4, 0, -w/2]]
+        : [[l*0.3, 0, w/2], [l*0.3, 0, -w/2], [-l*0.3, 0, w/2], [-l*0.3, 0, -w/2]];
+    if (vc.category === 'motorcycle') {
+        wheelPositions = [[l*0.35, 0, 0], [-l*0.35, 0, 0]];
+        wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.3, 10);
+    }
+    wheelPositions.forEach(function(wp) {
+        var wheel = new THREE.Mesh(wheelGeo, wheelMat);
+        wheel.rotation.x = Math.PI / 2;
+        wheel.position.set(wp[0], 0.5, wp[2]);
+        group.add(wheel);
+    });
+
+    // Side-view logo texture on both sides (left and right)
+    var sideTex = _getSideTexture(make);
+    if (sideTex) {
+        var sideGeo = new THREE.PlaneGeometry(l * 0.9, h * 0.7);
+        var sideMat = new THREE.MeshBasicMaterial({ map: sideTex, transparent: true });
+        var sideL = new THREE.Mesh(sideGeo, sideMat);
+        sideL.position.set(0, h / 2, w / 2 + 0.01);
+        group.add(sideL);
+        var sideR = new THREE.Mesh(sideGeo.clone(), sideMat);
+        sideR.position.set(0, h / 2, -w / 2 - 0.01);
+        sideR.rotation.y = Math.PI;
+        group.add(sideR);
+    }
+
+    // Headlights (front) + taillights (rear)
+    var hlGeo = new THREE.SphereGeometry(0.3, 6, 4);
+    var hlMat = new THREE.MeshPhongMaterial({ color: 0xffffe0, emissive: 0xffffaa, emissiveIntensity: 0.5 });
+    var tlMat = new THREE.MeshPhongMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0.3 });
+    [[w/2+0.01, h*0.6], [-w/2-0.01, h*0.6]].forEach(function(pos) {
+        var isFront = pos[0] > 0;
+        [-w*0.25, w*0.25].forEach(function(zoff) {
+            var light = new THREE.Mesh(hlGeo, isFront ? hlMat : tlMat);
+            light.position.set(pos[0] * (isFront ? 1 : -1) + (isFront ? l/2 : -l/2), pos[1] * 0.5, zoff);
+            group.add(light);
+        });
+    });
+
+    return group;
 }
 
-// Build or update 3D mesh from vehicleData (called when loading events in 3D views)
+// Build or update 3D mesh from vehicleData
 function _sync3DMeshes() {
-    // Remove stale
     vehicleMeshes3 = vehicleMeshes3.filter(function(m) {
         if (!vehicleData.has(m.userData.vid)) { scene3.remove(m); return false; }
         return true;
     });
-    // Add new
     vehicleData.forEach(function(vd, vid) {
         var exists = vehicleMeshes3.find(function(m){ return m.userData.vid === vid; });
         if (!exists) {
             var mesh = _make3DVehicle(vd.ev, vd.vc);
             var p = norm(vd.lat || midLat, vd.lon || midLon);
             var lane = (Math.random() - 0.5) * 20;
-            mesh.position.set(p.x, 0.7, lane);
+            mesh.position.set(p.x, 0, lane);
             var spd3 = vd.speedMph || 30;
             var dir3v = vd.direction || 0;
             var isNS = vd.isNSHwy || false;
@@ -1294,8 +1497,8 @@ function _sync3DMeshes() {
             if (isNS) {
                 vz3 = spd3 * 0.015 * (Math.cos(dir3v * Math.PI / 180) >= 0 ? 1 : -1);
                 vx3 = 0;
-                laneX = (Math.random() - 0.5) * 20;  // lateral spread along X
-                mesh.position.set(laneX, 0.7, p.x);
+                laneX = (Math.random() - 0.5) * 20;
+                mesh.position.set(laneX, 0, p.x);
             } else {
                 vx3 = spd3 * 0.015 * (Math.cos(dir3v * Math.PI / 180) >= 0 ? 1 : -1);
                 vz3 = 0;
@@ -1303,41 +1506,48 @@ function _sync3DMeshes() {
             }
             mesh.userData = { vid: vid, vx: vx3, vz: vz3, isNS: isNS,
                               laneZ: isNS ? 0 : lane, laneX: isNS ? laneX : 0,
-                              baseY: 0.7, phase: Math.random() * Math.PI * 2 };
+                              baseY: 0, phase: Math.random() * Math.PI * 2 };
             scene3.add(mesh);
             vehicleMeshes3.push(mesh);
         }
     });
 }
 
-// 3D animate loop (only active in perspective/side/split views)
+// 3D animate loop
 var _3dAnimRunning = false;
 var _tick3 = 0;
 function _animate3D() {
     if (!_3dAnimRunning) return;
     requestAnimationFrame(_animate3D); _tick3++;
-    camP3.position.x = -220 + radius3 * 0.4 * Math.sin(theta3 * 0.3);
-    camP3.position.y = Math.max(20, radius3 * Math.sin(phi3));
-    camP3.position.z =  120 + radius3 * 0.25 * Math.cos(theta3 * 0.3);
-    camP3.lookAt(60, 0, 0);
+    // Gentle camera orbit for perspective view
+    camP3.position.x = -180 + radius3 * 0.3 * Math.sin(theta3 * 0.2);
+    camP3.position.y = Math.max(15, radius3 * Math.sin(phi3));
+    camP3.position.z =  90 + radius3 * 0.2 * Math.cos(theta3 * 0.2);
+    camP3.lookAt(60, 5, 0);
+
+    // Animate vehicles
     vehicleMeshes3.forEach(function(m) {
         var ud = m.userData;
         if (ud.isNS) {
-            // N-S highway: travel along Z axis
             m.position.z += ud.vz;
             m.position.x += (ud.laneX - m.position.x) * 0.05;
-            m.position.y = ud.baseY + Math.sin(_tick3 * 0.22 + ud.phase) * Math.abs(ud.vz) * 0.14;
-            if (m.position.z >  680) m.position.z = -680;
-            if (m.position.z < -680) m.position.z =  680;
+            if (m.position.z >  850) m.position.z = -850;
+            if (m.position.z < -850) m.position.z =  850;
         } else {
-            // E-W highway: travel along X axis (default)
             m.position.x += ud.vx;
             m.position.z += (ud.laneZ - m.position.z) * 0.05;
-            m.position.y = ud.baseY + Math.sin(_tick3 * 0.22 + ud.phase) * Math.abs(ud.vx) * 0.14;
-            if (m.position.x >  680) m.position.x = -680;
-            if (m.position.x < -680) m.position.x =  680;
+            if (m.position.x >  850) m.position.x = -850;
+            if (m.position.x < -850) m.position.x =  850;
         }
     });
+
+    // Street light flicker
+    if (_tick3 % 180 === 0) {
+        scene3.children.forEach(function(c) {
+            if (c.userData && c.userData.isLamp) c.material.emissiveIntensity = 0.2 + Math.random() * 0.2;
+        });
+    }
+
     var cw = _3dCanvas.clientWidth, ch = _3dCanvas.clientHeight;
     renderer.setSize(cw, ch, false);
     var cam = currentView === 'side' ? camS3 : camP3;
@@ -1358,6 +1568,7 @@ window.addEventListener('mousemove', function(e) {
 _3dCanvas.addEventListener('wheel', function(e) {
     radius3 = Math.max(40, Math.min(700, radius3 + e.deltaY * 0.25));
 });
+
 
 // ── View toggle ───────────────────────────────────────────────────────
 function setViewport(view) {
