@@ -400,9 +400,27 @@ function _initMap() {
         if (_map) {
             var c = _map.getCenter();
             _mapCtrLat = c.lat; _mapCtrLon = c.lng;
-            if (currentView !== 'top') _updateLocationBadge();
+            midLat = _mapCtrLat; midLon = _mapCtrLon;
+            if (currentView !== 'top') {
+                _updateLocationBadge();
+                _update3DZoneMarkers();
+                _3DBridgeBoundsCache = null;
+            }
         }
     });
+
+    // ── Highway highlight polyline on the Leaflet map ──
+    // Draws a visible orange line along the bridge path coordinates so
+    // the highway is identifiable on the map and aligns with the 3D bridge.
+    var _hwyPolyline = null;
+    function _drawHwyPolyline() {
+        if (_hwyPolyline) { _map.removeLayer(_hwyPolyline); _hwyPolyline = null; }
+        if (!_bridgePathCoords || _bridgePathCoords.length < 2) return;
+        var latlngs = _bridgePathCoords.map(function(p) { return [p.lat, p.lon]; });
+        _hwyPolyline = L.polyline(latlngs, {
+            color: '#ff6600', weight: 4, opacity: 0.7, dashArray: '8,4'
+        }).addTo(_map);
+    }
 }
 
 function _applyTileFallback() {
@@ -1701,11 +1719,9 @@ function _animate3D() {
         _sync3DMeshes();
     }
 
-    // Camera orbits around the highway center (3D scene origin = highway midpoint)
-    camP3.position.x = radius3 * 0.35 * Math.sin(theta3);
-    camP3.position.y = Math.max(15, radius3 * Math.sin(phi3));
-    camP3.position.z = radius3 * 0.35 * Math.cos(theta3);
-    camP3.lookAt(0, 0, 0);
+    // Fixed camera angle — aligned to highway bearing, gentle tilt
+    // No orbit: camera stays at a constant angle to maintain alignment
+    _updateCamera3D();
 
     // ── Velocity-driven vehicle movement (3D scene scale) ──
     // The 3D road is 1800 units long. Vehicles move at speed * 0.025
@@ -1784,8 +1800,31 @@ function _animate3D() {
     renderer.render(scene3, cam);
 }
 
-// 3D camera drag — orbit + zoom
+// ── 3D view: pan + proportional zoom (camera angle is FIXED) ──────────
+// The camera is locked to a near-top-down angle aligned with the highway
+// bearing. This keeps the 3D road, pins, and map highway aligned at all
+// times because the projection never changes.
+// Drag = pan the map (midLat/midLon update → norm() repositions all 3D objects)
+// Zoom = adjust radius3 + XZ_SCALE together → proportional scaling
 var _isDrag3 = false, _prevM3 = {x:0,y:0};
+
+// Camera angle is fixed: theta3 aligned to highway bearing, phi3 = gentle tilt
+var _camPhiFixed = 0.35;   // ~20° tilt from top-down — enough 3D depth, stable alignment
+
+function _updateCamera3D() {
+    // Camera looks along the highway direction from above
+    var brg = (_hwBearingDeg || 90) * Math.PI / 180;
+    // Camera positioned above and along the highway, looking down the road
+    var camDist = radius3 * 0.4;
+    var camHeight = radius3 * Math.sin(_camPhiFixed);
+    var camHoriz = radius3 * Math.cos(_camPhiFixed);
+    // Position camera along the highway bearing direction
+    camP3.position.x = -camHoriz * Math.sin(brg - Math.PI/2);
+    camP3.position.y = Math.max(15, camHeight);
+    camP3.position.z = -camHoriz * Math.cos(brg - Math.PI/2);
+    camP3.lookAt(0, 0, 0);
+}
+
 _3dCanvas.addEventListener('mousedown', function(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -1799,20 +1838,37 @@ window.addEventListener('mouseup', function() {
 window.addEventListener('mousemove', function(e) {
     if (!_isDrag3) return;
     e.preventDefault();
-    theta3 -= (e.clientX - _prevM3.x) * 0.005;
-    phi3 = Math.max(0.05, Math.min(1.4, phi3 - (e.clientY - _prevM3.y) * 0.005));
+    // ── Drag = PAN the map (not orbit) ──
+    // Convert screen pixel delta to GPS degrees and update center.
+    // All 3D objects use norm() with midLat/midLon, so they follow.
+    var dx = e.clientX - _prevM3.x;
+    var dy = e.clientY - _prevM3.y;
     _prevM3 = {x:e.clientX, y:e.clientY};
-    // Map stays centered on zone/server GPS — orbit doesn't pan the map
-    // Only the 3D camera orbits; the map remains locked to the center GPS
+    if (!_map) return;
+    var zoom = _map.getZoom();
+    var metersPerPixel = 156543.03392 * Math.cos(_mapCtrLat * Math.PI / 180) / Math.pow(2, zoom);
+    var dLat = -(dy * metersPerPixel) / 111000;
+    var dLon = -(dx * metersPerPixel) / (111000 * Math.cos(_mapCtrLat * Math.PI / 180));
+    _mapCtrLat += dLat; _mapCtrLon += dLon;
+    midLat = _mapCtrLat; midLon = _mapCtrLon;
+    _map.setView([_mapCtrLat, _mapCtrLon], zoom, { animate: false });
+    // Reposition pins to follow the pan
+    _update3DZoneMarkers();
+    // Invalidate bridge bounds cache (positions changed via norm())
+    _3DBridgeBoundsCache = null;
 });
 _3dCanvas.addEventListener('wheel', function(e) {
     e.preventDefault();
     e.stopPropagation();
+    // ── Zoom = proportional scaling of 3D scene + map ──
+    var oldR = radius3;
     radius3 = Math.max(40, Math.min(700, radius3 + e.deltaY * 0.3));
-    // Sync Leaflet map zoom with 3D camera distance
-    _syncMapZoom3D();
+    if (radius3 === oldR) return;
+    // Adjust XZ_SCALE proportionally so the 3D road geographic extent
+    // matches the map's visible area at the new zoom level
+    _syncZoomAndScale3D();
 }, { passive: false });
-// Touch support — pinch zoom + drag
+// Touch support
 var _touchPrev = null, _touchDist = null;
 _3dCanvas.addEventListener('touchstart', function(e) {
     if (e.touches.length === 1) {
@@ -1828,24 +1884,78 @@ _3dCanvas.addEventListener('touchstart', function(e) {
 }, { passive: false });
 _3dCanvas.addEventListener('touchmove', function(e) {
     if (e.touches.length === 1 && _isDrag3) {
-        theta3 -= (e.touches[0].clientX - _touchPrev.x) * 0.005;
-        phi3 = Math.max(0.05, Math.min(1.4, phi3 - (e.touches[0].clientY - _touchPrev.y) * 0.005));
+        var dx = e.touches[0].clientX - _touchPrev.x;
+        var dy = e.touches[0].clientY - _touchPrev.y;
         _touchPrev = {x: e.touches[0].clientX, y: e.touches[0].clientY};
+        if (!_map) return;
+        var zoom = _map.getZoom();
+        var mpp = 156543.03392 * Math.cos(_mapCtrLat * Math.PI / 180) / Math.pow(2, zoom);
+        _mapCtrLat += -(dy * mpp) / 111000;
+        _mapCtrLon += -(dx * mpp) / (111000 * Math.cos(_mapCtrLat * Math.PI / 180));
+        midLat = _mapCtrLat; midLon = _mapCtrLon;
+        _map.setView([_mapCtrLat, _mapCtrLon], zoom, { animate: false });
+        _update3DZoneMarkers();
+        _3DBridgeBoundsCache = null;
     } else if (e.touches.length === 2 && _touchDist) {
         var dx = e.touches[0].clientX - e.touches[1].clientX;
         var dy = e.touches[0].clientY - e.touches[1].clientY;
         var d = Math.sqrt(dx*dx + dy*dy);
         radius3 = Math.max(40, Math.min(700, radius3 + (_touchDist - d) * 0.5));
         _touchDist = d;
-        _syncMapZoom3D();
+        _syncZoomAndScale3D();
     }
     e.preventDefault();
 }, { passive: false });
 _3dCanvas.addEventListener('touchend', function() {
     _isDrag3 = false; _touchPrev = null; _touchDist = null;
 });
-// Set initial cursor
 _3dCanvas.style.cursor = 'grab';
+
+// ── Unified zoom+scale sync: adjusts XZ_SCALE + map zoom together ──
+function _syncZoomAndScale3D() {
+    if (!_map || !_bridgePathCoords || _bridgePathCoords.length < 2) {
+        _syncMapZoom3D();
+        return;
+    }
+    // Compute the map zoom from radius3
+    var r = (radius3 - 40) / (700 - 40);
+    var baseZoom = 18 - r * 9;
+    var scaleAdj = Math.log(XZ_SCALE / 800) / Math.LN2 * 0.6;
+    var z = Math.round(baseZoom - scaleAdj);
+    z = Math.max(8, Math.min(18, z));
+    if (z !== _map.getZoom()) {
+        _map.setZoom(z, { animate: false });
+    }
+    // Recompute XZ_SCALE so the 3D road matches the map's visible area
+    var ctrLat = midLat, ctrLon = midLon;
+    var maxAbs = 0;
+    for (var i = 0; i < _bridgePathCoords.length; i++) {
+        var dLat = Math.abs(_bridgePathCoords[i].lat - ctrLat);
+        var dLon = Math.abs(_bridgePathCoords[i].lon - ctrLon);
+        if (dLat > maxAbs) maxAbs = dLat;
+        if (dLon > maxAbs) maxAbs = dLon;
+    }
+    if (maxAbs > 0.0001) {
+        XZ_SCALE = 900 / maxAbs;
+    }
+    // Rebuild road + reposition pins + invalidate bounds
+    _buildRoad3D();
+    _3DBridgeBoundsCache = null;
+    _update3DZoneMarkers();
+    // Reposition vehicles
+    vehicleMeshes3.forEach(function(m) {
+        var vd = vehicleData.get(m.userData.vid);
+        if (vd) {
+            var p = norm(vd.lat, vd.lon);
+            var bp = _get3DBridgeBounds();
+            m.position.x = Math.max(bp.minX, Math.min(bp.maxX, p.x));
+            m.position.z = Math.max(bp.minZ, Math.min(bp.maxZ, p.z));
+        }
+    });
+    // Update road rotation to match bearing
+    roadGroup3.rotation.y = ((_hwBearingDeg || 90) - 90) * Math.PI / 180;
+    _updateLocationBadge();
+}
 
 
 // ── View toggle ───────────────────────────────────────────────────────
@@ -1934,11 +2044,13 @@ function _centerMapOnHighway() {
     console.log('[T3D] Aligned: center=(' + ctrLat.toFixed(4) + ',' + ctrLon.toFixed(4) +
                 ') XZ_SCALE=' + XZ_SCALE.toFixed(1) + ' bridgePts=' + (_bridgePathCoords||[]).length);
 
-    // ── 4. Rebuild road geometry + invalidate cache + update zone pins ──
-    // Road geometry uses bearing-aligned rotation; road width is fixed.
+    // ── 4. Rebuild road + draw highway polyline + update pins ──
     if (typeof _buildRoad3D === 'function') _buildRoad3D();
+    if (typeof _drawHwyPolyline === 'function') _drawHwyPolyline();
     _3DBridgeBoundsCache = null;
     _update3DZoneMarkers();
+    // Update road rotation to match bearing
+    roadGroup3.rotation.y = ((_hwBearingDeg || 90) - 90) * Math.PI / 180;
 
     // ── 5. Sync map zoom to current 3D camera distance ──
     _syncMapZoom3D();
@@ -2000,28 +2112,8 @@ function _update3DZoneMarkers() {
 // ── Sync Leaflet map zoom with 3D camera distance (radius3) ──
 // Maps radius3 range (40-700) to Leaflet zoom (18-11) so zooming
 // in/out the 3D scene also zooms the map proportionally.
-function _syncMapZoom3D() {
-    if (!_map) return;
-    // ── Unified zoom: 3D camera distance ↔ Leaflet map zoom ──
-    // The 3D road (1800 units) represents the bridge path span.
-    // XZ_SCALE maps GPS degrees to 3D units, so the road's geographic
-    // extent = 1800 / XZ_SCALE degrees. The Leaflet zoom level that
-    // shows a similar geographic extent is computed logarithmically.
-    //
-    // At zoom Z, Leaflet shows ~360 / 2^Z degrees across 256px tiles.
-    // The 3D canvas is ~520px wide. The road fills ~80% at radius3=280.
-    // We map radius3 (40-700) to zoom (18-9) with XZ_SCALE adjustment.
-    var r = (radius3 - 40) / (700 - 40);       // 0 (close) .. 1 (far)
-    // Base zoom: r=0 → 18, r=1 → 9
-    var baseZoom = 18 - r * 9;
-    // Adjust for XZ_SCALE: larger scale = wider geographic span = lower zoom
-    var scaleAdj = Math.log(XZ_SCALE / 800) / Math.LN2 * 0.6;
-    var z = Math.round(baseZoom - scaleAdj);
-    z = Math.max(8, Math.min(18, z));
-    if (z !== _map.getZoom()) {
-        _map.setZoom(z, { animate: false });
-    }
-}
+// _syncMapZoom3D is now handled by _syncZoomAndScale3D (unified zoom+scale)
+function _syncMapZoom3D() { _syncZoomAndScale3D(); }
 
 function _updateLocationBadge() {
     var hwyEl = document.getElementById('t3dLocHwy');
