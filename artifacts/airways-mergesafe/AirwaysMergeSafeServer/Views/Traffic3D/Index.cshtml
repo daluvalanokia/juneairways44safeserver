@@ -1387,64 +1387,39 @@ document.querySelectorAll('#viewToggle button').forEach(function(btn) {
 // ── Highway dropdown change — AJAX refresh (no page reload) ──────────
 async function t3dHighwayChanged(newHighwayId) {
     if (!newHighwayId || newHighwayId === HW) return;
-    // When sim is ON, lock dropdowns — sim controls highway/zone/server.
-    // User changes are reverted to the sim's context.
-    if (simRunning) {
-        console.log('[T3D] t3dHighwayChanged: BLOCKED — sim is running (sim HW=' + (_simHwId || HW) + ')');
-        // Revert dropdown to sim's highway
-        var hwSel = document.getElementById('hwSel');
-        if (hwSel) hwSel.value = _simHwId || HW;
-        return;
-    }
-    // Update HW variable + persist to localStorage
     HW = newHighwayId;
     localStorage.setItem('t3d_selectedHw', HW);
-    // Reset zone/server selection (highway changed — old zone/server are invalid)
     selectedZoneId = ''; selectedServerId = '';
     localStorage.removeItem('t3d_selectedZone');
     localStorage.removeItem('t3d_selectedServer');
     var zsel = document.getElementById('t3dZoneSel');
     var ssel = document.getElementById('t3dServerSel');
     if (zsel) zsel.value = '';
-    if (ssel) {
-        ssel.value = '';
-        ssel.querySelectorAll('option').forEach(function(o) { o.style.display = ''; });
-    }
-    // Fetch zones + servers for this highway from server
-    // NOTE: We do NOT load vehicles here — animation requires all 3 values
-    // (highway + zone + server). We only set up the bridge path and dropdowns.
+    if (ssel) { ssel.value = ''; ssel.querySelectorAll('option').forEach(function(o) { o.style.display = ''; }); }
+    // Fetch zones + servers — populate dropdowns ONLY. No map pan, no bridge redraw.
+    // The animation view only updates when the Refresh button is clicked.
     try {
         var r = await fetch('/Traffic3D/GetAnimationData?highwayId=' + encodeURIComponent(newHighwayId) + '&mode=ground');
         if (!r.ok) return;
         var data = await r.json();
         if (data.highwayCoords && data.highwayCoords.length > 0) {
             T3D_ZONES = data.highwayCoords.map(function(z) {
-                return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
-                         highwayId: z.highwayId, radius: z.radius };
+                return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon, highwayId: z.highwayId, radius: z.radius };
             });
             if (zsel) {
                 zsel.innerHTML = '<option value="">(Select Zone)</option>';
                 T3D_ZONES.forEach(function(z) {
                     var opt = document.createElement('option');
-                    opt.value = z.zoneId;
-                    opt.textContent = z.zoneName || z.zoneId;
+                    opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
                     opt.dataset.hw = z.highwayId || HW;
                     opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
                     opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
                     zsel.appendChild(opt);
                 });
             }
-            var z0 = T3D_ZONES[0];
-            midLat = z0.lat; midLon = z0.lon;
-            _panMapTo(z0.lat, z0.lon);
-            _setHighwayCoords(z0.lat, z0.lon, HW);
             _hwyIsEW = data.isEW;
-            if (typeof roadGroup3 !== 'undefined') {
-                roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
-            }
         } else {
             T3D_ZONES = [];
-            _hwyPath = [];
             if (zsel) zsel.innerHTML = '<option value="">(Select Zone)</option>';
             if (ssel) ssel.innerHTML = '<option value="">(Select Server)</option>';
             console.warn('[T3D] Highway ' + newHighwayId + ' has no zones');
@@ -1465,73 +1440,33 @@ async function t3dHighwayChanged(newHighwayId) {
                 ssel.appendChild(opt);
             });
         }
-        // NO vehicle loading here — requires all 3 (highway + zone + server)
-        _forceBridgeRedraw();
-        if (_map) setTimeout(function() { if (_map) { _map.invalidateSize(true); _forceBridgeRedraw(); } }, 200);
-    } catch(e) { console.warn('[T3D] Highway change error:', e); }
-    _validateSelectionState();
+        if (typeof data.hwBearing === 'number') _hwBearingDeg = data.hwBearing;
+        if (data.bridgePath && data.bridgePath.length > 0) {
+            _bridgePathCoords = data.bridgePath.map(function(p) { return { lat: p.lat, lon: p.lon }; });
+        }
+        console.log('[T3D] t3dHighwayChanged: dropdowns updated — click Refresh to apply');
+    } catch(e) { console.warn('[T3D] Highway fetch failed:', e); }
 }
 
 async function t3dZoneChanged() {
-    // When sim is ON, lock dropdowns — sim controls zone/server.
-    if (simRunning) {
-        console.log('[T3D] t3dZoneChanged: BLOCKED — sim is running (sim zone=' + (_simZoneId || selectedZoneId) + ')');
-        // Revert dropdown to sim's zone
-        var zsel = document.getElementById('t3dZoneSel');
-        if (zsel) zsel.value = _simZoneId || selectedZoneId;
-        return;
-    }
     selectedZoneId = document.getElementById('t3dZoneSel').value;
     localStorage.setItem('t3d_selectedZone', selectedZoneId);
-    // Reset server selection (zone changed — old server may not belong to this zone)
     selectedServerId = '';
     localStorage.removeItem('t3d_selectedServer');
     document.getElementById('t3dServerSel').value = '';
     var srvSel = document.getElementById('t3dServerSel');
-    // Filter server dropdown to show only servers for the selected zone
     srvSel.querySelectorAll('option').forEach(function(o) {
         o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
     });
-    // Pan map to selected zone center + re-sort highway path
-    var z = selectedZoneId
-        ? T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
-        : (T3D_ZONES.find(function(zz){ return zz.lat && zz.lon; }) || null);
-    if (!z && selectedZoneId) {
-        var zOpt = document.querySelector('#t3dZoneSel option[value="' + selectedZoneId + '"]');
-        if (zOpt && zOpt.dataset.lat && zOpt.dataset.lon)
-            z = { zoneId: selectedZoneId, lat: parseFloat(zOpt.dataset.lat),
-                  lon: parseFloat(zOpt.dataset.lon), highwayId: zOpt.dataset.hw || HW };
-    }
-    if (z && z.lat && z.lon) {
-        midLat = z.lat; midLon = z.lon;
-        _panMapTo(z.lat, z.lon);
-        _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
-    } else if (T3D_ZONES.length > 0) {
-        var z0 = T3D_ZONES[0];
-        midLat = z0.lat; midLon = z0.lon;
-        _panMapTo(z0.lat, z0.lon);
-        _setHighwayCoords(z0.lat, z0.lon, HW);
-    }
-    // NO refreshScene here — animation requires all 3 (highway + zone + server).
-    // Server is not yet selected. Just update bridge position.
-    _bridgeDirty = true;
-    _forceBridgeRedraw();
-    _validateSelectionState();
+    // Do NOT pan map, redraw bridge, or load animation.
+    // The animation view only updates when the Refresh button is clicked.
+    console.log('[T3D] t3dZoneChanged: zone=' + selectedZoneId + ' — click Refresh to apply');
 }
 
 async function t3dServerChanged() {
-    // When sim is ON, lock dropdowns — sim controls zone/server.
-    if (simRunning) {
-        console.log('[T3D] t3dServerChanged: BLOCKED — sim is running (sim srv=' + (_simSrvId || selectedServerId) + ')');
-        // Revert dropdown to sim's server
-        var ssel = document.getElementById('t3dServerSel');
-        if (ssel) ssel.value = _simSrvId || selectedServerId;
-        return;
-    }
     selectedServerId = document.getElementById('t3dServerSel').value;
     localStorage.setItem('t3d_selectedServer', selectedServerId);
     var opt = document.querySelector('#t3dServerSel option[value="' + selectedServerId + '"]');
-    // Sync zone dropdown with the server's zone
     if (opt && opt.dataset.zone) {
         document.getElementById('t3dZoneSel').value = opt.dataset.zone;
         selectedZoneId = opt.dataset.zone;
@@ -1543,39 +1478,11 @@ async function t3dServerChanged() {
             });
         }
     }
-    var z = selectedZoneId
-        ? T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
-        : (T3D_ZONES.find(function(zz){ return zz.lat && zz.lon; }) || null);
-    if (!z && selectedZoneId) {
-        var zOpt2 = document.querySelector('#t3dZoneSel option[value="' + selectedZoneId + '"]');
-        if (zOpt2 && zOpt2.dataset.lat && zOpt2.dataset.lon)
-            z = { zoneId: selectedZoneId, lat: parseFloat(zOpt2.dataset.lat),
-                  lon: parseFloat(zOpt2.dataset.lon), highwayId: zOpt2.dataset.hw || HW };
-    }
-    if (z && z.lat && z.lon) {
-        midLat = z.lat; midLon = z.lon;
-        _panMapTo(z.lat, z.lon);
-        _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
-    } else if (T3D_ZONES.length > 0) {
-        var z0 = T3D_ZONES[0];
-        midLat = z0.lat; midLon = z0.lon;
-        _panMapTo(z0.lat, z0.lon);
-        _setHighwayCoords(z0.lat, z0.lon, HW);
-    }
-    _bridgeDirty = true;
-    // ── ALL 3 values are now set (highway + zone + server) ──
-    // This is the ONLY place animation loads via refreshScene.
-    if (HW && selectedZoneId && selectedServerId) {
-        await refreshScene();
-    } else {
-        console.log('[T3D] t3dServerChanged: skipping refresh — need all 3 (hw=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId + ')');
-    }
-    if (z && z.lat && z.lon) {
-        _panMapTo(z.lat, z.lon);
-    }
-    _forceBridgeRedraw();
-    _validateSelectionState();
+    // Do NOT pan map, redraw bridge, or call refreshScene.
+    // The animation view only updates when the Refresh button is clicked.
+    console.log('[T3D] t3dServerChanged: srv=' + selectedServerId + ' — click Refresh to apply');
 }
+
 
 // ── Vehicle data management ───────────────────────────────────────────
 function _clearVehicles() { vehicleData.clear(); }
@@ -2135,6 +2042,26 @@ async function refreshAnimation() {
     }
     var badgeOff = document.getElementById('simFeedBadge');
     if (badgeOff) badgeOff.style.display = 'none';
+
+    // ── Apply dropdown selections to the map view ──
+    // Since dropdown handlers no longer pan the map or redraw the bridge,
+    // we do it here when the Refresh button is clicked.
+    if (HW && T3D_ZONES.length > 0) {
+        var rz = selectedZoneId
+            ? T3D_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
+            : T3D_ZONES[0];
+        if (rz && rz.lat && rz.lon) {
+            midLat = rz.lat; midLon = rz.lon;
+            _panMapTo(rz.lat, rz.lon);
+            _setHighwayCoords(rz.lat, rz.lon, rz.highwayId || HW);
+        }
+        if (typeof roadGroup3 !== 'undefined') {
+            roadGroup3.rotation.y = _hwyIsEW ? 0 : Math.PI / 2;
+        }
+        _bridgeDirty = true;
+        _forceBridgeRedraw();
+        if (_map) setTimeout(function() { if (_map) { _map.invalidateSize(true); _forceBridgeRedraw(); } }, 200);
+    }
 
     var curHw = document.getElementById('hwSel') ? document.getElementById('hwSel').value : HW;
     var curZone = document.getElementById('t3dZoneSel') ? document.getElementById('t3dZoneSel').value : selectedZoneId;
