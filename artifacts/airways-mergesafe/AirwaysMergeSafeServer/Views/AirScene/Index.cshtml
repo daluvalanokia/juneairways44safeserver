@@ -1398,48 +1398,74 @@ function _airMakeLabel3D(text, x, topY, z) {
     var sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
     sprite.scale.set(22, 5, 1);
     sprite.position.set(x, topY + 4, z);
-    airScene3.add(sprite);
+    airRoadGroup3.add(sprite);
     _airStructureLabels.push(sprite);
 }
 
-// Render one building box at real GPS lat/lon using norm() for 3D alignment
-function _airRenderBuilding(latC, lonC, widthM, depthM, heightM, name, idx) {
-    var hScale  = _airHeightScale();
-    var hUnits  = Math.max(1.5, heightM * hScale);
-    var p       = norm(latC, lonC);
-    var mpu     = XZ_SCALE / 111000;
-    var wUnits  = Math.max(3, widthM * mpu);
-    var dUnits  = Math.max(3, depthM * mpu);
-    var col     = _airBldColors[idx % _airBldColors.length];
+// ── _airRenderBuilding ──────────────────────────────────────────────────
+// Adds a building to airRoadGroup3 (same group as the road/bridge), using
+// ROAD-LOCAL coordinates so it always aligns with the highway regardless of bearing.
+//
+// Road-local space:
+//   X-axis = ALONG the highway (road runs from -900 to +900 in X)
+//   Z-axis = PERPENDICULAR to highway (negative Z = "behind" the road = buildings side)
+//   Y-axis = vertical (up)
+//
+// roadX: position along highway (-900..+900)
+// roadZ: perpendicular offset from road centre (negative = one side, positive = other)
+// widthM, depthM: real-world metres → scaled to 3D units via (XZ_SCALE/111000)
+function _airRenderBuilding(roadX, roadZ, widthM, depthM, heightM, name, idx) {
+    var hScale = _airHeightScale();
+    var hUnits = Math.max(4, heightM * hScale);
+    var mpu    = XZ_SCALE / 111000;
+    var wUnits = Math.max(6, widthM  * mpu);
+    var dUnits = Math.max(6, depthM  * mpu);
+    var col    = _airBldColors[idx % _airBldColors.length];
 
+    // Main building body
     var geo  = new THREE.BoxGeometry(wUnits, hUnits, dUnits);
-    var mat  = new THREE.MeshPhongMaterial({ color: col, transparent: true, opacity: 0.70, shininess: 55 });
+    var mat  = new THREE.MeshPhongMaterial({
+        color: col, transparent: true, opacity: 0.75, shininess: 60, flatShading: false
+    });
     var mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(p.x, hUnits / 2, p.z);
-    airScene3.add(mesh); _airStructures3D.push(mesh);
+    mesh.position.set(roadX, hUnits / 2, roadZ);
+    airRoadGroup3.add(mesh); _airStructures3D.push(mesh);
 
+    // Blue nav-map edge outline
     var edges = new THREE.LineSegments(
         new THREE.EdgesGeometry(geo),
-        new THREE.LineBasicMaterial({ color: 0x93c5fd, opacity: 0.50, transparent: true })
+        new THREE.LineBasicMaterial({ color: 0x93c5fd, opacity: 0.55, transparent: true })
     );
     edges.position.copy(mesh.position);
-    airScene3.add(edges); _airStructures3D.push(edges);
+    airRoadGroup3.add(edges); _airStructures3D.push(edges);
 
-    var roofGeo = new THREE.BoxGeometry(wUnits + 0.5, 0.8, dUnits + 0.5);
-    var roofMat = new THREE.MeshPhongMaterial({ color: col, transparent: true, opacity: 0.80 });
+    // Flat roof cap (slightly lighter, full opacity)
+    var roofGeo = new THREE.BoxGeometry(wUnits + 1, 1.2, dUnits + 1);
+    var roofMat = new THREE.MeshPhongMaterial({ color: col + 0x101010, transparent: true, opacity: 0.88 });
     var roof    = new THREE.Mesh(roofGeo, roofMat);
-    roof.position.set(p.x, hUnits + 0.4, p.z);
-    airScene3.add(roof); _airStructures3D.push(roof);
+    roof.position.set(roadX, hUnits + 0.6, roadZ);
+    airRoadGroup3.add(roof); _airStructures3D.push(roof);
 
-    if (name) _airMakeLabel3D(name, p.x, hUnits, p.z);
+    // Name label (only for named OSM buildings)
+    if (name) _airMakeLabel3D(name, roadX, hUnits, roadZ);
 }
 
-// Parse Overpass elements → render buildings at their real GPS centroids
+// Parse Overpass elements → render buildings in road-local coordinates
+// airRoadGroup3 is rotated by (bearing-90)*PI/180.
+// To place a building at its real GPS position within the group,
+// we apply the inverse rotation to convert world-space → road-local space.
 function _airRenderOSMStructures(elements) {
     _airClearStructures3D();
-    var count = 0;
+    // Rotation applied to airRoadGroup3
+    var rot    = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
+    var cosR   = Math.cos(-rot);
+    var sinR   = Math.sin(-rot);
+
+    var count  = 0;
     elements.forEach(function(el, idx) {
         if (el.type !== 'way' || !el.geometry || el.geometry.length < 3) return;
+
+        // Footprint centroid + bounding box
         var sumLat = 0, sumLon = 0;
         var minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
         el.geometry.forEach(function(pt) {
@@ -1447,13 +1473,24 @@ function _airRenderOSMStructures(elements) {
             if (pt.lat < minLat) minLat = pt.lat; if (pt.lat > maxLat) maxLat = pt.lat;
             if (pt.lon < minLon) minLon = pt.lon; if (pt.lon > maxLon) maxLon = pt.lon;
         });
-        var n = el.geometry.length;
+        var n    = el.geometry.length;
         var cLat = sumLat / n, cLon = sumLon / n;
-        var p3   = norm(cLat, cLon);
-        if (Math.abs(p3.x) > 1400 || Math.abs(p3.z) > 1400) return;
-        var widthM  = Math.abs(maxLon - minLon) * 111000 * Math.cos(cLat * Math.PI / 180);
-        var depthM  = Math.abs(maxLat - minLat) * 111000;
+
+        // World-space position via norm()
+        var pw = norm(cLat, cLon);
+        // Skip if far from road centre in world space
+        if (Math.abs(pw.x) > 1400 || Math.abs(pw.z) > 1400) return;
+
+        // Convert to road-local space (inverse rotation of airRoadGroup3)
+        var roadX = pw.x * cosR - pw.z * sinR;
+        var roadZ = pw.x * sinR + pw.z * cosR;
+
+        // Footprint dimensions in metres
+        var widthM = Math.abs(maxLon - minLon) * 111000 * Math.cos(cLat * Math.PI / 180);
+        var depthM = Math.abs(maxLat - minLat) * 111000;
         if (widthM < 3 || depthM < 3) return;
+
+        // Height from OSM tags
         var heightM = 0;
         if (el.tags) {
             heightM = parseFloat(el.tags.height) || 0;
@@ -1461,55 +1498,62 @@ function _airRenderOSMStructures(elements) {
                 heightM = (parseInt(el.tags['building:levels']) || 1) * 3.5;
         }
         if (!heightM || heightM < 3) heightM = 8 + Math.random() * 18;
+
         var name = (el.tags && el.tags.name) ? el.tags.name : null;
-        _airRenderBuilding(cLat, cLon, widthM, depthM, heightM, name, idx);
+        _airRenderBuilding(roadX, roadZ, widthM, depthM, heightM, name, idx);
         count++;
     });
     _airAddGroundGrid();
-    console.log('[AirScene] OSM: ' + count + ' buildings rendered at (' + midLat.toFixed(4) + ',' + midLon.toFixed(4) + ')');
+    console.log('[AirScene] OSM: ' + count + ' buildings in road-local space');
 }
 
 // Fallback: synthetic buildings distributed ALONG the bridge path via norm()
 function _airBuildFallbackStructures() {
     _airClearStructures3D();
-    if (!_airBridgePathCoords || _airBridgePathCoords.length < 2) {
-        setTimeout(_airBuildFallbackStructures, 800); return;
-    }
-    var bearing = (_airHwBearingDeg || 90) * Math.PI / 180;
-    var perpX   = Math.cos(bearing);
-    var perpZ   = -Math.sin(bearing);
-    var nPts    = _airBridgePathCoords.length;
-    var step    = Math.max(1, Math.floor(nPts / 10));
-    var idx     = 0;
-    for (var i = step; i < nPts - step; i += step) {
-        var bp = _airBridgePathCoords[i];
-        [[  -1, 65 ], [ -1, 110 ], [ 1, 65 ], [ 1, 110 ]].forEach(function(s) {
-            var sign = s[0], off = s[1];
-            var hM   = 8 + Math.random() * 22;
-            var wM   = 20 + Math.random() * 30;
-            var dM   = 18 + Math.random() * 25;
-            var bx   = norm(bp.lat, bp.lon).x + sign * perpX * off;
-            var bz   = norm(bp.lat, bp.lon).z + sign * perpZ * off;
-            var bLat = midLat + bz / XZ_SCALE;
-            var bLon = midLon + bx / XZ_SCALE;
-            _airRenderBuilding(bLat, bLon, wM, dM, hM, null, idx++);
+    // Road runs from X=-900 to X=+900 in road-local space (airRoadGroup3).
+    // Buildings are placed at perpendicular offsets (Z-axis in road-local space).
+    // Negative Z = one side of highway, Positive Z = other side.
+    // Both sides are "behind" the road relative to the side-view camera.
+    var idx = 0;
+    var roadLen = 1800;
+    var cols = 10;     // clusters along the road
+    var step = roadLen / cols;
+
+    for (var c = 0; c < cols; c++) {
+        var roadX = -900 + step * c + step * 0.5 + (Math.random() - 0.5) * 40;
+
+        // Side A: Z=-80..-160 (one side of highway)
+        [ -85, -130, -175 ].forEach(function(rz) {
+            var hM = 10 + Math.random() * 35;
+            var wM = 25 + Math.random() * 45;
+            var dM = 20 + Math.random() * 35;
+            _airRenderBuilding(roadX + (Math.random()-0.5)*30, rz + (Math.random()-0.5)*20, wM, dM, hM, null, idx++);
+        });
+
+        // Side B: Z=+80..+160 (other side of highway)
+        [ 85, 130, 175 ].forEach(function(rz) {
+            var hM = 10 + Math.random() * 35;
+            var wM = 25 + Math.random() * 45;
+            var dM = 20 + Math.random() * 35;
+            _airRenderBuilding(roadX + (Math.random()-0.5)*30, rz + (Math.random()-0.5)*20, wM, dM, hM, null, idx++);
         });
     }
     _airAddGroundGrid();
-    console.log('[AirScene] Fallback: ' + idx + ' synthetic buildings along bridge');
+    console.log('[AirScene] Fallback: ' + idx + ' road-local buildings');
 }
 
 function _airAddGroundGrid() {
     var mat = new THREE.LineBasicMaterial({ color: 0x3a6080, opacity: 0.08, transparent: true });
     var pts = [];
-    for (var gx = -700; gx <= 700; gx += 50) {
-        pts.push(new THREE.Vector3(gx, 0.1, -900)); pts.push(new THREE.Vector3(gx, 0.1, 200));
+    // Grid in road-local space: X=along road, Z=perpendicular
+    for (var gx = -950; gx <= 950; gx += 60) {
+        pts.push(new THREE.Vector3(gx, 0.1, -250)); pts.push(new THREE.Vector3(gx, 0.1, 250));
     }
-    for (var gz = -900; gz <= 200; gz += 50) {
-        pts.push(new THREE.Vector3(-700, 0.1, gz)); pts.push(new THREE.Vector3(700, 0.1, gz));
+    for (var gz = -250; gz <= 250; gz += 60) {
+        pts.push(new THREE.Vector3(-950, 0.1, gz)); pts.push(new THREE.Vector3(950, 0.1, gz));
     }
     var grid = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), mat);
-    airScene3.add(grid); _airStructures3D.push(grid);
+    airRoadGroup3.add(grid); _airStructures3D.push(grid);   // same group = same rotation
 }
 
 // Fetch via .NET proxy (same-origin, no CORS/mixed-content issues)
@@ -1985,33 +2029,47 @@ function _updateCamera3D() {
 // Navigation-map style: camera south of highway, low angle, looking north
 // so the highway bridge is at the bottom-front of frame and OSM buildings
 // recede into the background behind the highway.
+// ── _setSideCameraForView ────────────────────────────────────────────────
+// Side / navigation-map camera:
+//   • Highway bridge runs along the bottom of the frame (road-local X-axis)
+//   • Structures appear behind the highway (road-local -Z direction = "north" of road)
+//   • Camera sits at road-local +Z (south of road) at a low elevation angle
+//
+// airRoadGroup3 is rotated by (bearing-90)*PI/180 so its local X-axis
+// aligns with the highway bearing in world space.
+// Camera position in world space:
+//   perpendicular to bearing = bearing + 90° = bearing - 90° + 180°
+//   We use (bearing + PI/2) as the camera azimuth.
 function _setSideCameraForView() {
-    var brg = (_airHwBearingDeg || 90) * Math.PI / 180;
+    var brg    = (_airHwBearingDeg || 90) * Math.PI / 180;
+    var camAz  = brg + Math.PI / 2;    // 90° offset = perpendicular to highway, camera side
 
-    // Camera sits PERPENDICULAR to the highway at a low elevation angle
-    // "Perpendicular" = rotated 90° from bearing = along the cross-road axis
-    var perpBrg = brg;                        // perpendicular to road
-    var dist    = Math.max(200, airRadius3 * 1.1);
-    var height  = Math.max(45, airRadius3 * 0.22);
+    var dist   = Math.max(220, airRadius3 * 1.0);
+    var height = Math.max(55, airRadius3 * 0.28);
 
-    // Place camera in front of the scene (positive Z = toward viewer)
-    airCamS.position.x =  dist * Math.sin(perpBrg);
-    airCamS.position.y =  height;
-    airCamS.position.z =  dist * Math.cos(perpBrg);
+    // Camera world position: perpendicular to highway, at height
+    airCamS.position.x = dist * Math.sin(camAz);
+    airCamS.position.y = height;
+    airCamS.position.z = dist * Math.cos(camAz);
 
-    // Look at a point slightly behind the road center — bridge at bottom, buildings fill upper frame
+    // Look toward the road centre, angled slightly downward
+    // Target is slightly on the building side (negative perpendicular) so
+    // the road appears at the bottom and buildings fill the upper frame
+    var tgtAz  = camAz + Math.PI;     // opposite side = toward buildings
+    var tgtDist = 40;
     airCamS.lookAt(
-        -60 * Math.sin(perpBrg),   // slightly toward buildings
-        8,                          // slightly above ground = bridge at bottom of frame
-        -60 * Math.cos(perpBrg)
+        tgtDist * Math.sin(tgtAz),
+        6,
+        tgtDist * Math.cos(tgtAz)
     );
 
-    airCamS.fov  = 52;
-    airCamS.near = 0.5;
-    airCamS.far  = 5000;
+    airCamS.fov    = 55;
+    airCamS.near   = 0.5;
+    airCamS.far    = 5000;
     airCamS.aspect = _air3dCanvas.clientWidth / Math.max(1, _air3dCanvas.clientHeight);
     airCamS.updateProjectionMatrix();
-    console.log('[AirScene] Side cam set: dist=' + dist.toFixed(0) + ' h=' + height.toFixed(0) + ' brg=' + (_airHwBearingDeg||90).toFixed(1) + '°');
+    console.log('[AirScene] Side cam: dist=' + dist.toFixed(0) + ' h=' + height.toFixed(0)
+              + ' az=' + (camAz * 180/Math.PI).toFixed(1) + '° brg=' + (_airHwBearingDeg||90).toFixed(1) + '°');
 }
 
 _air3dCanvas.addEventListener('mousedown', function(e) {
