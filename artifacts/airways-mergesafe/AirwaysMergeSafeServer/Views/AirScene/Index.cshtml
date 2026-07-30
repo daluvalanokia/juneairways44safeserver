@@ -1484,6 +1484,7 @@ function _airRenderOSMStructures(elements) {
         // Convert to road-local space (inverse rotation of airRoadGroup3)
         var roadX = pw.x * cosR - pw.z * sinR;
         var roadZ = pw.x * sinR + pw.z * cosR;
+        if (roadZ > -40) roadZ = -40 - Math.abs(roadZ) * 0.5;
 
         // Footprint dimensions in metres
         var widthM = Math.abs(maxLon - minLon) * 111000 * Math.cos(cLat * Math.PI / 180);
@@ -1522,20 +1523,13 @@ function _airBuildFallbackStructures() {
     for (var c = 0; c < cols; c++) {
         var roadX = -900 + step * c + step * 0.5 + (Math.random() - 0.5) * 40;
 
-        // Side A: Z=-80..-160 (one side of highway)
-        [ -85, -130, -175 ].forEach(function(rz) {
-            var hM = 10 + Math.random() * 35;
+        // ALL buildings behind the bridge (negative Z = far side from camera)
+        // Camera-facing side stays clear so airflycars at altitude are visible
+        [ -90, -140, -190, -240 ].forEach(function(rz) {
+            var hM = 15 + Math.random() * 40;
             var wM = 25 + Math.random() * 45;
             var dM = 20 + Math.random() * 35;
-            _airRenderBuilding(roadX + (Math.random()-0.5)*30, rz + (Math.random()-0.5)*20, wM, dM, hM, null, idx++);
-        });
-
-        // Side B: Z=+80..+160 (other side of highway)
-        [ 85, 130, 175 ].forEach(function(rz) {
-            var hM = 10 + Math.random() * 35;
-            var wM = 25 + Math.random() * 45;
-            var dM = 20 + Math.random() * 35;
-            _airRenderBuilding(roadX + (Math.random()-0.5)*30, rz + (Math.random()-0.5)*20, wM, dM, hM, null, idx++);
+            _airRenderBuilding(roadX + (Math.random()-0.5)*30, rz + (Math.random()-0.5)*15, wM, dM, hM, null, idx++);
         });
     }
     _airAddGroundGrid();
@@ -1769,7 +1763,12 @@ function _makeAir3DVehicle(ev, vc, vd) {
         if (vd && vd.speedMph) {
             lx.fillStyle = 'rgba(253, 224, 71, 1.0)';
             lx.font = 'bold 22px monospace'; lx.textAlign = 'right';
-            lx.fillText(Math.round(vd.speedMph) + ' mph', 494, 64);
+            lx.fillText(Math.round(vd.speedMph) + ' mph', 494, 42);
+        }
+        if (vd && vd.altitudeMeters) {
+            lx.fillStyle = 'rgba(34, 211, 238, 1.0)';
+            lx.font = 'bold 20px monospace'; lx.textAlign = 'right';
+            lx.fillText(Math.round(vd.altitudeMeters) + 'm alt', 494, 84);
         }
 
         var labelTex = new THREE.CanvasTexture(labelCanvas);
@@ -1779,10 +1778,10 @@ function _makeAir3DVehicle(ev, vc, vd) {
             map: labelTex, transparent: true, depthTest: false,
             depthWrite: false, sizeAttenuation: true
         }));
-        labelSprite.scale.set(50, 12.5, 1);
+        labelSprite.scale.set(55, 13.75, 1);
         labelSprite.renderOrder = 999;
         group.userData.labelSprite = labelSprite;
-        group.userData.labelHeight = 8;  // flycar label height above rotors
+        group.userData.labelHeight = 10;
         group.userData.phase = Math.random() * Math.PI * 2;
         return group;
     }
@@ -2130,7 +2129,8 @@ function _animateAir3D() {
             // Only add to scene once
             if (!spr.parent) airScene3.add(spr);
             // Position above the vehicle in world coords
-            spr.position.set(m.position.x, m.position.y + (m.userData.labelHeight || 6), m.position.z);
+            var lblH = m.userData.isFlyCar ? (m.userData.labelHeight || 10) : (m.userData.labelHeight || 6);
+            spr.position.set(m.position.x, m.position.y + lblH, m.position.z);
             // Scale based on camera distance for consistent readability
             var dist = airCamP.position.distanceTo(m.position);
             var w = Math.max(30, Math.min(80, dist * 0.22));
