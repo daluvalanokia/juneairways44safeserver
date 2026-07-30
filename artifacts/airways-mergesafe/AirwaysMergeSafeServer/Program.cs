@@ -90,7 +90,6 @@ try
 
     // D5: IVehicleRegistry — singleton via DI
     builder.Services.AddSingleton<IVehicleRegistry, VehicleRegistry>();
-    builder.Services.AddSingleton<IAirCarRegistry, AirCarRegistry>();
 
     // VehicleClassifier — scoped so it gets a fresh instance per request
     builder.Services.AddScoped<VehicleClassifier>();
@@ -324,26 +323,6 @@ try
                     TotalPosted   INTEGER NOT NULL DEFAULT 0,
                     LastHeartbeat TEXT NOT NULL DEFAULT (datetime('now')),
                     StoppedAt     TEXT
-                )",
-                // AirCarRegistry — air vehicle specs for 3D Air Scene
-                @"CREATE TABLE IF NOT EXISTS AirCarRegistry (
-                    Id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    Type            TEXT NOT NULL DEFAULT 'evtol',
-                    Make            TEXT NOT NULL DEFAULT '',
-                    Model           TEXT NOT NULL DEFAULT '',
-                    Size            TEXT NOT NULL DEFAULT 'medium',
-                    Icon            TEXT NOT NULL DEFAULT '✈',
-                    BrandLogo       TEXT DEFAULT '',
-                    SideViewLogo    TEXT DEFAULT '',
-                    ColorsJson      TEXT DEFAULT '[]',
-                    LengthM         REAL NOT NULL DEFAULT 0,
-                    WidthM          REAL NOT NULL DEFAULT 0,
-                    HeightM         REAL NOT NULL DEFAULT 0,
-                    MaxAltitudeM    REAL NOT NULL DEFAULT 0,
-                    CruiseSpeedMph  REAL NOT NULL DEFAULT 0,
-                    IsActive        INTEGER NOT NULL DEFAULT 1,
-                    CreatedDate     TEXT NOT NULL DEFAULT (datetime('now')),
-                    UpdatedDate     TEXT NOT NULL DEFAULT (datetime('now'))
                 )",
             };
 
