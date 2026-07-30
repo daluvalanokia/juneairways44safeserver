@@ -14,11 +14,12 @@ namespace AirwaysMergeSafeServer.Controllers;
 /// </summary>
 public class AirSceneController : Controller
 {
-    private readonly AppDbContext  _db;
-    private readonly IConfiguration _cfg;
+    private readonly AppDbContext     _db;
+    private readonly IConfiguration   _cfg;
+    private readonly IAirCarRegistry  _airRegistry;
 
-    public AirSceneController(AppDbContext db, IConfiguration cfg)
-    { _db = db; _cfg = cfg; }
+    public AirSceneController(AppDbContext db, IConfiguration cfg, IAirCarRegistry airRegistry)
+    { _db = db; _cfg = cfg; _airRegistry = airRegistry; }
 
     [HttpGet]
     public async Task<IActionResult> Index(string? highwayId)
@@ -57,9 +58,19 @@ public class AirSceneController : Controller
             .GroupBy(e => e.VehicleCategory)
             .ToDictionary(g => g.Key, g => g.Count());
 
-        return View(new AirSceneViewModel
+        // Pass AirCar registry specs to the view for 3D scene rendering
+            var airCarSpecs = _airRegistry.All.Select(s => new {
+                type = s.Type, make = s.Make, model = s.Model,
+                icon = s.Icon, brandLogo = s.BrandLogo, sideViewLogo = s.SideViewLogo,
+                colors = s.Colors, lengthM = s.LengthM, widthM = s.WidthM,
+                heightM = s.HeightM, maxAltM = s.MaxAltitudeM, cruiseMph = s.CruiseSpeedMph
+            });
+            var airCarSpecsJson = System.Text.Json.JsonSerializer.Serialize(airCarSpecs);
+
+            return View(new AirSceneViewModel
         {
             Highways           = highways,
+            AirCarSpecsJson    = airCarSpecsJson,
             SelectedHighwayId  = highwayId,
             Zones              = zones,
             SwitchServers      = servers,
