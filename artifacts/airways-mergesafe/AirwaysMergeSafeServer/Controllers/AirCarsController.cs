@@ -86,7 +86,7 @@ public class AirCarsController : Controller
     public IActionResult Create()
     {
         TraceLogger.Enter("AirCars", nameof(Create));
-        return View(new AirCarEntry { MaxAltitudeM = 3000, CruiseSpeedMph = 150, WidthM = 11, LengthM = 6, HeightM = 2.5 });
+        return View(new AirCarEntry { MaxAltitudeM = 3000f, CruiseSpeedMph = 150f, WidthM = 11f, LengthM = 6f, HeightM = 2.5f });
     }
 
     /// <summary>
