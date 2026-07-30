@@ -68,7 +68,7 @@ public class AirSceneController : Controller
             GroundCount        = groundCount,
             AirCount           = airCount,
             CategoryBreakdown  = catBreakdown,
-            AirSceneAlertsJson = SettingsController.LoadAirSceneAlertsJson()
+            AirSceneAlertsJson = _loadAirSceneAlertsJson()
         });
     }
 
@@ -328,4 +328,148 @@ public class AirSceneController : Controller
             return isEW ? 90 : 0;
         }
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Independent endpoints — NO dependency on ApiController or SettingsController
+    // ══════════════════════════════════════════════════════════════════════
+
+    private static readonly string _airAlertsPath =
+        Path.Combine(Directory.GetCurrentDirectory(), "airsene_alerts.json");
+
+    private const string _defaultAirAlerts =
+        "{\"speedBandLimit\":5,\"defaultPattern\":\"circles\",\"prevColorOverlay\":false," +
+        "\"safeLabel\":\"Safe Speed\",\"safeColor\":\"#22c55e\",\"safeBands\":1," +
+        "\"warningLabel\":\"Warning\",\"warningColor\":\"#f59e0b\"}";
+
+    private static string _loadAirSceneAlertsJson()
+    {
+        try { if (System.IO.File.Exists(_airAlertsPath)) return System.IO.File.ReadAllText(_airAlertsPath); }
+        catch { }
+        return _defaultAirAlerts;
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> GetLiveEvents(string highwayId, int take = 140, string? zoneId = null, string? serverId = null)
+    {
+        TraceLogger.Enter("AirScene", nameof(GetLiveEvents), $"hw={highwayId} take={take}");
+        highwayId ??= HttpContext.Session.GetString("HighwayId") ?? "";
+        if (string.IsNullOrEmpty(highwayId)) return Json(Array.Empty<object>());
+
+        var query = _db.VehicleEvents.AsNoTracking()
+            .Where(e => e.HighwayId == highwayId
+                     && (e.VehicleMode == "air" || e.IsAirFlyCar == "Y"));
+        if (!string.IsNullOrEmpty(zoneId))
+            query = query.Where(e => e.ZoneId == zoneId);
+
+        var events = await query
+            .OrderByDescending(e => e.CreatedDate)
+            .Take(take)
+            .Select(e => new {
+                e.Id, e.VehicleId, e.EventType, e.ZoneId,
+                e.SpeedMph, e.Latitude, e.Longitude, e.AltitudeMeters,
+                e.VehicleMode, e.VehicleCategory, e.VehicleClassJson,
+                e.IsAirFlyCar, e.CreatedDate, e.HighwayId, e.Payload
+            })
+            .ToListAsync();
+
+        TraceLogger.Info("AirScene", nameof(GetLiveEvents), $"Returning {events.Count} air events for {highwayId}");
+        return Json(events);
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> InjectSimEvent([FromBody] AirSimEventRequest req)
+    {
+        TraceLogger.Enter("AirScene", nameof(InjectSimEvent), $"vid={req.VehicleId} hw={req.HighwayId}");
+
+        var ev = new AirwaysMergeSafeServer.Models.VehicleEvent
+        {
+            VehicleId      = req.VehicleId,
+            HighwayId      = req.HighwayId,
+            ZoneId         = req.ZoneId,
+            EventType      = "detection",
+            SpeedMph       = req.SpeedMph,
+            Latitude       = req.Latitude,
+            Longitude      = req.Longitude,
+            AltitudeMeters = req.AltitudeMeters,
+            VehicleMode    = "air",
+            VehicleCategory = req.VehicleType ?? "air_urban",
+            IsAirFlyCar    = req.IsAirFlyCar ?? "Y",
+            CreatedDate    = DateTime.UtcNow
+        };
+
+        _db.VehicleEvents.Add(ev);
+        await _db.SaveChangesAsync();
+
+        TraceLogger.Info("AirScene", nameof(InjectSimEvent), $"Saved event id={ev.Id} for {req.VehicleId}");
+        return Json(new { id = ev.Id, saved = true });
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> ValidateVehicleCoordinates([FromBody] AirVehicleCoordRequest req)
+    {
+        TraceLogger.Enter("AirScene", nameof(ValidateVehicleCoordinates), $"vid={req.VehicleId}");
+        var highwayId = req.HighwayId ?? HttpContext.Session.GetString("HighwayId") ?? "";
+        if (string.IsNullOrEmpty(highwayId))
+            return Json(new { valid = true, lat = req.Lat, lon = req.Lon, snapped = false });
+
+        var zones = await _db.MergeZones.AsNoTracking()
+            .Where(z => z.HighwayId == highwayId && z.Latitude.HasValue)
+            .Select(z => new { z.ZoneId, z.Latitude, z.Longitude })
+            .ToListAsync();
+        if (zones.Count == 0)
+            return Json(new { valid = true, lat = req.Lat, lon = req.Lon, snapped = false });
+
+        bool isEW = !highwayId.Contains("I35") && !highwayId.Contains("I45") && !highwayId.Contains("I25");
+        double lat = req.Lat, lon = req.Lon;
+        bool snapped = false;
+        if (lat == 0 && lon == 0) snapped = true;
+
+        var nearest = zones.OrderBy(z =>
+            Math.Sqrt(Math.Pow((z.Latitude ?? 0) - lat, 2) + Math.Pow((z.Longitude ?? 0) - lon, 2))).First();
+        double dist = Math.Sqrt(Math.Pow(lat - (nearest.Latitude ?? 0), 2) + Math.Pow(lon - (nearest.Longitude ?? 0), 2));
+        if (dist > 0.08) snapped = true;
+
+        if (snapped)
+        {
+            var rng = Random.Shared;
+            double zoneLat = nearest.Latitude ?? 0, zoneLon = nearest.Longitude ?? 0;
+            if (isEW) { lat = zoneLat + (rng.NextDouble() - 0.5) * 0.0008; lon = zoneLon + (rng.NextDouble() - 0.5) * 0.025; }
+            else      { lat = zoneLat + (rng.NextDouble() - 0.5) * 0.025;  lon = zoneLon + (rng.NextDouble() - 0.5) * 0.0008; }
+        }
+
+        if (!string.IsNullOrEmpty(req.ZoneId))
+        {
+            var selZone = zones.FirstOrDefault(z => z.ZoneId == req.ZoneId);
+            if (selZone != null)
+            {
+                double zLat = selZone.Latitude ?? 0, zLon = selZone.Longitude ?? 0;
+                if (isEW) { lat = Math.Max(zLat - 0.004, Math.Min(zLat + 0.004, lat)); lon = Math.Max(zLon - 0.045, Math.Min(zLon + 0.045, lon)); }
+                else      { lat = Math.Max(zLat - 0.045, Math.Min(zLat + 0.045, lat)); lon = Math.Max(zLon - 0.004, Math.Min(zLon + 0.004, lon)); }
+            }
+        }
+        return Json(new { valid = !snapped, lat = Math.Round(lat, 6), lon = Math.Round(lon, 6), snapped, zoneId = nearest.ZoneId });
+    }
+
+    public class AirSimEventRequest
+    {
+        public string? VehicleId { get; set; }
+        public string? HighwayId { get; set; }
+        public string? ZoneId { get; set; }
+        public string? VehicleType { get; set; }
+        public string? IsAirFlyCar { get; set; }
+        public double SpeedMph { get; set; }
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+        public double AltitudeMeters { get; set; }
+    }
+
+    public class AirVehicleCoordRequest
+    {
+        public double Lat { get; set; }
+        public double Lon { get; set; }
+        public string? HighwayId { get; set; }
+        public string? ZoneId { get; set; }
+        public string? VehicleId { get; set; }
+    }
+
 }
