@@ -127,8 +127,9 @@
 <div id="sceneWrap" style="position:relative;height:520px;border-radius:8px;overflow:hidden;background:#0a0f1e">
     <!-- Leaflet map — OSM tile background (visible in Top view; faded in 3D views) -->
     <div id="airMiniMap" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:0;transition:opacity .3s"></div>
-    <!-- Three.js 3D canvas — sits above map; alpha:true lets map show through at configurable opacity -->
-    <canvas id="air3dCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;display:none"></canvas>
+    <!-- Three.js 3D canvas — always in DOM so WebGL gets real dimensions at init.
+         Visibility toggled via opacity/pointerEvents, NOT display:none -->
+    <canvas id="air3dCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;opacity:0;pointer-events:none"></canvas>
     <!-- 2D label overlay — 2D vehicle icons + bridge line (Top view only) -->
     <canvas id="air-label-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2"></canvas>
     <!-- Overlay labels for split mode -->
@@ -1257,12 +1258,18 @@ function _renderLoop() {
 
 const _air3dCanvas = document.getElementById('air3dCanvas');
 const renderer  = new THREE.WebGLRenderer({ canvas: _air3dCanvas, antialias: true, alpha: true });
-// clearColor alpha=0 → THREE.js background is transparent → Leaflet map shows through
-// Map opacity (set per-view in setViewport) controls how much map is visible
-renderer.setClearColor(0x000000, 0);
+renderer.setClearColor(0x000000, 0);   // alpha=0 → transparent → map shows through
 renderer.autoClear = true;
 renderer.setPixelRatio(window.devicePixelRatio);
-renderer.setSize(_air3dCanvas.clientWidth, _air3dCanvas.clientHeight);
+// Use sceneWrap for dimensions — canvas may still be opacity:0 at this point
+// but its clientWidth/clientHeight reflect the actual layout size
+var _sceneWrap = document.getElementById('sceneWrap');
+var _initW = _sceneWrap ? _sceneWrap.clientWidth  : 900;
+var _initH = _sceneWrap ? _sceneWrap.clientHeight : 520;
+renderer.setSize(_initW, _initH, false);
+_air3dCanvas.width  = _initW;
+_air3dCanvas.height = _initH;
+console.log('[AirScene] WebGL init: ' + _initW + 'x' + _initH);
 
 const airScene3 = new THREE.Scene();
 airScene3.fog = new THREE.Fog(0xa0c0e0, 600, 1800);
@@ -1994,7 +2001,10 @@ function _animateAir3D() {
         }
     });
 
-    var cw = _air3dCanvas.clientWidth, ch = _air3dCanvas.clientHeight;
+    // Use sceneWrap for size — canvas clientWidth always matches even at opacity:0
+    var _wrap3 = document.getElementById('sceneWrap');
+    var cw = _wrap3 ? _wrap3.clientWidth  : (_air3dCanvas.clientWidth  || 900);
+    var ch = _wrap3 ? _wrap3.clientHeight : (_air3dCanvas.clientHeight || 520);
     if (cw > 0 && ch > 0) renderer.setSize(cw, ch, false);
     var cam = airCurrentView === 'side' ? airCamS : airCamP;
     // Update perspective camera every frame (tracks zoom/pan)
@@ -2199,10 +2209,11 @@ function setViewport(view) {
     var is2D = (view === 'top');
 
     // ── Canvas visibility ─────────────────────────────────────────────────
-    // Top view  : 2D label overlay visible, Three.js canvas hidden
-    // 3D views  : Three.js canvas visible + fully opaque, 2D overlay hidden
-    _air3dCanvas.style.display        = is2D ? 'none' : 'block';
-    _air3dCanvas.style.opacity        = '1.0';   // always opaque — map fades separately
+    // NEVER use display:none on _air3dCanvas — it zeroes clientWidth/clientHeight
+    // and breaks WebGL. Use opacity + pointerEvents instead.
+    // Top view  : 3D canvas invisible (opacity:0), 2D overlay shown
+    // 3D views  : 3D canvas fully visible, 2D overlay hidden
+    _air3dCanvas.style.opacity        = is2D ? '0'    : '1';
     _air3dCanvas.style.pointerEvents  = is2D ? 'none' : 'auto';
     _oc.style.display                 = is2D ? 'block' : 'none';
 
@@ -2220,10 +2231,13 @@ function setViewport(view) {
 
     // ── THREE.js render loop ──────────────────────────────────────────────
     if (!is2D && !_3dAnimRunning) {
-        // Resize canvas to actual pixel size before first render
-        _air3dCanvas.width  = _air3dCanvas.clientWidth;
-        _air3dCanvas.height = _air3dCanvas.clientHeight;
-        renderer.setSize(_air3dCanvas.clientWidth, _air3dCanvas.clientHeight, false);
+        // Resize canvas to container size (clientWidth reliable even at opacity:0)
+        var _sw = document.getElementById('sceneWrap');
+        var _rw = _sw ? _sw.clientWidth  : 900;
+        var _rh = _sw ? _sw.clientHeight : 520;
+        _air3dCanvas.width  = _rw;
+        _air3dCanvas.height = _rh;
+        renderer.setSize(_rw, _rh, false);
         _3dAnimRunning = true;
         _syncAirMeshes();
         _animateAir3D();
@@ -2253,9 +2267,9 @@ function setViewport(view) {
     if (view === 'side') {
         _setSideCameraForView();
         // Fetch/refresh OSM structures when entering side view
-        if (!_airOSMLoaded || view !== _prevAirView) _airRebuildStructures();
+        if (!_airOSMLoaded || view !== window._prevAirView) _airRebuildStructures();
     }
-    var _prevAirView = view;
+    window._prevAirView = view;   // module-level tracking for OSM reload guard
 
     // ── Location badge ────────────────────────────────────────────────────
     var locBadge = document.getElementById('airLocationBadge');
@@ -3746,14 +3760,15 @@ window.addEventListener('resize', function() {
     // 2. Start 2D canvas render loop
     _renderLoop();
 
-    // 3. Default to Top view (2D overlay + Leaflet map)
-    setViewport('top');
-    var topBtn = document.querySelector('#viewToggle [data-view="top"]');
-    if (topBtn) {
+    // 3. Default to Side view — 3D nav-map with OSM buildings behind highway
+    //    This ensures the WebGL renderer starts with real canvas dimensions.
+    setViewport('side');
+    var sideBtn = document.querySelector('#viewToggle [data-view="side"]');
+    if (sideBtn) {
         document.querySelectorAll('#viewToggle button').forEach(function(b) {
             b.classList.remove('active','btn-primary'); b.classList.add('btn-outline-primary');
         });
-        topBtn.classList.add('active','btn-primary'); topBtn.classList.remove('btn-outline-primary');
+        sideBtn.classList.add('active','btn-primary'); sideBtn.classList.remove('btn-outline-primary');
     }
 
     // 4. Check if sim was running (cross-tab restore) — BEFORE loading DB events
