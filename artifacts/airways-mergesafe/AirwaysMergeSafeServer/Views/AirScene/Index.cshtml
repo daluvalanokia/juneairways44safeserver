@@ -128,9 +128,20 @@
     </div>
 </div>
 
-<!-- ── Three-panel canvas (always split) ──────────────────────────────── -->
+<!-- ── View toggle: 3D | Split ─────────────────────────────────────── -->
+<div class="btn-group btn-group-sm mb-1" role="group">
+    <button id="btnView3D" class="btn btn-sm btn-outline-info active" onclick="airSetView('3d')">🌍 3D Map</button>
+    <button id="btnViewSplit" class="btn btn-sm btn-outline-secondary" onclick="airSetView('split')">⊞ Split</button>
+</div>
+
+<!-- ── Scene container (3D + Split share this wrapper) ────────────── -->
 <div id="sceneWrap" style="position:relative;height:490px;background:#060612;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,0.06)">
-    <canvas id="airCanvas" style="width:100%;height:100%;display:block"></canvas>
+    <!-- Leaflet map (background for 3D view) -->
+    <div id="airMiniMap" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:0"></div>
+    <!-- 3D canvas for 3D view mode -->
+    <canvas id="air3dCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;display:none"></canvas>
+    <!-- Split view canvas (existing three-panel) -->
+    <canvas id="airCanvas" style="width:100%;height:100%;display:block;z-index:2"></canvas>
 
     <!-- Panel labels -->
     <div class="air-panel-label bg-secondary text-white" style="left:8px">⬡ Perspective</div>
@@ -147,7 +158,15 @@
 
     <!-- Altitude Y-axis ticks overlay (side panel area) -->
     <div id="altAxis" style="position:absolute;top:0;bottom:0;left:43%;width:36px;
-         font-size:9px;color:rgba(255,255,255,0.32);pointer-events:none;z-index:3;overflow:hidden">
+         font-size:9px;color:rgba(255,255,255,0.32);pointer-events:none;z-index:3;overflow:hidden;display:none">
+    </div>
+    <!-- Location badge for 3D view -->
+    <div id="airLocBadge" style="position:absolute;bottom:8px;left:8px;z-index:10;
+         background:rgba(0,0,0,0.7);color:#fff;padding:6px 12px;border-radius:6px;
+         font-size:11px;pointer-events:none;display:none">
+        <div id="airLocHwy" style="color:#60a5fa;font-weight:bold;font-size:12px"></div>
+        <div id="airLocZone" style="color:#bfdbfe"></div>
+        <div id="airLocCoord" style="color:#94a3b8;font-family:monospace;font-size:10px"></div>
     </div>
 </div>
 
@@ -212,6 +231,8 @@
 
 @section Scripts {
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 /* ══════════════════════════════════════════════════════════════════════
    AirwaysMergeSafe — 3D AIR SCENE  (Task 10: standalone controller/view)
@@ -225,7 +246,7 @@
    ══════════════════════════════════════════════════════════════════════ */
 
 const ALT_SCALE = 0.05;
-const XZ_SCALE  = 800;
+let  XZ_SCALE  = 800;
 const HW        = '@hw';
 
 const SERVERS = @Html.Raw(serversJson);
@@ -1513,6 +1534,408 @@ function _airInjectDirect(ev, cl) {
     vehicleObjects.push(vo);
     var aEl = document.getElementById('stAir');
     if (aEl) aEl.textContent = (+aEl.textContent||0) + 1;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 3D VIEW: Map overlay + Bridge path + Zone pins + Bearing-based movement
+// Duplicated from Traffic3D — adapted for air vehicles with altitude
+// ══════════════════════════════════════════════════════════════════════
+
+var _air3dCanvas = document.getElementById('air3dCanvas');
+var _airRenderer = null, _airScene = null, _airCam = null;
+var _airRoadGroup = null, _airRoadWidth = 20;
+var _airMap = null, _airMapReady = false;
+var _airBridgePath = [];
+var _airHwBearing = 90;
+var _airHwyIsEW = true;
+var _air3dAnimRunning = false;
+var _airRadius = 280, _airPhi = 0.35;
+var _airZoneMarkers = [];
+var _air3DBoundsCache = null;
+var _airHwyPolyline = null;
+var _airVehicleMeshes = [];
+var _airMapCtrLat = midLat, _airMapCtrLon = midLon;
+var _airViewMode = 'split';  // '3d' or 'split'
+
+function airSetView(mode) {
+    _airViewMode = mode;
+    document.getElementById('btnView3D').classList.toggle('active', mode === '3d');
+    document.getElementById('btnViewSplit').classList.toggle('active', mode === 'split');
+    var is3D = (mode === '3d');
+    _air3dCanvas.style.display = is3D ? '' : 'none';
+    document.getElementById('airCanvas').style.display = is3D ? 'none' : '';
+    document.getElementById('airMiniMap').style.opacity = is3D ? '0.55' : '0';
+    document.getElementById('airMiniMap').style.visibility = is3D ? 'visible' : 'hidden';
+    document.getElementById('airLocBadge').style.display = is3D ? '' : 'none';
+    document.getElementById('altAxis').style.display = is3D ? 'none' : '';
+    // Panel labels hidden in 3D
+    document.querySelectorAll('.air-panel-label').forEach(function(el) {
+        el.style.display = is3D ? 'none' : '';
+    });
+    document.querySelectorAll('.air-divider').forEach(function(el) {
+        el.style.display = is3D ? 'none' : '';
+    });
+
+    if (is3D) {
+        _airInit3D();
+        _airInitMap();
+        _airCenterMapOnZone();
+        _airSyncZoom();
+        if (!_air3dAnimRunning) { _air3dAnimRunning = true; _airAnimate3D(); }
+    } else {
+        _air3dAnimRunning = false;
+    }
+}
+
+function _airInit3D() {
+    if (_airRenderer) return;  // already initialized
+    _airRenderer = new THREE.WebGLRenderer({ canvas: _air3dCanvas, antialias: true });
+    _airRenderer.setPixelRatio(window.devicePixelRatio);
+    _airRenderer.setSize(_air3dCanvas.clientWidth, _air3dCanvas.clientHeight);
+
+    _airScene = new THREE.Scene();
+    _airScene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    var sun = new THREE.DirectionalLight(0xffffff, 0.8);
+    sun.position.set(80, 200, 100); _airScene.add(sun);
+
+    _airCam = new THREE.PerspectiveCamera(50, _air3dCanvas.clientWidth / _air3dCanvas.clientHeight, 0.1, 4000);
+    _airCam.position.set(0, 100, 280);
+    _airCam.lookAt(0, 0, 0);
+
+    // Road group
+    _airRoadGroup = new THREE.Group();
+    _airScene.add(_airRoadGroup);
+    _airBuildRoad();
+
+    // Sky dome
+    var skyGeo = new THREE.SphereGeometry(2000, 32, 15);
+    var skyMat = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        uniforms: {
+            topColor: { value: new THREE.Color(0x2a6ab5) },
+            bottomColor: { value: new THREE.Color(0xd0e8f0) },
+            offset: { value: 200 }, exponent: { value: 0.7 }
+        },
+        vertexShader: 'varying vec3 vWorldPos; void main() { vec4 wp = modelMatrix * vec4(position, 1.0); vWorldPos = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }',
+        fragmentShader: 'uniform vec3 topColor; uniform vec3 bottomColor; uniform float offset; uniform float exponent; varying vec3 vWorldPos; void main() { float h = normalize(vWorldPos + vec3(0.0, offset, 0.0)).y; gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0); }'
+    });
+    var skyDome = new THREE.Mesh(skyGeo, skyMat);
+    _airScene.add(skyDome);
+
+    // 3D event handlers — pan + proportional zoom
+    _air3dCanvas.style.cursor = 'grab';
+    var _isDrag = false, _prev = {x:0, y:0};
+    _air3dCanvas.addEventListener('mousedown', function(e) {
+        e.preventDefault(); e.stopPropagation();
+        _isDrag = true; _prev = {x:e.clientX, y:e.clientY};
+        _air3dCanvas.style.cursor = 'grabbing';
+    }, { passive: false });
+    window.addEventListener('mouseup', function() {
+        if (_isDrag) { _isDrag = false; _air3dCanvas.style.cursor = 'grab'; }
+    });
+    window.addEventListener('mousemove', function(e) {
+        if (!_isDrag) return;
+        e.preventDefault();
+        var dx = e.clientX - _prev.x, dy = e.clientY - _prev.y;
+        _prev = {x:e.clientX, y:e.clientY};
+        if (!_airMap) return;
+        var zoom = _airMap.getZoom();
+        var mpp = 156543 * Math.cos(_airMapCtrLat * Math.PI / 180) / Math.pow(2, zoom);
+        _airMapCtrLat += -(dy * mpp) / 111000;
+        _airMapCtrLon += -(dx * mpp) / (111000 * Math.cos(_airMapCtrLat * Math.PI / 180));
+        midLat = _airMapCtrLat; midLon = _airMapCtrLon;
+        _airMap.setView([_airMapCtrLat, _airMapCtrLon], zoom, { animate: false });
+        _airUpdateZoneMarkers();
+        _air3DBoundsCache = null;
+    });
+    _air3dCanvas.addEventListener('wheel', function(e) {
+        e.preventDefault(); e.stopPropagation();
+        _airRadius = Math.max(40, Math.min(700, _airRadius + e.deltaY * 0.3));
+        _airSyncZoom();
+    }, { passive: false });
+}
+
+function _airBuildRoad() {
+    // Clear old road elements
+    while (_airRoadGroup.children.length > 0) _airRoadGroup.remove(_airRoadGroup.children[0]);
+    var rw = _airRoadWidth;
+    // Road surface
+    var roadGeo = new THREE.PlaneGeometry(1800, rw);
+    roadGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+    var roadMat = new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.85, transparent: true });
+    _airRoadGroup.add(new THREE.Mesh(roadGeo, roadMat));
+    // Centre line
+    var clGeo = new THREE.PlaneGeometry(1800, 0.6);
+    clGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+    var clMesh = new THREE.Mesh(clGeo, new THREE.MeshPhongMaterial({ color: 0xfde047 }));
+    clMesh.position.y = 0.02; _airRoadGroup.add(clMesh);
+    // Edge lines
+    [-rw * 0.5 + 0.3, rw * 0.5 - 0.3].forEach(function(ez) {
+        var eg = new THREE.PlaneGeometry(1800, 0.4);
+        eg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+        var em = new THREE.Mesh(eg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
+        em.position.set(0, 0.02, ez); _airRoadGroup.add(em);
+    });
+}
+
+function _airInitMap() {
+    if (_airMap) return;
+    var el = document.getElementById('airMiniMap');
+    if (!el || typeof L === 'undefined') return;
+    _airMap = L.map('airMiniMap', {
+        zoomControl: false, attributionControl: false,
+        dragging: false, scrollWheelZoom: false,
+        doubleClickZoom: false, keyboard: false, boxZoom: false, touchZoom: false
+    }).setView([midLat, midLon], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(_airMap);
+    _airMapReady = true;
+    setTimeout(function() { if (_airMap) _airMap.invalidateSize(true); }, 80);
+    setTimeout(function() { if (_airMap) _airMap.invalidateSize(true); }, 300);
+}
+
+function _airCenterMapOnZone() {
+    if (!_airMap) return;
+    var ctrLat = midLat, ctrLon = midLon;
+    if (selectedZoneId && ZONES && ZONES.length) {
+        var z = ZONES.find(function(zz) { return zz.zoneId === selectedZoneId; });
+        if (z && z.lat && z.lon) { ctrLat = z.lat; ctrLon = z.lon; }
+    }
+    // Compute XZ_SCALE from bridge path span
+    if (_airBridgePath && _airBridgePath.length >= 2) {
+        var maxAbs = 0;
+        for (var i = 0; i < _airBridgePath.length; i++) {
+            var dLat = Math.abs(_airBridgePath[i].lat - ctrLat);
+            var dLon = Math.abs(_airBridgePath[i].lon - ctrLon);
+            if (dLat > maxAbs) maxAbs = dLat;
+            if (dLon > maxAbs) maxAbs = dLon;
+        }
+        if (maxAbs > 0.0001) XZ_SCALE = 900 / maxAbs;
+    }
+    _airMapCtrLat = ctrLat; _airMapCtrLon = ctrLon;
+    midLat = ctrLat; midLon = ctrLon;
+    _airMap.setView([ctrLat, ctrLon], _airMap.getZoom(), { animate: false });
+    // Road rotation
+    _airRoadGroup.rotation.y = ((_airHwBearing || 90) - 90) * Math.PI / 180;
+    // Draw highway polyline
+    _airDrawHwyPolyline();
+    // Update zone markers
+    _air3DBoundsCache = null;
+    _airUpdateZoneMarkers();
+    _airSyncZoom();
+    _airUpdateLocBadge();
+}
+
+function _airDrawHwyPolyline() {
+    if (_airHwyPolyline) { _airMap.removeLayer(_airHwyPolyline); _airHwyPolyline = null; }
+    if (!_airBridgePath || _airBridgePath.length < 2) return;
+    var latlngs = _airBridgePath.map(function(p) { return [p.lat, p.lon]; });
+    _airHwyPolyline = L.polyline(latlngs, {
+        color: '#ff6600', weight: 4, opacity: 0.7, dashArray: '8,4'
+    }).addTo(_airMap);
+}
+
+function _airUpdateZoneMarkers() {
+    _airZoneMarkers.forEach(function(m) { _airScene.remove(m); });
+    _airZoneMarkers = [];
+    if (!_airBridgePath || _airBridgePath.length < 2) return;
+    // Center pin
+    var ctrPole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.5, 0.5, 12, 8),
+        new THREE.MeshPhongMaterial({ color: 0x00ff88, emissive: 0x004422, emissiveIntensity: 0.4 }));
+    ctrPole.position.set(0, 6, 0); _airScene.add(ctrPole); _airZoneMarkers.push(ctrPole);
+    // Bridge path pins
+    for (var i = 0; i < _airBridgePath.length; i++) {
+        if (i > 0 && i < _airBridgePath.length - 1 && i % 5 !== 0) continue;
+        var p = norm(_airBridgePath[i].lat, _airBridgePath[i].lon);
+        var pole = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.3, 0.3, 8, 6),
+            new THREE.MeshPhongMaterial({ color: 0xffd700 }));
+        pole.position.set(p.x, 4, p.z); _airScene.add(pole); _airZoneMarkers.push(pole);
+        var sph = new THREE.Mesh(
+            new THREE.SphereGeometry(1.2, 8, 6),
+            new THREE.MeshPhongMaterial({ color: 0xffd700, emissive: 0x442200, emissiveIntensity: 0.3 }));
+        sph.position.set(p.x, 9, p.z); _airScene.add(sph); _airZoneMarkers.push(sph);
+    }
+    // Endpoint pins
+    var p0 = norm(_airBridgePath[0].lat, _airBridgePath[0].lon);
+    var pN = norm(_airBridgePath[_airBridgePath.length-1].lat, _airBridgePath[_airBridgePath.length-1].lon);
+    [{p: p0, c: 0xff4444}, {p: pN, c: 0x44ff44}].forEach(function(ep) {
+        var eMesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.6, 0.6, 10, 8),
+            new THREE.MeshPhongMaterial({ color: ep.c, emissive: ep.c, emissiveIntensity: 0.2 }));
+        eMesh.position.set(ep.p.x, 5, ep.p.z); _airScene.add(eMesh); _airZoneMarkers.push(eMesh);
+    });
+}
+
+function _airGetBounds() {
+    if (_air3DBoundsCache) return _air3DBoundsCache;
+    var r = { minX: -900, maxX: 900, minZ: -900, maxZ: 900 };
+    if (!_airBridgePath || _airBridgePath.length < 2) return r;
+    var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (var i = 0; i < _airBridgePath.length; i++) {
+        var p = norm(_airBridgePath[i].lat, _airBridgePath[i].lon);
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+    }
+    r = { minX: minX, maxX: maxX, minZ: minZ, maxZ: maxZ };
+    _air3DBoundsCache = r;
+    return r;
+}
+
+function _airSyncZoom() {
+    if (!_airMap) return;
+    var r = (_airRadius - 40) / (700 - 40);
+    var baseZoom = 18 - r * 9;
+    var scaleAdj = Math.log(XZ_SCALE / 800) / Math.LN2 * 0.6;
+    var z = Math.round(baseZoom - scaleAdj);
+    z = Math.max(8, Math.min(18, z));
+    if (z !== _airMap.getZoom()) _airMap.setZoom(z, { animate: false });
+}
+
+function _airUpdateLocBadge() {
+    var hwyEl = document.getElementById('airLocHwy');
+    var zoneEl = document.getElementById('airLocZone');
+    var coordEl = document.getElementById('airLocCoord');
+    if (hwyEl) hwyEl.textContent = HW;
+    if (zoneEl) {
+        var z = ZONES.find(function(zz) { return zz.zoneId === selectedZoneId; });
+        zoneEl.textContent = z ? z.zoneName : 'All Zones';
+    }
+    if (coordEl) coordEl.textContent = _airMapCtrLat.toFixed(4) + '°N, ' + Math.abs(_airMapCtrLon).toFixed(4) + '°W';
+}
+
+function _airUpdateCamera() {
+    var brg = (_airHwBearing || 90) * Math.PI / 180;
+    var camHeight = _airRadius * Math.sin(_airPhi);
+    var camHoriz = _airRadius * Math.cos(_airPhi);
+    _airCam.position.x = -camHoriz * Math.sin(brg - Math.PI / 2);
+    _airCam.position.y = Math.max(15, camHeight);
+    _airCam.position.z = -camHoriz * Math.cos(brg - Math.PI / 2);
+    _airCam.lookAt(0, 0, 0);
+}
+
+function _airSyncVehicles3D() {
+    // Remove stale meshes
+    _airVehicleMeshes = _airVehicleMeshes.filter(function(m) {
+        if (!vehicleObjects.find(function(vo) { return vo.ev && vo.ev.vehicleId === m.userData.vid; })) {
+            _airScene.remove(m);
+            if (m.userData.labelSprite) _airScene.remove(m.userData.labelSprite);
+            return false;
+        }
+        return true;
+    });
+    // Add new meshes for vehicles not yet in 3D scene
+    vehicleObjects.forEach(function(vo) {
+        var vid = vo.vid;
+        var exists = _airVehicleMeshes.find(function(m) { return m.userData.vid === vid; });
+        if (!exists && vo.ev) {
+            var ev = vo.ev;
+            var altY = (ev.altitudeMeters || 60) * ALT_SCALE;
+            var geo = new THREE.BoxGeometry(3, 0.8, 3);
+            var mat = new THREE.MeshPhongMaterial({ color: new THREE.Color(vo.vc.color || '#00bcd4') });
+            var mesh = new THREE.Mesh(geo, mat);
+            var p = norm(ev.latitude || midLat, ev.longitude || midLon);
+            mesh.position.set(p.x, altY, p.z);
+            mesh.userData = {
+                vid: vid, ev: vo.ev, vc: vo.vc,
+                spd: ev.speedMph || 30,
+                dir: ev.direction || _airHwBearing || 90,
+                altY: altY
+            };
+            _airScene.add(mesh);
+            _airVehicleMeshes.push(mesh);
+        }
+    });
+}
+
+function _airAnimate3D() {
+    if (!_air3dAnimRunning) return;
+    requestAnimationFrame(_airAnimate3D);
+
+    _airUpdateCamera();
+
+    // Sync vehicles periodically
+    if (window._airTick === undefined) window._airTick = 0;
+    window._airTick++;
+    if (window._airTick % 30 === 0) _airSyncVehicles3D();
+
+    // Move vehicles using bearing-based velocity from input data
+    var bp = _airGetBounds();
+    var margin = 30;
+    _airVehicleMeshes.forEach(function(m) {
+        var ud = m.userData;
+        var dir = ud.dir || _airHwBearing || 90;
+        var spd = ud.spd || 30;
+        var rad = dir * Math.PI / 180;
+        var vx = spd * 0.025 * Math.sin(rad);
+        var vz = spd * 0.025 * Math.cos(rad);
+        m.position.x += vx;
+        m.position.z += vz;
+        m.rotation.y = -(dir - 90) * Math.PI / 180;
+        // Altitude oscillation
+        m.position.y = ud.altY + Math.sin(window._airTick * 0.025 + ud.vid.length) * 1.2;
+        // Remove if exits bridge bounds
+        if (m.position.x > bp.maxX + margin || m.position.x < bp.minX - margin ||
+            m.position.z > bp.maxZ + margin || m.position.z < bp.minZ - margin) {
+            _airScene.remove(m);
+            _airVehicleMeshes = _airVehicleMeshes.filter(function(x) { return x !== m; });
+        }
+    });
+
+    // Render
+    var cw = _air3dCanvas.clientWidth, ch = _air3dCanvas.clientHeight;
+    _airRenderer.setSize(cw, ch, false);
+    _airCam.aspect = cw / ch;
+    _airCam.updateProjectionMatrix();
+    _airRenderer.render(_airScene, _airCam);
+}
+
+// Fetch GetAnimationData from AirScene controller
+async function _airRefresh3D() {
+    if (!selectedZoneId || !selectedServerId) return;
+    try {
+        var params = 'highwayId=' + encodeURIComponent(HW) +
+                     '&zoneId=' + encodeURIComponent(selectedZoneId) +
+                     '&serverId=' + encodeURIComponent(selectedServerId) +
+                     '&mode=air' +
+                     (simRunning ? '&simOnly=true' : '');
+        var r = await fetch('/AirScene/GetAnimationData?' + params);
+        if (!r.ok) return;
+        var data = await r.json();
+        if (data.bridgePath && data.bridgePath.length > 0) {
+            _airBridgePath = data.bridgePath.map(function(p) { return { lat: p.lat, lon: p.lon }; });
+        }
+        if (typeof data.hwBearing === 'number') _airHwBearing = data.hwBearing;
+        if (data.isEW !== undefined) _airHwyIsEW = data.isEW;
+        // Update ZONES if provided
+        if (data.highwayCoords && data.highwayCoords.length > 0) {
+            // Update zones for centering
+        }
+        // Re-center and rebuild
+        if (_airViewMode === '3d') {
+            _airCenterMapOnZone();
+            // Load vehicles into vehicleObjects for 3D sync
+            if (data.vehicles && data.vehicles.length > 0) {
+                // Clear old vehicles
+                vehicleObjects.forEach(function(vo) {
+                    if (vo.meshP) _airScene.remove(vo.meshP);
+                    if (vo.meshS) _airScene.remove(vo.meshS);
+                    if (vo.meshT) _airScene.remove(vo.meshT);
+                });
+                vehicleObjects = [];
+                _airVehicleMeshes.forEach(function(m) { _airScene.remove(m); });
+                _airVehicleMeshes = [];
+                // Add new vehicles
+                data.vehicles.forEach(function(ev) {
+                    var vc = resolveClass(ev);
+                    var vo = buildVehicle(ev);
+                    vo.overlays = [];
+                    vehicleObjects.push(vo);
+                });
+                _airSyncVehicles3D();
+            }
+        }
+    } catch(e) { console.warn('AirScene 3D refresh error:', e); }
 }
 
 // Bug Fix 2: BroadcastChannel — only call onSimStateChange for lifecycle events.
