@@ -1989,6 +1989,8 @@ function _syncAirMeshes() {
     });
     // Add new meshes for vehicles not yet in the 3D scene
     vehicleData.forEach(function(vd, vid) {
+        // Skip vehicles that have exited the bridge — don't respawn them
+        if (vd.exited) return;
         var exists = airVehicleMeshes3.find(function(m){ return m.userData.vid === vid; });
         if (!exists) {
             var mesh = _makeAir3DVehicle(vd.ev, vd.vc, vd);
@@ -2012,8 +2014,8 @@ function _syncAirMeshes() {
 
             // ── Bearing-based velocity decomposition (matches 2D overlay) ──
             // bearing 0°=N → +Z, 90°=E → +X, 180°=S → -Z, 270°=W → -X
-            var vx3 = spd3 * 0.025 * Math.sin(rad3);
-            var vz3 = spd3 * 0.025 * Math.cos(rad3);
+            var vx3 = spd3 * 0.012 * Math.sin(rad3);
+            var vz3 = spd3 * 0.012 * Math.cos(rad3);
 
             // Perpendicular lane offset (perpendicular to bearing)
             var perpRad = rad3 + Math.PI / 2;
@@ -2100,18 +2102,15 @@ function _animateAir3D() {
             ud.dir = dir;
             // Bearing 0°=N→+Z, 90°=E→+X, 180°=S→-Z, 270°=W→-X
             var rad = dir * Math.PI / 180;
-            ud.vx = spd * 0.025 * Math.sin(rad);
-            ud.vz = spd * 0.025 * Math.cos(rad);
+            ud.vx = spd * 0.012 * Math.sin(rad);
+            ud.vz = spd * 0.012 * Math.cos(rad);
             // Update rotation to match direction from input data
             m.rotation.y = -(dir - 90) * Math.PI / 180;
         }
 
-        // Move vehicle in 3D scene coordinates — both X and Z from bearing
+        // Move vehicle in 3D scene coordinates — velocity only, no pull-back
         m.position.x += ud.vx;
         m.position.z += ud.vz;
-        // Gentle lane keeping — nudge toward lane offset
-        m.position.x += (ud.laneX - (m.position.x - ud.vx)) * 0.02;
-        m.position.z += (ud.laneZ - (m.position.z - ud.vz)) * 0.02;
 
         // Gentle bob for visual life
         // FlyCar: maintain altitude-based Y + gentle hover oscillation
@@ -2139,6 +2138,9 @@ function _animateAir3D() {
             m.position.z > bp.maxZ + margin || m.position.z < bp.minZ - margin) {
             if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
             airScene3.remove(m);
+            // Mark as exited in vehicleData so it doesn't respawn at origin
+            var _vd = vehicleData.get(ud.vid);
+            if (_vd) _vd.exited = true;
             airVehicleMeshes3 = airVehicleMeshes3.filter(function(x){ return x !== m; });
         }
     });
@@ -2988,7 +2990,13 @@ function loadEvents(events) {
             dir = (Math.random() > 0.5) ? Math.round(_brg) : Math.round(_brgRev);
         }
         var existing = vehicleData.get(vid);
-        if (existing && !isNaN(existing.lat) && !isNaN(existing.lon)
+        // If vehicle was exited but sim now provides new coordinates far
+        // from where it exited, allow it to re-enter the scene
+        if (existing && existing.exited && existing.lat && lat &&
+            Math.abs(existing.lat - lat) > 0.0001 && Math.abs(existing.lon - lon) > 0.0001) {
+            existing.exited = false;  // new coords = re-enter
+        }
+        if (existing && !existing.exited && !isNaN(existing.lat) && !isNaN(existing.lon)
                      && existing.lat !== 0 && existing.lon !== 0
                      && existing.zoneLat === (zone ? zone.lat : null)) {
             // Vehicle already animated — preserve current GPS position,
