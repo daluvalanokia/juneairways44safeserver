@@ -1,0 +1,32 @@
+@model AirwaysMergeSafeServer.Models.AirCarEntry
+@{
+    ViewData["Title"] = $"Delete: {Model.Make} {Model.Model}";
+}
+
+<div class="mss-page-header">
+    <h2 class="mss-page-title text-danger">🗑 Delete AirCar</h2>
+</div>
+
+<div class="mss-card">
+    <div class="mss-card-header bg-danger text-white">Confirm Deletion</div>
+    <div class="card-body">
+        <div class="d-flex align-items-center gap-3 mb-3">
+            @if (!string.IsNullOrEmpty(Model.BrandLogo))
+            {
+                <img src="@Model.BrandLogo" alt="@Model.Make" width="64" height="64" style="border-radius:50%" />
+            }
+            <div>
+                <h4>@Model.Make @Model.Model</h4>
+                <span class="badge bg-info text-dark">@Model.Type.Replace("_", " ")</span>
+                <span class="badge bg-secondary">@Model.Size</span>
+            </div>
+        </div>
+        <p class="text-muted">Are you sure you want to delete this air car from the registry? This action cannot be undone.</p>
+        <form asp-action="DeleteConfirmed" method="post">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="id" value="@Model.Id" />
+            <button type="submit" class="btn btn-danger">🗑 Yes, Delete</button>
+            <a href="/AirCars" class="btn btn-outline-secondary">Cancel</a>
+        </form>
+    </div>
+</div>
