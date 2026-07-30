@@ -1253,7 +1253,7 @@ function _renderLoop() {
 // ── THREE.JS SCENE (Perspective/Side/Split views) ─────────────────────
 // Enhanced 3D side-view with textured vehicles, roadside scenery, and
 // a richer camera perspective showing vehicles moving along the road
-// with background scenery (trees, lights, terrain, sky gradient).
+// with map background, bridge, vehicles, and sky gradient.
 
 const _air3dCanvas = document.getElementById('air3dCanvas');
 const renderer  = new THREE.WebGLRenderer({ canvas: _air3dCanvas, antialias: true, alpha: true });
@@ -1350,32 +1350,7 @@ function _airBuildRoad3D() {
 }
 _airBuildRoad3D();
 
-// ── Roadside trees (cone + trunk) ──
-var trunkGeo = new THREE.CylinderGeometry(1.2, 1.5, 6, 6);
-var trunkMat = new THREE.MeshPhongMaterial({ color: 0x5a3a1a });
-var leavesGeo = new THREE.ConeGeometry(5, 14, 7);
-var leavesMat = new THREE.MeshPhongMaterial({ color: 0x2d6a2d });
-var leavesMat2 = new THREE.MeshPhongMaterial({ color: 0x3a7a3a });
-
-for (var ti = -18; ti <= 18; ti += 3) {
-    var tx = ti * 45;
-    // Left side trees
-    var tl = new THREE.Group();
-    tl.add(new THREE.Mesh(trunkGeo, trunkMat));
-    var leafL = new THREE.Mesh(leavesGeo, leavesMat);
-    leafL.position.y = 9; tl.add(leafL);
-    tl.position.set(tx + (Math.random() - 0.5) * 10, 0, 90 + Math.random() * 30);
-    tl.scale.setScalar(0.7 + Math.random() * 0.5);
-    airRoadGroup3.add(tl);
-    // Right side trees
-    var tr = new THREE.Group();
-    tr.add(new THREE.Mesh(trunkGeo, trunkMat));
-    var leafR = new THREE.Mesh(leavesGeo, leavesMat2);
-    leafR.position.y = 9; tr.add(leafR);
-    tr.position.set(tx + (Math.random() - 0.5) * 10, 0, -90 - Math.random() * 30);
-    tr.scale.setScalar(0.7 + Math.random() * 0.5);
-    airRoadGroup3.add(tr);
-}
+// ── Roadside trees removed for AirScene — clean map background ──
 
 // ── Street lights (pole + lamp head) ──
 var poleGeo = new THREE.CylinderGeometry(0.5, 0.6, 18, 6);
@@ -1403,19 +1378,7 @@ for (var li = -15; li <= 15; li += 5) {
 
 // Guard rails moved into _airBuildRoad3D() above
 
-// ── Distant hills (low-poly ridge on both sides) ──
-for (var hi = 0; hi < 8; hi++) {
-    var hillGeo = new THREE.SphereGeometry(80 + Math.random() * 60, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2);
-    var hillMat = new THREE.MeshPhongMaterial({ color: 0x3a5a3a });
-    var hillL = new THREE.Mesh(hillGeo, hillMat);
-    hillL.position.set(-700 + hi * 180, -2, 350 + Math.random() * 100);
-    hillL.scale.set(1.5, 0.4 + Math.random() * 0.3, 1);
-    airRoadGroup3.add(hillL);
-    var hillR = new THREE.Mesh(hillGeo.clone(), hillMat);
-    hillR.position.set(-700 + hi * 180, -2, -350 - Math.random() * 100);
-    hillR.scale.set(1.5, 0.4 + Math.random() * 0.3, 1);
-    airRoadGroup3.add(hillR);
-}
+// ── Distant hills removed for AirScene — clean map background ──
 
 // ── Cameras ──
 const airCamP = new THREE.PerspectiveCamera(50, _air3dCanvas.clientWidth / _air3dCanvas.clientHeight, 0.1, 4000);
