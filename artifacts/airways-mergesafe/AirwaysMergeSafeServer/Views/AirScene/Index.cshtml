@@ -47,7 +47,23 @@
 .band-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
 </style>
 
-<!-- ── Header ──────────────────────────────────────────────────────────── -->
+<!-- ═════════════════════════════════════════════════════════════════════════
+     AirScene — 3D Air Traffic Visualization (Independent Module)
+     ═════════════════════════════════════════════════════════════════════════
+     • Shares the same visual rendering pipeline as Traffic3D (sky, road,
+       trees, lights, hills) but with air-specific modifications:
+       - Vehicles fly at altitude (Y-axis offset from altitudeMeters)
+       - Aircraft meshes (fuselage, wings, rotors, tail fin) not car bodies
+       - AirCar Vehicle Registry for brand logos/specs (not VehicleRegistry)
+       - Altitude band planes (subtle, not corridor boxes)
+     • Completely independent from Traffic3D:
+       - Separate controller: AirSceneController (no Traffic3D deps)
+       - Separate API: /AirScene/GetAnimationData
+       - Separate DI: IAirCarRegistry (not IVehicleRegistry)
+       - Separate BroadcastChannel: 'airways_air_sim' (not 'airways_sim')
+       - Separate localStorage: airways_air_sim_* (not airways_sim_*)
+     • Modifications to Traffic3D will NOT affect AirScene and vice versa.
+     ═════════════════════════════════════════════════════════════════════════ -->
 <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
     <div>
         <h4 class="mb-0">🛫 3D Air Scene</h4>
@@ -1091,7 +1107,7 @@ async function _airRefresh3D() {
 // Previously, onSimStateChange(e.data.type === 'sim_started') was called for ALL
 // messages, toggling Pause↔Resume on every sim_vehicle post interval.
 if (typeof BroadcastChannel !== 'undefined') {
-    var _airSimBc = new BroadcastChannel('airways_sim');
+    var _airSimBc = new BroadcastChannel('airways_air_sim');
     _airSimBc.onmessage = function(e) {
         if (!e.data) return;
 
@@ -1116,8 +1132,8 @@ if (typeof BroadcastChannel !== 'undefined') {
 // Bug Fix 4: Separate storage listeners — airways_sim_active handles lifecycle state;
 // airways_sim_last_event handles vehicle payloads only (no dead sim_started check).
 window.addEventListener('storage', function(e) {
-    if (e.key === 'airways_sim_active') { onSimStateChange(e.newValue === 'true'); return; }
-    if (e.key === 'airways_sim_context' && _airSimRunning) { _airApplySimContext(); return; }
+    if (e.key === 'airways_air_sim_active') { onSimStateChange(e.newValue === 'true'); return; }
+    if (e.key === 'airways_air_sim_context' && _airSimRunning) { _airApplySimContext(); return; }
     if (e.key !== 'airways_sim_last_event' || !e.newValue) return;
     try {
         var msg = JSON.parse(e.newValue);
@@ -1135,7 +1151,7 @@ window.addEventListener('storage', function(e) {
 });
 // On page load: if sim already running, apply its context immediately
 (function() {
-    if (localStorage.getItem('airways_sim_active') === 'true') {
+    if (localStorage.getItem('airways_air_sim_active') === 'true') {
         _airApplySimContext();
         onSimStateChange(true);
     }
