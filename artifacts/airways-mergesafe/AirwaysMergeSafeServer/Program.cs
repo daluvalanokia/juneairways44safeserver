@@ -90,6 +90,7 @@ try
 
     // D5: IVehicleRegistry — singleton via DI
     builder.Services.AddSingleton<IVehicleRegistry, VehicleRegistry>();
+    builder.Services.AddSingleton<IAirCarRegistry, AirCarRegistry>();
 
     // VehicleClassifier — scoped so it gets a fresh instance per request
     builder.Services.AddScoped<VehicleClassifier>();
