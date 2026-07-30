@@ -52,7 +52,7 @@ public class AirSceneController : Controller
         // that is either a ground-mode vehicle or explicitly flagged as non-flycar)
         var recentEvents = await _db.VehicleEvents.AsNoTracking()
             .Where(e => e.HighwayId == highwayId
-                     && (e.VehicleMode == "ground" || e.IsAirFlyCar == "N"))
+                     && (e.VehicleMode == "ground" || e.VehicleMode == "air" || e.IsAirFlyCar == "Y" || e.IsAirFlyCar == "N"))
             .OrderByDescending(e => e.CreatedDate)
             .Take(80)
             .Select(e => new {
@@ -283,7 +283,7 @@ public class AirSceneController : Controller
 
         var baseQuery = _db.VehicleEvents.AsNoTracking()
             .Where(e => e.HighwayId == highwayId
-                     && (e.VehicleMode == "ground" || e.IsAirFlyCar == "N"));
+                     && (e.VehicleMode == "ground" || e.VehicleMode == "air" || e.IsAirFlyCar == "Y" || e.IsAirFlyCar == "N"));
 
         // When simOnly=true, only fetch recent events (last 10 min) — these are
         // the simulation's events. Also filter by the sim's exact zone/server.
@@ -451,6 +451,7 @@ public class AirSceneController : Controller
                 vehicle_class_json = ev.VehicleClassJson ?? "",
                 vehicle_make = _extractMakeFromPayload(ev.Payload),
                 is_air_fly_car = ev.IsAirFlyCar ?? "N",
+                altitude_meters = ev.AltitudeMeters ?? 0,
                 created_date = ev.CreatedDate,
                 validated = needsSnap // for debugging: true if coords were snapped
             });
