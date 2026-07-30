@@ -124,12 +124,12 @@
 </div>
 
 <!-- ── Scene grid (split / single-panel modes) ────────────────────────── -->
-<div id="sceneWrap" style="position:relative;height:520px;border-radius:8px;overflow:hidden;background:#1a2f1a">
-    <!-- Leaflet map — fills entire scene as background -->
-    <div id="airMiniMap" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:0"></div>
-    <!-- Three.js 3D canvas — transparent, renders on top of map -->
-    <canvas id="air3dCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1"></canvas>
-    <!-- 2D label overlay — on top of everything -->
+<div id="sceneWrap" style="position:relative;height:520px;border-radius:8px;overflow:hidden;background:#0a0f1e">
+    <!-- Leaflet map — OSM tile background (visible in Top view; faded in 3D views) -->
+    <div id="airMiniMap" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:0;transition:opacity .3s"></div>
+    <!-- Three.js 3D canvas — sits above map; alpha:true lets map show through at configurable opacity -->
+    <canvas id="air3dCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;display:none"></canvas>
+    <!-- 2D label overlay — 2D vehicle icons + bridge line (Top view only) -->
     <canvas id="air-label-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2"></canvas>
     <!-- Overlay labels for split mode -->
     <div id="labelA" class="badge bg-secondary position-absolute" style="top:6px;left:6px;display:none;z-index:3">Perspective</div>
@@ -1257,7 +1257,10 @@ function _renderLoop() {
 
 const _air3dCanvas = document.getElementById('air3dCanvas');
 const renderer  = new THREE.WebGLRenderer({ canvas: _air3dCanvas, antialias: true, alpha: true });
+// clearColor alpha=0 → THREE.js background is transparent → Leaflet map shows through
+// Map opacity (set per-view in setViewport) controls how much map is visible
 renderer.setClearColor(0x000000, 0);
+renderer.autoClear = true;
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(_air3dCanvas.clientWidth, _air3dCanvas.clientHeight);
 
@@ -1463,9 +1466,10 @@ function _airRenderOSMStructures(elements) {
         var mat = new THREE.MeshPhongMaterial({
             color: col,
             transparent: true,
-            opacity: 0.60,
+            opacity: 0.65,
             shininess: 60,
-            flatShading: true
+            flatShading: true,
+            side: THREE.DoubleSide   // render both faces — handles winding order issues
         });
         var mesh = new THREE.Mesh(geo, mat);
         airScene3.add(mesh);
@@ -1991,11 +1995,12 @@ function _animateAir3D() {
     });
 
     var cw = _air3dCanvas.clientWidth, ch = _air3dCanvas.clientHeight;
-    renderer.setSize(cw, ch, false);
+    if (cw > 0 && ch > 0) renderer.setSize(cw, ch, false);
     var cam = airCurrentView === 'side' ? airCamS : airCamP;
-    if (cam.isPerspectiveCamera) { cam.aspect = cw/ch; cam.updateProjectionMatrix(); }
-    // Update side camera position each frame for smooth nav-style view
-    if (airCurrentView === 'side') _updateCamera3D();
+    // Update perspective camera every frame (tracks zoom/pan)
+    if (airCurrentView !== 'side') _updateCamera3D();
+    // Side camera: update aspect each frame, position set on view entry
+    if (cam.isPerspectiveCamera) { cam.aspect = cw / Math.max(1, ch); cam.updateProjectionMatrix(); }
     renderer.render(airScene3, cam);
 }
 
@@ -2011,34 +2016,48 @@ var _isDrag3 = false, _prevM3 = {x:0,y:0};
 var _camPhiFixed = 0.35;   // ~20° tilt from top-down — enough 3D depth, stable alignment
 
 function _updateCamera3D() {
-    // Camera looks along the highway direction from above
     var brg = (_airHwBearingDeg || 90) * Math.PI / 180;
-    // Camera positioned above and along the highway, looking down the road
-    var camDist = airRadius3 * 0.4;
-    var camHeight = airRadius3 * Math.sin(_camPhiFixed);
-    var camHoriz = airRadius3 * Math.cos(_camPhiFixed);
-    // Position camera along the highway bearing direction
-    airCamP.position.x = -camHoriz * Math.sin(brg - Math.PI/2);
-    airCamP.position.y = Math.max(15, camHeight);
-    airCamP.position.z = -camHoriz * Math.cos(brg - Math.PI/2);
-    airCamP.lookAt(0, 0, 0);
 
-    // ── Side view: 3D navigation map style ─────────────────────────────
-    // Low-angle camera with road in bottom-front, structures behind
-    // Camera distance and height scale with zoom (airRadius3)
-    var sideDist = Math.max(180, airRadius3 * 0.8);
-    var sideHeight = Math.max(20, airRadius3 * 0.12);
-    // Rotate side camera position to align with highway bearing
-    var sBrg = brg - Math.PI / 2;
-    airCamS.position.x = sideDist * Math.sin(sBrg);
-    airCamS.position.y = sideHeight;
-    airCamS.position.z = sideDist * Math.cos(sBrg);
-    // Look at a point along the road, slightly down — bridge in bottom front
-    var lookX = -80 * Math.sin(sBrg);
-    var lookZ = -80 * Math.cos(sBrg);
-    airCamS.lookAt(lookX, 5, lookZ);
-    airCamS.aspect = _air3dCanvas.clientWidth / _air3dCanvas.clientHeight;
+    // ── Perspective camera (⬡ 3D view) — top-down angled along highway ──
+    var camHeight = Math.max(15, airRadius3 * Math.sin(_camPhiFixed));
+    var camHoriz  = airRadius3 * Math.cos(_camPhiFixed);
+    airCamP.position.x = -camHoriz * Math.sin(brg - Math.PI / 2);
+    airCamP.position.y = camHeight;
+    airCamP.position.z = -camHoriz * Math.cos(brg - Math.PI / 2);
+    airCamP.lookAt(0, 0, 0);
+}
+
+// ── Side view camera setup — called once when entering side view ──────────
+// Navigation-map style: camera south of highway, low angle, looking north
+// so the highway bridge is at the bottom-front of frame and OSM buildings
+// recede into the background behind the highway.
+function _setSideCameraForView() {
+    var brg = (_airHwBearingDeg || 90) * Math.PI / 180;
+
+    // Camera sits PERPENDICULAR to the highway at a low elevation angle
+    // "Perpendicular" = rotated 90° from bearing = along the cross-road axis
+    var perpBrg = brg;                        // perpendicular to road
+    var dist    = Math.max(200, airRadius3 * 1.1);
+    var height  = Math.max(45, airRadius3 * 0.22);
+
+    // Place camera in front of the scene (positive Z = toward viewer)
+    airCamS.position.x =  dist * Math.sin(perpBrg);
+    airCamS.position.y =  height;
+    airCamS.position.z =  dist * Math.cos(perpBrg);
+
+    // Look at a point slightly behind the road center — bridge at bottom, buildings fill upper frame
+    airCamS.lookAt(
+        -60 * Math.sin(perpBrg),   // slightly toward buildings
+        8,                          // slightly above ground = bridge at bottom of frame
+        -60 * Math.cos(perpBrg)
+    );
+
+    airCamS.fov  = 52;
+    airCamS.near = 0.5;
+    airCamS.far  = 5000;
+    airCamS.aspect = _air3dCanvas.clientWidth / Math.max(1, _air3dCanvas.clientHeight);
     airCamS.updateProjectionMatrix();
+    console.log('[AirScene] Side cam set: dist=' + dist.toFixed(0) + ' h=' + height.toFixed(0) + ' brg=' + (_airHwBearingDeg||90).toFixed(1) + '°');
 }
 
 _air3dCanvas.addEventListener('mousedown', function(e) {
@@ -2178,23 +2197,42 @@ function _syncZoomAndScale3D() {
 function setViewport(view) {
     airCurrentView = view;
     var is2D = (view === 'top');
-    _air3dCanvas.style.display = is2D ? 'none' : '';
-    _air3dCanvas.style.opacity = is2D ? '1.0' : '0.72';
-    _air3dCanvas.style.pointerEvents = is2D ? 'none' : 'auto';
-    _oc.style.display = is2D ? '' : 'none';
 
+    // ── Canvas visibility ─────────────────────────────────────────────────
+    // Top view  : 2D label overlay visible, Three.js canvas hidden
+    // 3D views  : Three.js canvas visible + fully opaque, 2D overlay hidden
+    _air3dCanvas.style.display        = is2D ? 'none' : 'block';
+    _air3dCanvas.style.opacity        = '1.0';   // always opaque — map fades separately
+    _air3dCanvas.style.pointerEvents  = is2D ? 'none' : 'auto';
+    _oc.style.display                 = is2D ? 'block' : 'none';
+
+    // ── Map opacity — let OSM tiles show through at calibrated level ──────
+    // Top view:         full opacity  (map IS the view)
+    // Side view:        45% — buildings render over it, map provides geo context
+    // Perspective/3D:   30% — subtle geo reference only
+    // Split:            40% — balanced
+    var mapOpacity = is2D ? '1.0'
+        : view === 'side'        ? '0.45'
+        : view === 'perspective' ? '0.30'
+        : /* split */              '0.40';
+    var mapEl = document.getElementById('airMiniMap');
+    if (mapEl) { mapEl.style.visibility = 'visible'; mapEl.style.opacity = mapOpacity; }
+
+    // ── THREE.js render loop ──────────────────────────────────────────────
     if (!is2D && !_3dAnimRunning) {
-        _3dAnimRunning = true; _syncAirMeshes(); _animateAir3D();
-    } else if (is2D) {
+        // Resize canvas to actual pixel size before first render
+        _air3dCanvas.width  = _air3dCanvas.clientWidth;
+        _air3dCanvas.height = _air3dCanvas.clientHeight;
+        renderer.setSize(_air3dCanvas.clientWidth, _air3dCanvas.clientHeight, false);
+        _3dAnimRunning = true;
+        _syncAirMeshes();
+        _animateAir3D();
+    } else if (is2D && _3dAnimRunning) {
         _3dAnimRunning = false;
         renderer.clear();
     }
 
-    var mapEl = document.getElementById('airMiniMap');
-    mapEl.style.visibility = 'visible';
-    // Side view: higher opacity so 3D map is visible behind structures
-    mapEl.style.opacity = is2D ? '1.0' : (view === 'side' ? '0.75' : '0.55');
-
+    // ── Map interaction ───────────────────────────────────────────────────
     if (_map) {
         if (is2D) {
             _map.dragging.enable();
@@ -2202,24 +2240,39 @@ function setViewport(view) {
         } else {
             _map.dragging.disable();
             _map.getContainer().style.pointerEvents = 'none';
-            // ── Center map on highway midpoint + sync zoom ──
             _centerMapOnHighway();
             _syncMapZoom3D();
         }
     }
 
+    // ── Sky dome — hide in side view so OSM map shows as true background ──
+    var skyDomeObj = airScene3.getObjectByName('airSkyDome');
+    if (skyDomeObj) skyDomeObj.visible = (view !== 'side');
+
+    // ── Side-view specific: set camera for nav-map look ───────────────────
+    if (view === 'side') {
+        _setSideCameraForView();
+        // Fetch/refresh OSM structures when entering side view
+        if (!_airOSMLoaded || view !== _prevAirView) _airRebuildStructures();
+    }
+    var _prevAirView = view;
+
+    // ── Location badge ────────────────────────────────────────────────────
     var locBadge = document.getElementById('airLocationBadge');
     if (locBadge) {
         locBadge.style.display = is2D ? 'none' : '';
         _updateLocationBadge();
     }
 
+    // ── Split labels ──────────────────────────────────────────────────────
     ['labelA','labelB','labelC'].forEach(function(id) {
-        document.getElementById(id).style.display = view === 'split' ? '' : 'none';
+        var el = document.getElementById(id);
+        if (el) el.style.display = view === 'split' ? '' : 'none';
     });
+
     _bridgeDirty = true;
     if (_map) _map.invalidateSize();
-    console.log('[AirScene] Viewport set: ' + view + ' bridge dirty');
+    console.log('[AirScene] Viewport set: ' + view);
 }
 
 // ── Center the Leaflet map on the selected zone/server GPS ──
