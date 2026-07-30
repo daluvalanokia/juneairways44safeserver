@@ -56,11 +56,6 @@
         <i class="bi bi-wind mss-nav-icon"></i>
         <span>3D Air Scene</span>
     </a>
-    <a href="/AirCars"
-       class="mss-nav-item @(currentCtrl == "aircars" ? "active" : "")">
-        <i class="bi bi-airplane mss-nav-icon"></i>
-        <span>AirCar Registry</span>
-    </a>
     @if (Context.Session.GetString("UserType") == "admin")
     {
         <a href="/DatabaseViewer"
