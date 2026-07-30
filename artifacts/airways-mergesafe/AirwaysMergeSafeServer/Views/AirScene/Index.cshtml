@@ -1348,6 +1348,140 @@ function _airBuildRoad3D() {
     var rR = new THREE.Mesh(railGeo.clone(), railMat); rR.position.set(0, 1.5, -rw * 0.5);
     airRoadGroup3.add(rR); _airRoadMeshes3D.push(rR);
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// 3D NAVIGATION STRUCTURES — buildings behind the highway with labels
+// Renders like a 3D navigation map (Google/Apple Maps 3D mode):
+// - Building boxes on both sides behind the road
+// - Text labels floating above each structure
+// - Muted nav-map color palette (blues, grays, teals)
+// - Semi-transparent so the Leaflet map shows through
+// ══════════════════════════════════════════════════════════════════════════
+var _airStructures3D = [];
+var _airStructureLabels = [];
+
+function _airBuildStructures3D() {
+    // Clear old structures
+    _airStructures3D.forEach(function(m) { airScene3.remove(m); });
+    _airStructures3D = [];
+    _airStructureLabels.forEach(function(s) { airScene3.remove(s); });
+    _airStructureLabels = [];
+
+    // Navigation map building palette
+    var bldColors = [0x4a6a8a, 0x5a7a9a, 0x6a8aaa, 0x3a5a7a, 0x5a6a8a, 0x4a5a6a, 0x7a9aba, 0x3a4a6a];
+
+    // Building definitions: [xOffset, zOffset, width, depth, height, label]
+    // Positioned BEHIND the highway (negative Z = further from camera in side view)
+    var buildings = [
+        // Left side (behind road, further back)
+        [-120, -180, 30, 30, 45, 'Tower Alpha'],
+        [-80,  -240, 25, 35, 60, 'Control Tower'],
+        [-140, -320, 40, 28, 38, 'Terminal B'],
+        [-60,  -380, 22, 22, 52, 'Skyport 1'],
+        [-100, -460, 35, 40, 70, 'Hangar Complex'],
+        [-160, -540, 28, 32, 42, 'Tower Beta'],
+        [-50,  -620, 30, 25, 55, 'Terminal A'],
+        [-130, -700, 38, 35, 48, 'Tower Gamma'],
+        // Right side (behind road, further back)
+        [ 120, -180, 30, 30, 50, 'Tower Delta'],
+        [ 80,  -240, 25, 35, 42, 'Skyport 2'],
+        [ 140, -320, 40, 28, 65, 'Terminal C'],
+        [ 60,  -380, 22, 22, 38, 'Hangar East'],
+        [ 100, -460, 35, 40, 58, 'Tower Epsilon'],
+        [ 160, -540, 28, 32, 44, 'Control South'],
+        [ 50,  -620, 30, 25, 62, 'Terminal D'],
+        [ 130, -700, 38, 35, 36, 'Tower Zeta'],
+        // Mid-distance structures (smaller, between buildings and road)
+        [-90,  -120, 15, 15, 22, 'Depot'],
+        [ 90,  -120, 15, 15, 25, 'Station'],
+        [-70,  -100, 12, 12, 18, 'Gate 7'],
+        [ 70,  -100, 12, 12, 20, 'Gate 3'],
+    ];
+
+    buildings.forEach(function(b, idx) {
+        var x = b[0], z = b[1], w = b[2], d = b[3], h = b[4], label = b[5];
+        var col = bldColors[idx % bldColors.length];
+
+        // Building mesh — semi-transparent box
+        var geo = new THREE.BoxGeometry(w, h, d);
+        var mat = new THREE.MeshPhongMaterial({
+            color: col,
+            transparent: true,
+            opacity: 0.55,
+            shininess: 80
+        });
+        var mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(x, h / 2, z);
+        airScene3.add(mesh);
+        _airStructures3D.push(mesh);
+
+        // Building edges (nav-map style outline)
+        var edgeGeo = new THREE.EdgesGeometry(geo);
+        var edgeMat = new THREE.LineBasicMaterial({ color: col, opacity: 0.7, transparent: true });
+        var edges = new THREE.LineSegments(edgeGeo, edgeMat);
+        edges.position.copy(mesh.position);
+        airScene3.add(edges);
+        _airStructures3D.push(edges);
+
+        // Roof cap (slightly darker)
+        var roofGeo = new THREE.BoxGeometry(w + 1, 1.5, d + 1);
+        var roofMat = new THREE.MeshPhongMaterial({ color: col + 0x111111, transparent: true, opacity: 0.65 });
+        var roof = new THREE.Mesh(roofGeo, roofMat);
+        roof.position.set(x, h + 0.75, z);
+        airScene3.add(roof);
+        _airStructures3D.push(roof);
+
+        // ── Label sprite (canvas texture) ─────────────────────────────
+        var lc = document.createElement('canvas');
+        lc.width = 256; lc.height = 64;
+        var lctx = lc.getContext('2d');
+        // Background pill
+        lctx.fillStyle = 'rgba(15, 25, 45, 0.85)';
+        lctx.beginPath();
+        lctx.roundRect(4, 4, 248, 56, 10);
+        lctx.fill();
+        lctx.strokeStyle = 'rgba(100, 160, 255, 0.6)';
+        lctx.lineWidth = 2;
+        lctx.beginPath();
+        lctx.roundRect(4, 4, 248, 56, 10);
+        lctx.stroke();
+        // Label text
+        lctx.font = 'bold 26px Arial';
+        lctx.fillStyle = '#93c5fd';
+        lctx.textAlign = 'center';
+        lctx.textBaseline = 'middle';
+        lctx.fillText(label, 128, 32);
+
+        var lTex = new THREE.CanvasTexture(lc);
+        lTex.needsUpdate = true;
+        var sMat = new THREE.SpriteMaterial({ map: lTex, transparent: true, depthTest: true });
+        var sprite = new THREE.Sprite(sMat);
+        sprite.scale.set(20, 5, 1);
+        sprite.position.set(x, h + 6, z);
+        airScene3.add(sprite);
+        _airStructureLabels.push(sprite);
+    });
+
+    // Ground grid (nav-map style — subtle grid lines on the ground)
+    var gridMat = new THREE.LineBasicMaterial({ color: 0x3a5a7a, opacity: 0.12, transparent: true });
+    var gridGeo = new THREE.BufferGeometry();
+    var gridPts = [];
+    for (var gx = -400; gx <= 400; gx += 40) {
+        gridPts.push(new THREE.Vector3(gx, 0.05, -800));
+        gridPts.push(new THREE.Vector3(gx, 0.05, 100));
+    }
+    for (var gz = -800; gz <= 100; gz += 40) {
+        gridPts.push(new THREE.Vector3(-400, 0.05, gz));
+        gridPts.push(new THREE.Vector3( 400, 0.05, gz));
+    }
+    gridGeo.setFromPoints(gridPts);
+    var grid = new THREE.LineSegments(gridGeo, gridMat);
+    airScene3.add(grid);
+    _airStructures3D.push(grid);
+}
+
+// Build structures when scene initializes
+_airBuildStructures3D();
 _airBuildRoad3D();
 
 // ── Roadside trees removed for AirScene — clean map background ──
@@ -1383,9 +1517,9 @@ for (var li = -15; li <= 15; li += 5) {
 // ── Cameras ──
 const airCamP = new THREE.PerspectiveCamera(50, _air3dCanvas.clientWidth / _air3dCanvas.clientHeight, 0.1, 4000);
 airCamP.position.set(-180, 45, 90); airCamP.lookAt(60, 0, 0);
-// Side camera — positioned for a nice side-elevation view showing road + scenery
-const airCamS = new THREE.OrthographicCamera(-300, 300, 80, -80, 0.1, 3000);
-airCamS.position.set(0, 40, 400); airCamS.lookAt(0, 15, 0);
+// Side camera — 3D navigation map style: low angle, road in bottom-front, structures behind
+const airCamS = new THREE.PerspectiveCamera(45, _air3dCanvas.clientWidth / _air3dCanvas.clientHeight, 0.1, 5000);
+airCamS.position.set(0, 35, 320); airCamS.lookAt(0, 10, -80);
 
 var airCurrentView = 'top';
 var airRadius3 = 280, airTheta3 = 0.6, airPhi3 = 0.5;
@@ -1760,6 +1894,8 @@ function _animateAir3D() {
     renderer.setSize(cw, ch, false);
     var cam = airCurrentView === 'side' ? airCamS : airCamP;
     if (cam.isPerspectiveCamera) { cam.aspect = cw/ch; cam.updateProjectionMatrix(); }
+    // Update side camera position each frame for smooth nav-style view
+    if (airCurrentView === 'side') _updateCamera3D();
     renderer.render(airScene3, cam);
 }
 
@@ -1786,6 +1922,23 @@ function _updateCamera3D() {
     airCamP.position.y = Math.max(15, camHeight);
     airCamP.position.z = -camHoriz * Math.cos(brg - Math.PI/2);
     airCamP.lookAt(0, 0, 0);
+
+    // ── Side view: 3D navigation map style ─────────────────────────────
+    // Low-angle camera with road in bottom-front, structures behind
+    // Camera distance and height scale with zoom (airRadius3)
+    var sideDist = Math.max(180, airRadius3 * 0.8);
+    var sideHeight = Math.max(20, airRadius3 * 0.12);
+    // Rotate side camera position to align with highway bearing
+    var sBrg = brg - Math.PI / 2;
+    airCamS.position.x = sideDist * Math.sin(sBrg);
+    airCamS.position.y = sideHeight;
+    airCamS.position.z = sideDist * Math.cos(sBrg);
+    // Look at a point along the road, slightly down — bridge in bottom front
+    var lookX = -80 * Math.sin(sBrg);
+    var lookZ = -80 * Math.cos(sBrg);
+    airCamS.lookAt(lookX, 5, lookZ);
+    airCamS.aspect = _air3dCanvas.clientWidth / _air3dCanvas.clientHeight;
+    airCamS.updateProjectionMatrix();
 }
 
 _air3dCanvas.addEventListener('mousedown', function(e) {
@@ -1939,7 +2092,8 @@ function setViewport(view) {
 
     var mapEl = document.getElementById('airMiniMap');
     mapEl.style.visibility = 'visible';
-    mapEl.style.opacity = is2D ? '1.0' : '0.55';
+    // Side view: higher opacity so 3D map is visible behind structures
+    mapEl.style.opacity = is2D ? '1.0' : (view === 'side' ? '0.75' : '0.55');
 
     if (_map) {
         if (is2D) {
@@ -1965,7 +2119,7 @@ function setViewport(view) {
     });
     _bridgeDirty = true;
     if (_map) _map.invalidateSize();
-    console.log('[T3D] Viewport set: ' + view + ' bridge dirty');
+    console.log('[AirScene] Viewport set: ' + view + ' bridge dirty');
 }
 
 // ── Center the Leaflet map on the selected zone/server GPS ──
