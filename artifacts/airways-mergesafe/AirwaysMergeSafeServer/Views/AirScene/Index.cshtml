@@ -1721,7 +1721,9 @@ function _makeAir3DVehicle(ev, vc, vd) {
         group.userData.isFlyCar = true;
 
         // ── FlyCar label (inline — same style as ground vehicle label) ──
-        var vidShort = (ev && ev.vehicle_id) ? ev.vehicle_id.slice(0, 14) : '';
+        var vidShort = (vd && vd.vid) ? vd.vid.slice(0, 14)
+                     : (ev && ev.vehicle_id) ? ev.vehicle_id.slice(0, 14)
+                     : (ev && ev.id) ? String(ev.id) : '';
         var makeName = make || '';
         var badge = AIR_BRAND_BADGES[makeName];
         var logoImg = AIR_BRAND_LOGO_IMAGES[makeName];
@@ -2026,11 +2028,27 @@ function _syncAirMeshes() {
 
             mesh.position.set(px, 0, pz);
             mesh.rotation.y = -(dir3v - 90) * Math.PI / 180;
+            // ── Altitude: bridge height + altitude from data record ──────────
+            // Bridge surface is at Y=0. FlyCar altitude_meters from the sim
+            // data record is scaled to 3D scene units and used as baseY so
+            // the vehicle flies at the correct elevation above the bridge.
+            var _isFC = vd.isAirFlyCar || false;
+            var _altM = vd.altitudeMeters || 0;
+            var _bridgeH = 3;  // bridge surface thickness in 3D units
+            var _altUnits = _isFC && _altM > 0
+                ? _bridgeH + (_altM * (XZ_SCALE / 111000) * 4)
+                : 0;
+
             mesh.userData = { vid: vid, vx: vx3, vz: vz3,
                               laneX: laneX, laneZ: laneZ,
-                              baseY: 0, phase: Math.random() * Math.PI * 2,
+                              isFlyCar: _isFC,
+                              altitudeMeters: _altM,
+                              baseY: _altUnits,
+                              phase: Math.random() * Math.PI * 2,
                               spd: spd3, dir: dir3v };
             airScene3.add(mesh);
+            // Add label sprite to scene immediately (not just in animation loop)
+            if (mesh.userData.labelSprite) airScene3.add(mesh.userData.labelSprite);
             airVehicleMeshes3.push(mesh);
         }
     });
