@@ -733,6 +733,32 @@ public class AirSceneController : Controller
     }
 
     // A1 FIX: Random.Shared
+
+    // ── GET /AirScene/GetOSMBuildings — server-side Overpass proxy ──────
+    // Fetches real building footprints so the browser avoids mixed-content/CORS.
+    [HttpGet("GetOSMBuildings")]
+    public async Task<IActionResult> GetOSMBuildings(double lat, double lon, int radius = 1500)
+    {
+        try
+        {
+            var query   = $"[out:json][timeout:20];(way[\"building\"](around:{radius},{lat},{lon}););out geom;";
+            using var http = new System.Net.Http.HttpClient();
+            http.Timeout   = TimeSpan.FromSeconds(25);
+            http.DefaultRequestHeaders.Add("User-Agent", "AirwaysMSS/1.0");
+            var body     = new System.Net.Http.StringContent("data=" + Uri.EscapeDataString(query),
+                               System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
+            var response = await http.PostAsync("https://overpass-api.de/api/interpreter", body);
+            if (!response.IsSuccessStatusCode)
+                return Json(new { elements = Array.Empty<object>(), error = (int)response.StatusCode });
+            var raw = await response.Content.ReadAsStringAsync();
+            return Content(raw, "application/json");
+        }
+        catch (Exception ex)
+        {
+            return Json(new { elements = Array.Empty<object>(), error = ex.Message });
+        }
+    }
+
     private static object BuildSimulatedSegments(string highwayId)
     {
         var rng  = Random.Shared;
