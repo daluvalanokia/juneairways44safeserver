@@ -395,1273 +395,203 @@ function _airNorm(lat, lon) { return { x: (lon - _airMidLon) * _airXZ_SCALE, z: 
 
 // ── Three.js scene ────────────────────────────────────────────────────
 const canvas   = document.getElementById('airCanvas');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(window.devicePixelRatio);
-renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+// ══════════════════════════════════════════════════════════════════════════
+// AirScene 3D — mirrored from Traffic3D with sky, road, trees, street lights,
+// hills, and altitude-aware flying vehicles. Uses same rendering pipeline.
+// ══════════════════════════════════════════════════════════════════════════
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x060612);
-scene.add(new THREE.AmbientLight(0xffffff, 0.45));
-const sun = new THREE.DirectionalLight(0xffffff, 0.85);
-sun.position.set(80, 200, 100); scene.add(sun);
-scene.add(new THREE.GridHelper(500, 40, 0x1a1a3a, 0x111128));
-
-[50, 100, 150, 200, 250, 300, 350, 400].forEach(altM => {
-    const m = new THREE.Mesh(
-        new THREE.PlaneGeometry(420, 420),
-        new THREE.MeshBasicMaterial({ color: 0x1e3a5f, transparent: true, opacity: 0.035,
-                                      depthWrite: false, side: THREE.DoubleSide })
-    );
-    m.rotation.x = Math.PI / 2;
-    m.position.y = altM * ALT_SCALE;
-    scene.add(m);
+// ── AirCar brand side-view image preloader ──────────────────────────────
+var AIR_BRAND_SIDEVIEW_IMAGES = {};
+var AIR_BRAND_LOGO_IMAGES = {};
+var AIR_BRAND_BADGES = {};
+(AIR_CAR_SPECS || []).forEach(function(s) {
+    if (s.sideViewLogo) {
+        var si = new Image(); si.src = s.sideViewLogo;
+        AIR_BRAND_SIDEVIEW_IMAGES[s.make] = si;
+    }
+    if (s.brandLogo) {
+        var bi = new Image(); bi.src = s.brandLogo;
+        AIR_BRAND_LOGO_IMAGES[s.make] = bi;
+    }
+    AIR_BRAND_BADGES[s.make] = s.icon || '✈';
 });
 
-const NUM_BANDS   = SERVERS.length;
-const CORRIDOR_Z  = 300;
-const CORRIDOR_SEP = 14;
+function _airGetSideTexture(make) {
+    if (!make) return null;
+    if (!window._airSideTexCache) window._airSideTexCache = {};
+    if (window._airSideTexCache[make]) return window._airSideTexCache[make];
+    var img = AIR_BRAND_SIDEVIEW_IMAGES[make] || AIR_BRAND_SIDEVIEW_IMAGES[make.split(' ')[0]];
+    if (!img || !img.complete || img.naturalWidth <= 0) return null;
+    var c = document.createElement('canvas');
+    c.width = 256; c.height = 128;
+    var ctx = c.getContext('2d');
+    ctx.fillStyle = '#0a1628'; ctx.fillRect(0, 0, 256, 128);
+    ctx.drawImage(img, 8, 8, 240, 112);
+    var tex = new THREE.CanvasTexture(c);
+    tex.needsUpdate = true;
+    window._airSideTexCache[make] = tex;
+    return tex;
+}
 
-window._corridorMeshes = [];
+function _airInit3D() {
+    if (_airRenderer) return;  // already initialized
 
-SERVERS.forEach((s, i) => {
-    const h    = Math.max(1, (s.altMax - s.altMin)) * ALT_SCALE;
-    const midY = (s.altMin + s.altMax) / 2 * ALT_SCALE;
-    const w    = Math.max(5, s.altWidth) * ALT_SCALE * 7;
-    const xOff = (i - (NUM_BANDS - 1) / 2) * (w + CORRIDOR_SEP);
-    const col  = bandColor(i);
+    // ── Renderer ──────────────────────────────────────────────────────────
+    _airRenderer = new THREE.WebGLRenderer({ canvas: _air3dCanvas, antialias: true, alpha: true });
+    _airRenderer.setClearColor(0x000000, 0);
+    _airRenderer.setPixelRatio(window.devicePixelRatio);
+    _airRenderer.setSize(_air3dCanvas.clientWidth, _air3dCanvas.clientHeight);
 
-    const fillGeo = new THREE.BoxGeometry(w, h, CORRIDOR_Z);
-    const fillMat = new THREE.MeshPhongMaterial({
-        color: col, transparent: true, opacity: 0.13, depthWrite: false
+    // ── Scene + lighting (identical to Traffic3D) ─────────────────────────
+    _airScene = new THREE.Scene();
+    _airScene.fog = new THREE.Fog(0xa0c0e0, 700, 2200);
+    _airScene.add(new THREE.HemisphereLight(0xbfd4ea, 0x4a6b3a, 0.65));
+    _airScene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    var sun = new THREE.DirectionalLight(0xfff5e0, 1.4);
+    sun.position.set(120, 300, 80); _airScene.add(sun);
+    var sun2 = new THREE.DirectionalLight(0xb0d0ff, 0.5);
+    sun2.position.set(-100, 120, -80); _airScene.add(sun2);
+
+    // ── Sky dome (gradient shader — same as T3D) ──────────────────────────
+    var skyGeo = new THREE.SphereGeometry(2000, 32, 16);
+    var skyMat = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        transparent: true,
+        uniforms: {
+            topColor:    { value: new THREE.Color(0x1a4a8f) },
+            bottomColor: { value: new THREE.Color(0xb0d0f0) },
+            offset:      { value: 200 },
+            exponent:    { value: 0.7 }
+        },
+        vertexShader: 'varying vec3 vWorldPos; void main() { vec4 wp = modelMatrix * vec4(position, 1.0); vWorldPos = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }',
+        fragmentShader: 'uniform vec3 topColor; uniform vec3 bottomColor; uniform float offset; uniform float exponent; varying vec3 vWorldPos; void main() { float h = normalize(vWorldPos + vec3(0.0, offset, 0.0)).y; gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0); }'
     });
-    const fill = new THREE.Mesh(fillGeo, fillMat);
-    fill.position.set(xOff, midY, 0);
-    scene.add(fill);
-    window._corridorMeshes.push({ serverId: s.serverId, zoneId: s.zoneId, mesh: fill });
+    _airScene.add(new THREE.Mesh(skyGeo, skyMat));
 
-    const edgeMat = new THREE.LineBasicMaterial({ color: col, opacity: 0.55, transparent: true });
-    const edges   = new THREE.LineSegments(new THREE.EdgesGeometry(fillGeo), edgeMat);
-    edges.position.copy(fill.position);
-    scene.add(edges);
+    // ── Road group (rotatable by highway bearing) ──────────────────────────
+    _airRoadGroup = new THREE.Group();
+    _airScene.add(_airRoadGroup);
+    _airBuildRoad();
 
-    const mkLine = (y, op) => {
-        const geo = new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(-200, y, 0), new THREE.Vector3(200, y, 0)
+    // ── Roadside trees ─────────────────────────────────────────────────────
+    var trunkGeo = new THREE.CylinderGeometry(1.2, 1.5, 6, 6);
+    var trunkMat = new THREE.MeshPhongMaterial({ color: 0x5a3a1a });
+    var leavesGeo = new THREE.ConeGeometry(5, 14, 7);
+    var leavesMat  = new THREE.MeshPhongMaterial({ color: 0x2d6a2d });
+    var leavesMat2 = new THREE.MeshPhongMaterial({ color: 0x1a5530 });
+    for (var ti = -18; ti <= 18; ti += 3) {
+        var tx = ti * 45;
+        var tl = new THREE.Group();
+        tl.add(new THREE.Mesh(trunkGeo, trunkMat));
+        var leafL = new THREE.Mesh(leavesGeo, leavesMat); leafL.position.y = 9; tl.add(leafL);
+        tl.position.set(tx + (Math.random()-0.5)*10, 0, 90 + Math.random()*30);
+        tl.scale.setScalar(0.7 + Math.random()*0.5);
+        _airRoadGroup.add(tl);
+        var tr2 = new THREE.Group();
+        tr2.add(new THREE.Mesh(trunkGeo, trunkMat));
+        var leafR = new THREE.Mesh(leavesGeo, leavesMat2); leafR.position.y = 9; tr2.add(leafR);
+        tr2.position.set(tx + (Math.random()-0.5)*10, 0, -90 - Math.random()*30);
+        tr2.scale.setScalar(0.7 + Math.random()*0.5);
+        _airRoadGroup.add(tr2);
+    }
+
+    // ── Street lights ──────────────────────────────────────────────────────
+    var poleGeo = new THREE.CylinderGeometry(0.5, 0.6, 18, 6);
+    var poleMat = new THREE.MeshPhongMaterial({ color: 0x555555 });
+    var lampGeo = new THREE.SphereGeometry(1.5, 8, 6);
+    var lampMat = new THREE.MeshPhongMaterial({ color: 0xfff9c4, emissive: 0xfff5b0, emissiveIntensity: 0.3 });
+    for (var li = -15; li <= 15; li += 5) {
+        var lx = li * 55;
+        var pl = new THREE.Group();
+        var poleL = new THREE.Mesh(poleGeo, poleMat); poleL.position.y = 9; pl.add(poleL);
+        var armL = new THREE.Mesh(new THREE.BoxGeometry(5, 0.5, 0.5), poleMat);
+        armL.position.set(2, 17, 0); pl.add(armL);
+        var lampL = new THREE.Mesh(lampGeo, lampMat); lampL.position.set(4.5, 16.5, 0); pl.add(lampL);
+        pl.position.set(lx, 0, 40); _airRoadGroup.add(pl);
+        var pr = new THREE.Group();
+        var poleR = new THREE.Mesh(poleGeo, poleMat); poleR.position.y = 9; pr.add(poleR);
+        var armR = new THREE.Mesh(new THREE.BoxGeometry(5, 0.5, 0.5), poleMat);
+        armR.position.set(-2, 17, 0); pr.add(armR);
+        var lampR = new THREE.Mesh(lampGeo, lampMat); lampR.position.set(-4.5, 16.5, 0); pr.add(lampR);
+        pr.position.set(lx, 0, -40); _airRoadGroup.add(pr);
+    }
+
+    // ── Distant hills ──────────────────────────────────────────────────────
+    for (var hi = 0; hi < 8; hi++) {
+        var hillGeo = new THREE.SphereGeometry(80 + Math.random()*60, 8, 6, 0, Math.PI*2, 0, Math.PI/2);
+        var hillMat = new THREE.MeshPhongMaterial({ color: 0x3a5a3a });
+        var hL = new THREE.Mesh(hillGeo, hillMat);
+        hL.position.set(-700 + hi*180, -2, 380 + Math.random()*100);
+        hL.scale.set(1.5, 0.4 + Math.random()*0.3, 1);
+        _airRoadGroup.add(hL);
+        var hR = new THREE.Mesh(hillGeo.clone(), hillMat);
+        hR.position.set(-700 + hi*180, -2, -380 - Math.random()*100);
+        hR.scale.set(1.5, 0.4 + Math.random()*0.3, 1);
+        _airRoadGroup.add(hR);
+    }
+
+    // ── Altitude band indicators (thin translucent planes — NOT corridor boxes) ──
+    // These are subtle horizontal planes showing altitude levels, not the heavy boxes
+    var altLevels = [50, 100, 150, 200, 300];
+    altLevels.forEach(function(aM) {
+        var aGeo = new THREE.PlaneGeometry(1800, _airRoadWidth * 2.5);
+        aGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI/2));
+        var aMat = new THREE.MeshBasicMaterial({
+            color: 0x60a5fa, transparent: true, opacity: 0.04, depthWrite: false
+        });
+        var aMesh = new THREE.Mesh(aGeo, aMat);
+        aMesh.position.y = aM * _airAltScale;
+        _airRoadGroup.add(aMesh);
+        // Altitude label line
+        var lineGeo = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-900, aM*_airAltScale, 0),
+            new THREE.Vector3( 900, aM*_airAltScale, 0)
         ]);
-        const line = new THREE.Line(geo,
-            new THREE.LineBasicMaterial({ color: col, opacity: op, transparent: true }));
-        scene.add(line);
-    };
-    mkLine(s.altMax * ALT_SCALE, 0.60);
-    mkLine(s.altMin * ALT_SCALE, 0.35);
-});
-
-ZONES.forEach(z => {
-    if (!z.lat || !z.lon) return;
-    const p = _airNorm(z.lat, z.lon);
-    const r = (z.radius / 20) || 12;
-    const cy = new THREE.Mesh(
-        new THREE.CylinderGeometry(r, r, 0.15, 32),
-        new THREE.MeshPhongMaterial({
-            color: z.status === 'active' ? 0x22c55e : 0xf59e0b, transparent: true, opacity: 0.18
-        })
-    );
-    cy.position.set(p.x, 0.08 + z.altM * ALT_SCALE, p.z);
-    scene.add(cy);
-    const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(r, 0.12, 8, 48),
-        new THREE.MeshPhongMaterial({ color: 0x22c55e, opacity: 0.40, transparent: true })
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.set(p.x, 0.2, p.z);
-    scene.add(ring);
-});
-
-// ── Cameras ────────────────────────────────────────────────────────────
-const camP = new THREE.PerspectiveCamera(55, 1, 0.1, 3000);
-camP.position.set(120, 110, 220);
-camP.lookAt(0, 35, 0);
-
-const OW = 180, OH = 140;
-const camS = new THREE.OrthographicCamera(-OW, OW, OH, -OH, 0.1, 2000);
-camS.position.set(500, 0, 0); camS.lookAt(0, 0, 0);
-
-const camT = new THREE.OrthographicCamera(-OW, OW, OH, -OH, 0.1, 2000);
-camT.position.set(0, 600, 0);
-camT.up.set(0, 0, -1); camT.lookAt(0, 0, 0);
-
-camP.layers.enable(1);
-camS.layers.enable(2);
-camT.layers.enable(3);
-
-// ── Vehicle objects ───────────────────────────────────────────────────
-const vehicleObjects = [];
-const conflictRings  = [];
-
-// Persistent orbit state keyed by vehicleId — survives _airDoRefresh() rebuilds
-const airVehicleState = new Map();
-function _getAirState(ev, vid) {
-    if (!airVehicleState.has(vid)) {
-        var h = 0;
-        for (var i = 0; i < vid.length; i++) h = (h * 31 + vid.charCodeAt(i)) | 0;
-        var orbitR = 25 + (Math.abs(h) % 6) * 15;           // 25–100 units, stable per vehicle
-        var initAng = (Math.abs(h >> 4) % 360) * Math.PI / 180;
-        var spd = Math.max(10, ev.speedMph ?? 70);
-        airVehicleState.set(vid, {
-            angle:  initAng,
-            orbitR: orbitR,
-            speed:  (spd * 0.022) / orbitR,                 // rad/frame at target speed
-            phase:  (Math.abs(h >> 8) % 100) / 100 * Math.PI * 2,
-        });
-    }
-    var st = airVehicleState.get(vid);
-    if (ev.speedMph) st.speed = (Math.max(10, ev.speedMph) * 0.022) / st.orbitR;
-    return st;
-}
-const raycaster = new THREE.Raycaster(), mouse2 = new THREE.Vector2();
-let selectedAirVehicle = null;
-
-// ── Brand badge lookup — mirrors VehicleRegistry brand colors + initials ──
-var BRAND_BADGES = {
-    'Toyota':         { initials: 'T',   color: '#EB0A1E' },
-    'Honda':          { initials: 'H',   color: '#CC0000' },
-    'Ford':           { initials: 'F',   color: '#003478' },
-    'Chevrolet':      { initials: 'C',   color: '#D9A40E' },
-    'BMW':            { initials: 'BMW', color: '#16588e' },
-    'Mercedes':       { initials: 'M',   color: '#00A19A' },
-    'Jeep':           { initials: 'J',   color: '#4A7C59' },
-    'Tesla':          { initials: 'T',   color: '#e82127' },
-    'Ram':            { initials: 'R',   color: '#A7A9AC' },
-    'Harley-Davidson':{ initials: 'HD',  color: '#FF6600' },
-    'Joby':           { initials: 'J',   color: '#00bcd4' },
-    'Archer':         { initials: 'A',   color: '#1e90ff' },
-    'Wisk':           { initials: 'W',   color: '#22c55e' }
-};
-
-// ── Canvas-texture label sprite for vehicle ID + brand badge ──────────
-// Rendered in all three panels (perspective, side, top) so the ID is always visible.
-function _makeAirLabel(vid, category, make) {
-    var spec = _airGetSpec(make);
-    const canvas  = document.createElement('canvas');
-    canvas.width  = 200; canvas.height = 42;
-    const ctx     = canvas.getContext('2d');
-    const catColors = {
-        air_urban:'#0e7490', air_express:'#c2410c', air_vertiport:'#a21caf',
-        airflycar:'#0e7490', sedan:'#1d4ed8', suv:'#15803d', truck:'#b45309',
-        motorcycle:'#7e22ce', van:'#334155'
-    };
-    var badge = make ? BRAND_BADGES[make] : null;
-
-    // Background pill (category color)
-    ctx.fillStyle   = catColors[category] || '#1e3a5f';
-    ctx.beginPath(); ctx.roundRect(3, 3, 194, 36, 9); ctx.fill();
-
-    if (badge) {
-        // ── Brand badge circle on the left ──
-        var bx = 20, by = 21, br = 15;
-        ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2);
-        ctx.fillStyle   = badge.color;
-        ctx.fill();
-        ctx.strokeStyle  = 'rgba(255,255,255,0.3)';
-        ctx.lineWidth    = 1.5; ctx.stroke();
-        // Brand initials inside circle
-        ctx.fillStyle   = '#ffffff';
-        ctx.font        = badge.initials.length > 2
-                        ? 'bold 10px Arial'
-                        : 'bold 13px Arial';
-        ctx.textAlign   = 'center';
-        ctx.textBaseline= 'middle';
-        ctx.fillText(badge.initials, bx, by + 1);
-        // Vehicle ID text (right of badge)
-        ctx.fillStyle   = '#ffffff';
-        ctx.font        = 'bold 13px monospace';
-        ctx.textAlign   = 'left';
-        ctx.fillText((vid || '?').slice(0, 16), 42, 21);
-    } else {
-        // No make available — fall back to ID-only (backward compatible)
-        ctx.fillStyle   = '#ffffff';
-        ctx.font        = 'bold 14px monospace';
-        ctx.textAlign   = 'center';
-        ctx.textBaseline= 'middle';
-        ctx.fillText((vid || '?').slice(0, 16), 100, 21);
-    }
-    const tex  = new THREE.CanvasTexture(canvas);
-    const mat  = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
-    const spr  = new THREE.Sprite(mat);
-    spr.scale.set(8, 1.68, 1);
-    return spr;
-}
-
-function buildVehicle(ev) {
-    const vc    = resolveClass(ev);
-    const sp    = getSpec(vc.category);
-    const isAir = vc.domain === 'air';
-    const altY  = isAir ? (ev.altitudeMeters || 60) * ALT_SCALE : 0.3;
-    const topY  = isAir ? altY : 0.15;
-    const col   = vc.conflictFlag ? '#ef4444' : (vc.color || sp.color);
-    // Use AirCar registry brand colors if available
-    var airSpec = _airGetSpec(ev.vehicleMake);
-    if (airSpec && airSpec.colors && airSpec.colors.length > 0 && !vc.conflictFlag) {
-        col = airSpec.colors[0];
-    }
-    const c3    = new THREE.Color(col);
-
-    // Air vehicles use persistent orbit state so position survives _airDoRefresh() rebuilds
-    const vid = ev.vehicleId || ('AIR-' + (ev.id ?? Math.random().toString(36).slice(2,6)));
-    const st  = isAir ? _getAirState(ev, vid) : null;
-
-    const gpsPt = (ev.latitude && ev.longitude) ? _airNorm(ev.latitude, ev.longitude)
-                : { x: (Math.random()-0.5)*160, z: (Math.random()-0.5)*160 };
-    const px  = isAir ? Math.sin(st.angle) * st.orbitR : gpsPt.x;
-    const pz  = isAir ? Math.cos(st.angle) * st.orbitR : gpsPt.z;
-    const p   = { x: px, z: pz };
-
-    const ud = { ev, vc, baseY: altY };
-
-    const meshP = new THREE.Mesh(sp.geoP(),
-        new THREE.MeshPhongMaterial({ color: c3, side: THREE.DoubleSide }));
-    meshP.position.set(px, altY, pz);
-    if (isAir) meshP.rotation.y = st.angle + Math.PI * 0.5; // face direction of travel
-    meshP.userData = ud;
-    meshP.layers.set(1);
-
-    const meshS = new THREE.Mesh(sp.geoS(),
-        new THREE.MeshPhongMaterial({ color: c3, side: THREE.DoubleSide }));
-    meshS.position.set(px, altY, pz);
-    meshS.rotation.y = Math.PI / 2;
-    meshS.userData = ud;
-    meshS.layers.set(2);
-
-    const meshT = new THREE.Mesh(sp.geoT(),
-        new THREE.MeshPhongMaterial({ color: c3, side: THREE.DoubleSide }));
-    meshT.position.set(px, topY, pz);
-    meshT.rotation.x = -Math.PI / 2;
-    meshT.userData = { ev, vc, baseY: topY };
-    meshT.layers.set(3);
-
-    // ── Vehicle ID label sprites (one per panel view) ──────────────────
-    const labelP = _makeAirLabel(vid, vc.category, ev.vehicleMake);
-    labelP.position.set(px, altY + 4, pz);   // float above the vehicle in perspective
-    labelP.layers.set(1);
-
-    const labelS = _makeAirLabel(vid, vc.category, ev.vehicleMake);
-    labelS.position.set(px, altY + 4, pz);   // float above in side view
-    labelS.layers.set(2);
-
-    const labelT = _makeAirLabel(vid, vc.category, ev.vehicleMake);
-    labelT.position.set(px, topY + 4, pz);   // float above in top view
-    labelT.layers.set(3);
-
-    return { meshP, meshS, meshT, p, isAir, altY, topY, ev, vc, st,
-             labelP, labelS, labelT, vid };
-}
-
-function buildSpeedOverlay(ev, p, isAir, altY) {
-    const overlays = [];
-    const speed    = ev.speedMph  || 0;
-    const limit    = +(ALERT.speedBandLimit  ?? 5);
-    const delta    = speed - limit;
-    const pat      = ALERT.defaultPattern    || 'circles';
-    const useOvl   = ALERT.prevColorOverlay  !== false;
-
-    let color, numBands, showPattern;
-    if (delta < 0) {
-        color       = ALERT.safeColor      || '#22c55e';
-        numBands    = +(ALERT.safeBands    || 1);
-        showPattern = false;
-    } else if (delta < 10) {
-        color       = ALERT.safeColor      || '#22c55e';
-        numBands    = +(ALERT.safeBands    || 1);
-        showPattern = true;
-    } else if (delta < 30) {
-        color       = ALERT.warningColor   || '#f59e0b';
-        numBands    = +(ALERT.warningBands || 2);
-        showPattern = true;
-    } else {
-        color       = ALERT.overspeedColor  || '#ef4444';
-        numBands    = +(ALERT.overspeedBands || 4);
-        showPattern = true;
-    }
-
-    const baseY = isAir ? altY - 0.2 : 0.06;
-    const c3    = new THREE.Color(color);
-
-    const baseGeo = pat === 'circles'
-        ? new THREE.CircleGeometry(1.8, 16)
-        : new THREE.PlaneGeometry(3.2, 3.2);
-    const baseMesh = new THREE.Mesh(baseGeo, new THREE.MeshBasicMaterial({
-        color: c3, transparent: true, opacity: 0.42,
-        side: THREE.DoubleSide, depthWrite: false
-    }));
-    baseMesh.rotation.x = -Math.PI / 2;
-    baseMesh.position.set(p.x, baseY, p.z);
-    baseMesh.layers.set(3);
-    overlays.push(baseMesh);
-
-    if (showPattern) {
-        for (let b = 0; b < numBands; b++) {
-            const r   = 2.4 + b * 2.0;
-            const opc = Math.max(0.15, 0.55 - b * 0.08);
-            if (pat === 'circles') {
-                const geo = new THREE.TorusGeometry(r, 0.28, 6, 32);
-                const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-                    color: c3, transparent: true, opacity: opc, depthWrite: false
-                }));
-                m.position.set(p.x, baseY + 0.06 * (b + 1), p.z);
-                m.rotation.x = -Math.PI / 2;
-                m.layers.set(3);
-                overlays.push(m);
-            } else {
-                const geo = new THREE.EdgesGeometry(new THREE.BoxGeometry(r * 2, 0.05, r * 2));
-                const m = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
-                    color: c3, transparent: true, opacity: opc
-                }));
-                m.position.set(p.x, baseY + 0.06 * (b + 1), p.z);
-                m.layers.set(3);
-                overlays.push(m);
-            }
-        }
-        if (useOvl && delta >= 10) {
-            const sc3 = new THREE.Color(ALERT.safeColor || '#22c55e');
-            const og = pat === 'circles'
-                ? new THREE.CircleGeometry(1.2, 16)
-                : new THREE.PlaneGeometry(2.0, 2.0);
-            const om = new THREE.Mesh(og, new THREE.MeshBasicMaterial({
-                color: sc3, transparent: true, opacity: 0.22,
-                side: THREE.DoubleSide, depthWrite: false
-            }));
-            om.rotation.x = -Math.PI / 2;
-            om.position.set(p.x, baseY - 0.05, p.z);
-            om.layers.set(3);
-            overlays.push(om);
-        }
-    }
-    return overlays;
-}
-
-function buildConflictRing(pos) {
-    const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(2.0, 0.18, 8, 32),
-        new THREE.MeshPhongMaterial({ color: 0xef4444, transparent: true, opacity: 0.75 })
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.copy(pos);
-    return ring;
-}
-
-function clearScene() {
-    vehicleObjects.forEach(vo => {
-        [vo.meshP, vo.meshS, vo.meshT].forEach(m => {
-            scene.remove(m); m.geometry.dispose(); m.material.dispose();
-        });
-        // Remove and dispose label sprites
-        [vo.labelP, vo.labelS, vo.labelT].forEach(function(spr) {
-            if (!spr) return;
-            scene.remove(spr);
-            if (spr.material) {
-                if (spr.material.map) spr.material.map.dispose();
-                spr.material.dispose();
-            }
-        });
-        vo.overlays.forEach(m => {
-            scene.remove(m); m.geometry.dispose();
-            if (m.material && m.material.dispose) m.material.dispose();
-        });
-    });
-    vehicleObjects.length = 0;
-    conflictRings.forEach(m => {
-        scene.remove(m); m.geometry.dispose(); m.material.dispose();
-    });
-    conflictRings.length = 0;
-}
-
-function _airLoadEvents(evs) {
-    // ── Guard: no DB/live data enters the scene while simulation is active ──
-    // Catches async _airDoRefresh() fetches that were in-flight when
-    // onSimStateChange(true) cleared the scene and set _airFeedHeld.
-    if (_airSimRunning) return;
-
-    clearScene();
-    const lats = evs.filter(e => e.latitude).map(e => e.latitude);
-    const lons = evs.filter(e => e.longitude).map(e => e.longitude);
-    if (lats.length) {
-        _airMidLat = lats.reduce((a,b) => a + b, 0) / lats.length;
-        _airMidLon = lons.reduce((a,b) => a + b, 0) / lons.length;
-    }
-
-    // Air Scene: controller already filtered to air-only — all events rendered as air
-    let stA = 0;
-    evs.forEach(ev => {
-        const vc = resolveClass(ev);
-
-        const vo       = buildVehicle(ev);
-        const overlays = buildSpeedOverlay(ev, vo.p, vo.isAir, vo.altY);
-        vo.overlays    = overlays;
-
-        scene.add(vo.meshP);
-        scene.add(vo.meshS);
-        scene.add(vo.meshT);
-        // Add vehicle ID labels to all three panels
-        if (vo.labelP) scene.add(vo.labelP);
-        if (vo.labelS) scene.add(vo.labelS);
-        if (vo.labelT) scene.add(vo.labelT);
-        overlays.forEach(m => scene.add(m));
-        vehicleObjects.push(vo);
-
-        if (vc.conflictFlag) {
-            const ring = buildConflictRing(vo.meshP.position);
-            scene.add(ring); conflictRings.push(ring);
-        }
-        stA++;
+        _airScene.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x3b82f6, opacity: 0.18, transparent: true })));
     });
 
-    document.getElementById('stAir').textContent  = stA;
-    document.getElementById('stTime').textContent = 'Updated ' + new Date().toLocaleTimeString();
-}
+    // ── Cameras — perspective + side (same as T3D) ────────────────────────
+    _airCam  = new THREE.PerspectiveCamera(50, _air3dCanvas.clientWidth / _air3dCanvas.clientHeight, 0.1, 4000);
+    _airCam.position.set(-180, 60, 110);
+    _airCam.lookAt(60, 20, 0);
 
-async function _airDoRefresh() {
-    if (_airFeedHeld) return;  // feed on hold — skip DB poll
-    try {
-        const zq  = selectedZoneId   ? `&zoneId=${encodeURIComponent(selectedZoneId)}`   : '';
-        const sq  = selectedServerId ? `&serverId=${encodeURIComponent(selectedServerId)}` : '';
-        const r   = await fetch(`/AirScene/GetLiveEvents?highwayId=${HW}&take=140${zq}${sq}`);
-        if (!r.ok) return;
-        // Double-check: sim may have started while we were fetching
-        if (_airFeedHeld || _airSimRunning) return;
-        _airLoadEvents(await r.json());
-    } catch(e) { console.warn('AirScene refresh error:', e); }
-}
+    _airCamSide = new THREE.OrthographicCamera(-300, 300, 100, -100, 0.1, 3000);
+    _airCamSide.position.set(0, 50, 450);
+    _airCamSide.lookAt(0, 20, 0);
 
-// ── Click-to-inspect ──────────────────────────────────────────────────
-const SPLIT = [0, 0.42, 0.71, 1.00];
+    _airCamTop = new THREE.OrthographicCamera(-300, 300, 150, -150, 0.1, 3000);
+    _airCamTop.position.set(0, 600, 0);
+    _airCamTop.lookAt(0, 0, 0);
 
-canvas.addEventListener('click', e => {
-    var panel = document.getElementById('vehicleDetailPanel');
-    if (panel && panel.contains(e.target)) return;
-    const rect = canvas.getBoundingClientRect();
-    const rx   = (e.clientX - rect.left) / rect.width;
-    const ry   = (e.clientY - rect.top)  / rect.height;
-
-    let cam, lx, pickArr;
-    if      (rx < SPLIT[1]) { cam = camP; lx = rx / SPLIT[1];                     pickArr = vehicleObjects.map(vo => vo.meshP); }
-    else if (rx < SPLIT[2]) { cam = camS; lx = (rx-SPLIT[1])/(SPLIT[2]-SPLIT[1]); pickArr = vehicleObjects.map(vo => vo.meshS); }
-    else                     { cam = camT; lx = (rx-SPLIT[2])/(SPLIT[3]-SPLIT[2]); pickArr = vehicleObjects.map(vo => vo.meshT); }
-
-    mouse2.x =  lx * 2 - 1;
-    mouse2.y = -ry * 2 + 1;
-    raycaster.setFromCamera(mouse2, cam);
-    const hits = raycaster.intersectObjects(pickArr, false);
-    if (!hits.length) { closeVehicleDetail(); return; }
-    const hitMesh = hits[0].object;
-    const vo = vehicleObjects.find(o => o.meshP === hitMesh || o.meshS === hitMesh || o.meshT === hitMesh);
-    if (!vo) { closeVehicleDetail(); return; }
-    if (selectedAirVehicle && selectedAirVehicle !== vo) clearAirHighlight(selectedAirVehicle);
-    selectedAirVehicle = vo;
-    applyAirHighlight(vo);
-    showVehicleDetail(hitMesh.userData, e.clientX, e.clientY);
-    _airShowInspector(hitMesh.userData);
-});
-
-function _airShowInspector({ ev, vc }) {
-    const conf    = vc.confidence ?? 0;
-    const pct     = Math.round(conf * 100);
-    const confCls = conf < 0.4 ? 'danger' : conf < 0.65 ? 'warning' : 'success';
-    const isAir   = vc.domain === 'air';
-    const altM    = ev.altitudeMeters;
-    const band = altM != null ? findBand(altM) : null;
-    let bandHtml;
-    if (band) {
-        const bc = bandHsl(band.idx);
-        bandHtml = `<span class="badge" style="background:${bc};color:#000">${band.server.serverId}</span>
-                    <small class="text-muted ms-1">${band.server.altMin.toFixed(0)}–${band.server.altMax.toFixed(0)} m</small>`;
-    } else if (isAir && altM != null) {
-        bandHtml = '<span class="text-warning">⚠ Outside defined corridors</span>';
-    } else {
-        bandHtml = '<span class="text-muted">Ground level — no corridor</span>';
-    }
-
-    let vc2 = {};
-    if (ev.vehicleClassJson) {
-        try { vc2 = typeof ev.vehicleClassJson === 'string'
-                ? JSON.parse(ev.vehicleClassJson) : ev.vehicleClassJson; } catch(e) {}
-    }
-    const ph  = vc.flightPhase    || vc2.flightPhase;
-    const soc = vc.batterySoc     ?? vc2.batterySoc;
-    const vr  = vc.verticalRateFpm ?? vc2.verticalRateFpm;
-    const cor = vc.corridorId     || vc2.corridorId;
-
-    document.getElementById('airInspector').innerHTML = `
-    <table class="table table-sm table-borderless mb-0 small">
-      <tr><td class="text-muted" style="width:45%">Vehicle ID</td>
-          <td><b>${ev.vehicleId || '—'}</b></td></tr>
-      <tr><td class="text-muted">Domain</td>
-          <td><span class="badge" style="background:${isAir?'#ff6b35':'#3b82f6'}">${vc.domain}</span></td></tr>
-      <tr><td class="text-muted">Category</td>
-          <td><span class="badge" style="background:${vc.color||'#64748b'}">${vc.category}</span></td></tr>
-      ${pct > 0 ? `<tr><td class="text-muted">Confidence</td><td>
-          <div class="d-flex align-items-center gap-2">
-            <div class="progress flex-grow-1" style="height:5px">
-              <div class="progress-bar bg-${confCls}" style="width:${pct}%"></div>
-            </div><small>${pct}%</small></div></td></tr>` : ''}
-      <tr><td class="text-muted">Altitude</td>
-          <td><b>${altM != null ? altM.toFixed(1) + ' m' : 'ground level'}</b></td></tr>
-      <tr><td class="text-muted">Speed</td>
-          <td>${ev.speedMph != null ? ev.speedMph.toFixed(1) + ' mph' : '—'}</td></tr>
-      <tr><td class="text-muted">Event</td>
-          <td>${ev.eventType || '—'}</td></tr>
-      <tr><td class="text-muted">Zone</td>
-          <td>${ev.zoneId || '—'}</td></tr>
-      <tr><td class="text-muted">Corridor</td>
-          <td>${bandHtml}</td></tr>
-      ${ph  ? `<tr><td class="text-muted">Flight phase</td>
-               <td><span class="badge bg-secondary">${ph}</span></td></tr>` : ''}
-      ${soc != null ? `<tr><td class="text-muted">Battery SOC</td><td>
-          <div class="d-flex align-items-center gap-1">
-            <div class="progress flex-grow-1" style="height:5px">
-              <div class="progress-bar bg-${soc<25?'danger':soc<50?'warning':'success'}"
-                   style="width:${soc}%"></div>
-            </div>${soc.toFixed(0)}%</div></td></tr>` : ''}
-      ${vr  != null ? `<tr><td class="text-muted">Vert rate</td>
-               <td>${vr > 0 ? '↑' : '↓'} ${Math.abs(vr).toFixed(0)} fpm</td></tr>` : ''}
-      ${cor ? `<tr><td class="text-muted">Corridor ID</td>
-               <td><code class="small">${cor}</code></td></tr>` : ''}
-    </table>`;
-}
-
-function clearAirHighlight(vo) {
-    if (!vo) return;
-    [vo.meshP, vo.meshS, vo.meshT].forEach(function(m) {
-        if (!m || !m.material || !m.material.emissive) return;
-        m.material.emissive.setHex(0x000000);
-        m.material.emissiveIntensity = 0;
+    // ── Mouse orbit (same drag behaviour as T3D) ──────────────────────────
+    var drag = { on: false, x: 0, y: 0 };
+    _air3dCanvas.addEventListener('mousedown', function(e) { drag.on = true; drag.x = e.clientX; drag.y = e.clientY; });
+    _air3dCanvas.addEventListener('mousemove', function(e) {
+        if (!drag.on) return;
+        var dx = e.clientX - drag.x; var dy = e.clientY - drag.y;
+        drag.x = e.clientX; drag.y = e.clientY;
+        _airTheta -= dx * 0.005;
+        _airPhi = Math.max(0.08, Math.min(Math.PI/2 - 0.05, _airPhi - dy * 0.005));
     });
-}
-
-function applyAirHighlight(vo) {
-    if (!vo) return;
-    [vo.meshP, vo.meshS, vo.meshT].forEach(function(m) {
-        if (!m || !m.material || !m.material.emissive) return;
-        m.material.emissive.setHex(0xf59e0b);
-        m.material.emissiveIntensity = 0.55;
-    });
-}
-
-function closeVehicleDetail() {
-    clearAirHighlight(selectedAirVehicle);
-    selectedAirVehicle = null;
-    var panel = document.getElementById('vehicleDetailPanel');
-    if (panel) panel.style.display = 'none';
-}
-
-function vdSwitchTab(tab) {
-    document.getElementById('vdBodyFmt').style.display = tab === 'fmt' ? '' : 'none';
-    document.getElementById('vdBodyRaw').style.display = tab === 'raw' ? '' : 'none';
-    document.getElementById('vdTabFmt').style.background = tab === 'fmt' ? 'rgba(59,130,246,.18)' : 'transparent';
-    document.getElementById('vdTabRaw').style.background = tab === 'raw' ? 'rgba(59,130,246,.18)' : 'transparent';
-    document.getElementById('vdTabFmt').style.color = tab === 'fmt' ? '#60a5fa' : '#64748b';
-    document.getElementById('vdTabRaw').style.color = tab === 'raw' ? '#60a5fa' : '#64748b';
-}
-
-function showVehicleDetail({ ev, vc }, cx, cy) {
-    var wrap  = document.getElementById('sceneWrap');
-    var panel = document.getElementById('vehicleDetailPanel');
-    if (!wrap || !panel) return;
-
-    var conf    = vc.confidence ?? 0;
-    var confPct = Math.round(conf * 100);
-    var confClr = conf < 0.4 ? '#ef4444' : conf < 0.65 ? '#f59e0b' : '#22c55e';
-    var isAir   = vc.domain === 'air';
-    var altM    = ev.altitudeMeters;
-    var band    = altM != null ? findBand(altM) : null;
-
-    var vc2 = {};
-    if (ev.vehicleClassJson) {
-        try { vc2 = typeof ev.vehicleClassJson === 'string'
-            ? JSON.parse(ev.vehicleClassJson) : ev.vehicleClassJson; } catch(e) {}
-    }
-    var ph  = vc.flightPhase    || vc2.flightPhase;
-    var soc = vc.batterySoc     ?? vc2.batterySoc;
-    var vr  = vc.verticalRateFpm ?? vc2.verticalRateFpm;
-    var cor = vc.corridorId     || vc2.corridorId;
-
-    var bandHtml;
-    if (band) {
-        var bc = bandHsl(band.idx);
-        bandHtml = '<span style="background:' + bc + ';color:#000;padding:1px 6px;border-radius:3px;font-size:.65rem">' + band.server.serverId + '</span>';
-    } else if (isAir && altM != null) {
-        bandHtml = '<span style="color:#f59e0b;font-size:.7rem">⚠ outside corridors</span>';
-    } else {
-        bandHtml = '<span style="color:#64748b;font-size:.7rem">ground level</span>';
-    }
-
-    var srcBadge = (ev && ev.vehicleId)
-        ? '<span style="background:#22c55e;color:#000;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">LIVE</span>'
-        : '<span style="background:#475569;color:#fff;padding:1px 6px;border-radius:3px;font-size:.62rem;font-weight:700;margin-left:4px">AMBIENT</span>';
-
-    document.getElementById('vdTitle').innerHTML =
-        (isAir ? '✈' : '🚗') + ' ' + (vc.category || 'Vehicle') + srcBadge;
-
-    var confBar = '<div style="display:flex;align-items:center;gap:5px">'
-        + '<div style="flex:1;height:4px;background:rgba(255,255,255,.12);border-radius:2px">'
-        + '<div style="width:' + confPct + '%;height:4px;background:' + confClr + ';border-radius:2px"></div></div>'
-        + '<span style="font-size:.68rem;color:#cbd5e1">' + confPct + '%</span></div>';
-
-    var rows = [
-        ['Vehicle ID', (ev && ev.vehicleId) || '—'],
-        ['Domain',     '<span style="background:' + (isAir ? '#ff6b35' : '#3b82f6') + ';color:#fff;padding:1px 6px;border-radius:3px;font-size:.68rem">' + vc.domain + '</span>'],
-        ['Category',   '<span style="background:' + (vc.color || '#64748b') + ';color:#fff;padding:1px 6px;border-radius:3px;font-size:.68rem">' + vc.category + '</span>'],
-        ['Confidence', confPct > 0 ? confBar : '—'],
-        ['Altitude',   altM != null ? '<b>' + altM.toFixed(1) + ' m</b>' : 'ground level'],
-        ['Speed',      ev && ev.speedMph != null ? ev.speedMph.toFixed(1) + ' mph' : '—'],
-        ['Event',      (ev && ev.eventType) || '—'],
-        ['Zone',       (ev && ev.zoneId)    || '—'],
-        ['Corridor',   bandHtml],
-    ];
-    if (ph)         rows.push(['Flight phase', '<span style="background:#475569;color:#fff;padding:1px 5px;border-radius:3px;font-size:.65rem">' + ph + '</span>']);
-    if (soc != null) rows.push(['Battery SOC',  '<div style="display:flex;align-items:center;gap:5px"><div style="flex:1;height:4px;background:rgba(255,255,255,.12);border-radius:2px"><div style="width:' + soc + '%;height:4px;background:' + (soc<25?'#ef4444':soc<50?'#f59e0b':'#22c55e') + ';border-radius:2px"></div></div><span style="font-size:.68rem;color:#cbd5e1">' + soc.toFixed(0) + '%</span></div>']);
-    if (vr != null)  rows.push(['Vert rate',    (vr > 0 ? '↑ ' : '↓ ') + Math.abs(vr).toFixed(0) + ' fpm']);
-    if (cor)         rows.push(['Corridor ID',  '<code style="font-size:.65rem">' + cor + '</code>']);
-
-    document.getElementById('vdBodyFmt').innerHTML =
-        '<table style="width:100%;border-collapse:collapse;font-size:.72rem">' +
-        rows.map(function(r) {
-            return '<tr><td style="color:#64748b;padding:3px 0;width:42%;vertical-align:top">' + r[0] + '</td>'
-                 + '<td style="color:#e2e8f0;padding:3px 0 3px 8px">' + r[1] + '</td></tr>';
-        }).join('') + '</table>';
-
-    document.getElementById('vdRawPre').textContent = JSON.stringify({ ev: ev, vc: vc }, null, 2);
-    vdSwitchTab('fmt');
-
-    var wrapRect = wrap.getBoundingClientRect();
-    var panW = 304, panH = 320;
-    var px = cx - wrapRect.left + 12;
-    var py = cy - wrapRect.top  + 12;
-    if (px + panW > wrapRect.width)  px = cx - wrapRect.left - panW - 4;
-    if (py + panH > wrapRect.height) py = cy - wrapRect.top  - panH - 4;
-    panel.style.left    = Math.max(0, px) + 'px';
-    panel.style.top     = Math.max(0, py) + 'px';
-    panel.style.display = '';
-}
-
-(function() {
-    var wrap = document.getElementById('sceneWrap');
-    if (!wrap) return;
-    var p = document.createElement('div');
-    p.id = 'vehicleDetailPanel';
-    p.style.cssText =
-        'display:none;position:absolute;top:0;left:0;z-index:20;width:300px;' +
-        'background:rgba(8,12,24,.97);border:1px solid rgba(255,255,255,.14);' +
-        'border-radius:10px;backdrop-filter:blur(8px);' +
-        'box-shadow:0 8px 32px rgba(0,0,0,.6);overflow:hidden;';
-    p.innerHTML =
-        '<div style="padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.09);' +
-            'display:flex;justify-content:space-between;align-items:center">' +
-            '<span id="vdTitle" style="font-size:.8rem;font-weight:700;color:#e2e8f0;' +
-                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px"></span>' +
-            '<button onclick="closeVehicleDetail()" style="background:none;border:none;color:#94a3b8;' +
-                'font-size:1.1rem;cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0">&#215;</button>' +
-        '</div>' +
-        '<div style="display:flex;border-bottom:1px solid rgba(255,255,255,.07)">' +
-            '<button id="vdTabFmt" onclick="vdSwitchTab(\'fmt\')" ' +
-                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
-                'background:rgba(59,130,246,.18);border:none;color:#60a5fa;cursor:pointer">Formatted</button>' +
-            '<button id="vdTabRaw" onclick="vdSwitchTab(\'raw\')" ' +
-                'style="flex:1;padding:5px;font-size:.7rem;font-weight:600;' +
-                'background:transparent;border:none;color:#64748b;cursor:pointer">Raw JSON</button>' +
-        '</div>' +
-        '<div id="vdBodyFmt" style="padding:10px 12px;max-height:280px;overflow-y:auto"></div>' +
-        '<div id="vdBodyRaw" style="display:none;padding:10px 12px;max-height:280px;overflow-y:auto">' +
-            '<pre id="vdRawPre" style="font-size:.6rem;color:#94a3b8;white-space:pre-wrap;' +
-                'word-break:break-all;margin:0;line-height:1.5"></pre>' +
-        '</div>';
-    p.addEventListener('click', function(e) { e.stopPropagation(); });
-    wrap.appendChild(p);
-    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeVehicleDetail(); });
-    document.addEventListener('click', function(e) {
-        var panel = document.getElementById('vehicleDetailPanel');
-        if (!panel || panel.style.display === 'none') return;
-        var cont = document.getElementById('sceneWrap');
-        if (cont && !cont.contains(e.target)) closeVehicleDetail();
-    }, true);
-})();
-
-// ── Orbit control ─────────────────────────────────────────────────────
-let isDrag = false, prevM = {x:0,y:0}, theta = 0.6, phi = 0.5, radius = 310;
-let airCamTween = null;
-var lookTarget = { y: 15 };
-
-canvas.addEventListener('mousemove', e => {
-    if (isDrag) return;
-    const rect = canvas.getBoundingClientRect();
-    const rx   = (e.clientX - rect.left) / rect.width;
-    const ry   = (e.clientY - rect.top)  / rect.height;
-    let cam, lx, pickArr;
-    if      (rx < SPLIT[1]) { cam = camP; lx = rx / SPLIT[1];                     pickArr = vehicleObjects.map(vo => vo.meshP); }
-    else if (rx < SPLIT[2]) { cam = camS; lx = (rx-SPLIT[1])/(SPLIT[2]-SPLIT[1]); pickArr = vehicleObjects.map(vo => vo.meshS); }
-    else                     { cam = camT; lx = (rx-SPLIT[2])/(SPLIT[3]-SPLIT[2]); pickArr = vehicleObjects.map(vo => vo.meshT); }
-    mouse2.x =  lx * 2 - 1;
-    mouse2.y = -ry * 2 + 1;
-    raycaster.setFromCamera(mouse2, cam);
-    canvas.style.cursor = raycaster.intersectObjects(pickArr, false).length ? 'pointer' : '';
-});
-
-canvas.addEventListener('mousedown', e => {
-    const rect = canvas.getBoundingClientRect();
-    const rx   = (e.clientX - rect.left) / rect.width;
-    if (rx < SPLIT[1]) { isDrag = true; prevM = {x: e.clientX, y: e.clientY}; }
-});
-window.addEventListener('mouseup',   () => isDrag = false);
-window.addEventListener('mousemove', e => {
-    if (!isDrag) return;
-    theta -= (e.clientX - prevM.x) * 0.005;
-    phi    = Math.max(0.05, Math.min(1.45, phi - (e.clientY - prevM.y) * 0.005));
-    prevM  = {x: e.clientX, y: e.clientY};
-});
-canvas.addEventListener('wheel', e => {
-    radius = Math.max(60, Math.min(900, radius + e.deltaY * 0.25));
-});
-
-// ── Band legend ───────────────────────────────────────────────────────
-function renderBandLegend() {
-    const el = document.getElementById('bandLegend');
-    document.getElementById('stBands').textContent = SERVERS.length;
-    if (!SERVERS.length) {
-        el.innerHTML = '<span class="text-muted small">No altitude corridors defined for this highway yet.</span>';
-        return;
-    }
-    el.innerHTML = SERVERS.map((s, i) => {
-        const col  = bandHsl(i);
-        const span = (s.altMax - s.altMin).toFixed(0);
-        return `<div class="band-chip">
-            <span class="band-swatch" style="background:${col}"></span>
-            <span style="color:${col};font-weight:700">${s.serverId}</span>
-            <span class="text-muted">${s.altMin.toFixed(0)}–${s.altMax.toFixed(0)} m</span>
-            <span class="text-muted">(${span} m tall, ${s.altWidth.toFixed(0)} m wide)</span>
-            <span class="badge rounded-pill ms-1 ${s.status==='online'?'bg-success':'bg-secondary'}"
-                  style="font-size:9px">${s.status}</span>
-        </div>`;
-    }).join('');
-}
-
-// ── Altitude Y-axis ticks ─────────────────────────────────────────────
-function renderAltAxis() {
-    const el = document.getElementById('altAxis');
-    const wrap  = document.getElementById('sceneWrap');
-    const maxAlt = SERVERS.length ? Math.max(...SERVERS.map(s => s.altMax)) : 400;
-    const ticks  = [0, 50, 100, 150, 200, 250, 300, 350, 400].filter(t => t <= maxAlt + 80);
-    const ch     = wrap.clientHeight;
-    el.innerHTML = ticks.map(t => {
-        const sceneY = t * ALT_SCALE;
-        const frac   = 0.5 - sceneY / (OH * 2);
-        const py     = Math.round(frac * ch);
-        return `<div style="position:absolute;top:${py}px;right:2px;white-space:nowrap">${t} m</div>`;
-    }).join('');
-}
-
-// ── Feed-mode Pause/Resume (Fix 1: full implementation) ───────────────
-// Pausing stops live data injection AND 30-second polling (feed-mode control).
-// onSimStateChange handles both sim-started and sim-stopped lifecycle events.
-// Initial state is synced from localStorage on page load.
-let tick = 0;
-// _airFeedHeld = user explicitly paused the data feed (DB polling stopped)
-// When sim starts, feed auto-holds to show only sim data.
-// Vehicles already on screen keep their orbit animation — only NEW data intake is suspended.
-let animationPaused = false;
-var _airFeedHeld = false;
-
-function _airToggleFeed() {
-    _airFeedHeld = !_airFeedHeld;
-    var btn = document.getElementById('btnAnimToggle');
-    if (btn) {
-        btn.textContent = _airFeedHeld ? '▶ Resume Feed' : '⏸ Hold Feed';
-        btn.className   = _airFeedHeld ? 'btn btn-sm btn-warning' : 'btn btn-sm btn-outline-warning';
-    }
-    if (!_airFeedHeld) {
-        _airDoRefresh(); // resuming — pull latest data immediately
-        if (_airSimRunning && !_airFastTimer) {
-            _airFastTimer = setInterval(function() { if (!_airFeedHeld) _airDoRefresh(); }, _airIntervalMs);
-        }
-    } else {
-        if (_airFastTimer) { clearInterval(_airFastTimer); _airFastTimer = null; }
-    }
-}
-
-// Keep animationPaused as alias (camera tween check uses it)
-Object.defineProperty(window, 'animationPaused', {
-    get: function() { return _airFeedHeld; },
-    set: function(v) { /* no-op — use _airToggleFeed() */ }
-});
-
-// ── Air Sim Data Feed Panel JS ─────────────────────────────────────────
-var _airSimPanelOpen = false;
-function toggleAirSimPanel() {
-    _airSimPanelOpen = !_airSimPanelOpen;
-    var body = document.getElementById('airSimFeedBody');
-    var tog  = document.getElementById('airSimFeedToggle');
-    if (body) body.style.maxHeight = _airSimPanelOpen ? '90px' : '0';
-    if (tog)  tog.textContent = _airSimPanelOpen ? '▲' : '▼';
-}
-function _updateAirSimPanel(ev, dbStatus) {
-    var t   = new Date().toLocaleTimeString('en-US', {hour12:false});
-    var spd = (ev.speedMph ?? 0).toFixed(1);
-    var alt = (ev.altitudeMeters ?? 0).toFixed(0);
-    var lat = (ev.latitude  ?? 0).toFixed(4);
-    var lon = (ev.longitude ?? 0).toFixed(4);
-    var line = t + '  ·  ' + (ev.vehicleId||'?') + '  ·  '
-             + (ev.vehicleCategory || 'air') + '  ·  ' + alt + ' m · ' + spd + ' mph';
-    var el = document.getElementById('airSimFeedLine');
-    if (el) {
-        el.style.color   = '#60a5fa';
-        el.textContent   = line;
-        el.style.opacity = '1';
-    }
-    function setEl(id, val) { var x = document.getElementById(id); if (x) x.textContent = val || '–'; }
-    setEl('asfVehicleId', ev.vehicleId);
-    setEl('asfType',      ev.vehicleCategory || 'air');
-    setEl('asfAltSpd',   alt + ' m · ' + spd + ' mph');
-    setEl('asfZone',      ev.zoneId || '–');
-    setEl('asfLatLon',    lat + ', ' + lon);
-    if (dbStatus !== undefined) {
-        var dbEl = document.getElementById('asfDbStatus');
-        if (dbEl) { dbEl.textContent = dbStatus;
-                    dbEl.style.color = dbStatus.startsWith('✓') ? '#4ade80' : '#fbbf24'; }
-    }
-    if (!_airSimPanelOpen) toggleAirSimPanel();
-    var badge = document.getElementById('airSimFeedBadge');
-    if (badge) badge.style.display = '';
-    if (!window._airSimEventCount) window._airSimEventCount = 0;
-    window._airSimEventCount++;
-    if (badge) badge.textContent = '● LIVE #' + window._airSimEventCount;
-}
-
-var _airSimRunning      = false;   // true while sim is broadcasting
-var _airFastTimer   = null;    // fast poll timer during sim
-var _airIntervalMs  = 30000;   // synced with DIF post interval on first message
-
-function onSimStateChange(isRunning) {
-    _airSimRunning = isRunning;
-    var badge = document.getElementById('airSimFeedBadge');
-    if (badge) {
-        badge.style.display = isRunning ? '' : 'none';
-        if (!isRunning) badge.textContent = '● LIVE';
-    }
-
-    // Auto-select sim's zone/server when sim starts
-    if (isRunning) _airApplySimContext();
-
-    if (_airFastTimer) { clearInterval(_airFastTimer); _airFastTimer = null; }
-
-    if (isRunning) {
-        // ── Sim started → clear existing vehicles + auto-HOLD feed ──────────
-        // Only sim-injected data should be visible — no pre-existing DB events.
-        clearScene();
-        vehicleObjects.length = 0;
-        if (!_airFeedHeld) {
-            _airFeedHeld = true;
-            var btn = document.getElementById('btnAnimToggle');
-            if (btn) {
-                btn.textContent = '▶ Resume Feed';
-                btn.className   = 'btn btn-sm btn-warning';
-            }
-        }
-        // No fast poll timer — sim events arrive via BroadcastChannel instantly.
-        // _airDoRefresh() is gated by _airFeedHeld so no DB fetch happens during sim.
-    } else {
-        // ── Sim stopped → auto-RESUME feed ─────────────────────────────────
-        if (_airFeedHeld) {
-            _airFeedHeld = false;
-            var btn2 = document.getElementById('btnAnimToggle');
-            if (btn2) {
-                btn2.textContent = '⏸ Hold Feed';
-                btn2.className   = 'btn btn-sm btn-outline-warning';
-            }
-        }
-        _airDoRefresh();
-        window._airSimEventCount = 0;
-        var el = document.getElementById('airSimFeedLine');
-        if (el) { el.style.color = '#475569'; el.textContent = 'Sim stopped — viewing live data.'; }
-    }
-}
-
-// ── Auto-select sim's zone/server in the Air Scene ────────────────────────
-// Reads airways_sim_context (written by DIF every tick) and pre-selects
-// the airZoneSel/airServerSel dropdowns, then refreshes the scene.
-function _airApplySimContext() {
-    try {
-        var raw = localStorage.getItem('airways_sim_context');
-        if (!raw) return;
-        var ctx = JSON.parse(raw);
-        var changed = false;
-
-        // Apply zone
-        if (ctx.zoneId) {
-            var zSel = document.getElementById('airZoneSel');
-            if (zSel && zSel.value !== ctx.zoneId) {
-                var zOpt = zSel.querySelector('option[value="' + ctx.zoneId + '"]');
-                if (zOpt) {
-                    zSel.value     = ctx.zoneId;
-                    selectedZoneId = ctx.zoneId;
-                    // Filter server dropdown to match zone
-                    var srvSel = document.getElementById('airServerSel');
-                    if (srvSel) {
-                        var first = '';
-                        srvSel.querySelectorAll('option').forEach(function(o) {
-                            var match = !ctx.zoneId || o.dataset.zone === ctx.zoneId;
-                            o.style.display = match ? '' : 'none';
-                            if (match && !first) first = o.value;
-                        });
-                        if (!ctx.serverId) { srvSel.value = first; selectedServerId = first; }
-                    }
-                    changed = true;
-                }
-            }
-        }
-
-        // Apply server
-        if (ctx.serverId) {
-            var sSel = document.getElementById('airServerSel');
-            if (sSel) {
-                var sOpt = sSel.querySelector('option[value="' + ctx.serverId + '"]');
-                if (sOpt) {
-                    sSel.value       = ctx.serverId;
-                    selectedServerId = ctx.serverId;
-                    changed = true;
-                }
-            }
-        }
-
-        if (changed) { airHighlightCorridors(); _airDoRefresh(); }
-    } catch(e) {}
-}
-
-// ── Animate loop ──────────────────────────────────────────────────────
-function animate() {
-    requestAnimationFrame(animate);
-    tick++;
-    if (airCamTween) airCamTween();
-
-    camP.position.x = radius * Math.sin(theta) * Math.cos(phi);
-    camP.position.y = Math.max(5, radius * Math.sin(phi));
-    camP.position.z = radius * Math.cos(theta) * Math.cos(phi);
-    camP.lookAt(0, lookTarget.y, 0);
-
-    // Vehicle animation — always runs; animationPaused only gates the 30s DB poll
-    vehicleObjects.forEach((vo, i) => {
-        if (vo.vc.domain === 'air' && vo.st) {
-            // Advance orbit angle each frame — simulates circular flight circuit
-            vo.st.angle += vo.st.speed;
-            const ox   = Math.sin(vo.st.angle) * vo.st.orbitR;
-            const oz   = Math.cos(vo.st.angle) * vo.st.orbitR;
-            // Altitude oscillation: thermal lift + turbulence
-            const dy   = Math.sin(tick * 0.025 + vo.st.phase) * 1.2;
-            const curY = vo.altY + dy;
-            const tY   = vo.topY + dy;
-            // Move all three panel meshes in sync with orbit
-            vo.meshP.position.set(ox, curY, oz);
-            vo.meshS.position.set(ox, curY, oz);
-            vo.meshT.position.set(ox, tY,   oz);
-            // Labels follow the vehicle in all three panels
-            if (vo.labelP) vo.labelP.position.set(ox, curY + 4, oz);
-            if (vo.labelS) vo.labelS.position.set(ox, curY + 4, oz);
-            if (vo.labelT) vo.labelT.position.set(ox, tY + 4, oz);
-            // Face direction of travel + bank into turn
-            vo.meshP.rotation.y = vo.st.angle + Math.PI * 0.5;
-            vo.meshP.rotation.z = -0.22;        // realistic bank angle
-            // Top-down view: rotate to match heading
-            vo.meshT.rotation.z += vo.st.speed;
-            // Speed/alert overlays track aircraft XZ
-            vo.overlays.forEach(m => m.position.set(ox, curY - 0.2, oz));
-        } else {
-            // Ground vehicle or no orbit state: gentle hovering bob
-            const dy = Math.sin(tick * 0.04 + i * 0.8) * 0.05;
-            vo.meshP.position.y = vo.altY + dy;
-            vo.meshS.position.y = vo.altY + dy;
-            vo.meshT.position.y = vo.topY + dy;
-            // Labels follow bob
-            if (vo.labelP) vo.labelP.position.y = vo.altY + dy + 4;
-            if (vo.labelS) vo.labelS.position.y = vo.altY + dy + 4;
-            if (vo.labelT) vo.labelT.position.y = vo.topY + dy + 4;
-        }
-    });
-    conflictRings.forEach((r, i) => {
-        if (vehicleObjects[i]) {
-            r.position.x = vehicleObjects[i].meshP.position.x;
-            r.position.y = vehicleObjects[i].meshP.position.y;
-            r.position.z = vehicleObjects[i].meshP.position.z;
-        }
-        r.rotation.z += 0.02;
-    });
-
-    const cw = canvas.clientWidth, ch = canvas.clientHeight;
-    renderer.setSize(cw, ch, false);
-
-    renderer.setViewport(0,       0, cw * 0.42, ch);
-    renderer.setScissor( 0,       0, cw * 0.42, ch);
-    renderer.setScissorTest(true);
-    camP.aspect = (cw * 0.42) / ch;
-    camP.updateProjectionMatrix();
-    renderer.render(scene, camP);
-
-    renderer.setViewport(cw * 0.43, 0, cw * 0.27, ch);
-    renderer.setScissor( cw * 0.43, 0, cw * 0.27, ch);
-    renderer.render(scene, camS);
-
-    renderer.setViewport(cw * 0.72, 0, cw * 0.27, ch);
-    renderer.setScissor( cw * 0.72, 0, cw * 0.27, ch);
-    renderer.render(scene, camT);
-
-    renderer.setScissorTest(false);
-}
-
-// ── Boot ──────────────────────────────────────────────────────────────
-(async () => {
-    renderBandLegend();
-    renderAltAxis();
-    await _airDoRefresh();
-    animate();
-})();
-
-// 30s slow poll — gated: skip when sim running or feed held
-setInterval(function() { if (!_airSimRunning && !_airFeedHeld) _airDoRefresh(); }, 30000);
-window.addEventListener('resize', renderAltAxis);
-// Restore sim feed state from localStorage on page load (handles DataInputFormats navigation)
-(function() { if (localStorage.getItem('airways_sim_active') === 'true') onSimStateChange(true); })();
-
-// ── Live simulation feed ───────────────────────────────────────────────
-function _airNorm(evObj, cl) {
-    var ev = Object.assign({}, evObj);
-    if (cl) {
-        ev.vehicleCategory  = cl.category;
-        ev.vehicleMode      = cl.domain;
-        ev.altitudeMeters   = (cl.altitudeM  != null) ? cl.altitudeM  : (evObj.altitude_m  ?? 0);
-        ev.speedMph         = (cl.speedMph   != null) ? cl.speedMph   : (evObj.speed_mph   ?? 0);
-        ev.vehicleClassJson = JSON.stringify(cl);
-    } else {
-        ev.altitudeMeters = evObj.altitude_m  ?? 0;
-        ev.speedMph       = evObj.speed_mph   ?? 0;
-    }
-    // FIX: exhaustive field alias normalisation (same fix as Traffic3D)
-    ev.latitude  = evObj.latitude  ?? evObj.lat      ?? evObj.lat_deg  ?? evObj.Latitude  ?? 32.7767;
-    ev.longitude = evObj.longitude ?? evObj.lon      ?? evObj.lon_deg  ?? evObj.Longitude ?? -96.7970;
-    ev.speedMph  = evObj.speedMph  ?? evObj.speed_mph ?? evObj.SpeedMph ?? evObj.speed ?? ev.speedMph ?? 0;
-    ev.vehicleId = evObj.vehicle_id || ('SIM-' + Math.random().toString(36).slice(2,6).toUpperCase());
-    ev.eventType = evObj.event_type || 'detection';
-    ev.zoneId    = evObj.zone_id    || '';
-    // Extract vehicle_make for brand badge display
-    ev.vehicleMake = evObj.vehicle_make || evObj.vehicleMake || null;
-    // EMA-update _airMidLat/_airMidLon so sim-spawned vehicles match DB-poll positions
-    if (ev.latitude && ev.longitude) {
-        _airMidLat = _airMidLat * 0.85 + ev.latitude  * 0.15;
-        _airMidLon = _airMidLon * 0.85 + ev.longitude * 0.15;
-    }
-    return ev;
-}
-
-function _airInject(evObj, cl) {
-    // Sim events ALWAYS flow while sim is running — _airFeedHeld blocks DB refresh only.
-    if (!_airSimRunning) return;
-    var ev = _airNorm(evObj, cl);
-
-    _updateAirSimPanel(ev, '⏳ saving…');
-
-    // Immediate visual update by vehicleId — update orbit speed + altitude before DB round-trip
-    if (ev.vehicleId && airVehicleState.has(ev.vehicleId)) {
-        var _st = airVehicleState.get(ev.vehicleId);
-        _st.speed = (Math.max(10, ev.speedMph ?? 70) * 0.022) / _st.orbitR;
-        var _vo = vehicleObjects.find(function(o) { return o.ev && o.ev.vehicleId === ev.vehicleId; });
-        if (_vo) {
-            if (ev.altitudeMeters != null) { _vo.altY = ev.altitudeMeters * ALT_SCALE; _vo.topY = ev.altitudeMeters * ALT_SCALE; }
-            _vo.ev = ev;
-        }
-    }
-
-    // ── Always save to DB + refresh (works in both live and sim-only modes) ──
-    fetch('/AirScene/InjectSimEvent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            vehicleId:      ev.vehicleId,
-            highwayId:      HW || '',
-            zoneId:         ev.zoneId || selectedZoneId || '',
-            vehicleType:    ev.vehicleCategory || 'air_urban',
-            srcType:        'airflycar',
-            isAirFlyCar:    'Y',
-            speedMph:       ev.speedMph,
-            latitude:       ev.latitude,
-            longitude:      ev.longitude,
-            altitudeMeters: ev.altitudeMeters ?? 0
-        })
-    }).then(function(r) {
-        return r.json().then(function(j) {
-            if (r.ok) _updateAirSimPanel(ev, '✓ saved · id ' + j.id);
-            else       _updateAirSimPanel(ev, '✗ ' + (j.error || r.status));
-        });
-    }).catch(function(err) {
-        _updateAirSimPanel(ev, '✗ ' + (err.message || 'network error'));
-        _airInjectDirect(ev, cl); // fallback: direct inject for visual continuity
-    }).then(function() {
-        // Refresh 500ms after POST resolves — DB has the new row
-        if (!_airFeedHeld) setTimeout(function() { _airDoRefresh(); }, 500);
-    });
-
-    var lbl = document.getElementById('airSimLiveLabel');
-    if (lbl) { lbl.style.opacity = '1'; setTimeout(function(){ lbl.style.opacity = '0'; }, 2500); }
-    document.getElementById('stTime').textContent = 'Sim · ' + new Date().toLocaleTimeString();
-
-    if (!animationPaused) return; // camera tween only in sim-only mode
-    var startR = radius, startP = phi;
-    var targR  = Math.max(25, startR * 0.13);
-    var targP  = Math.max(0.15, Math.min(0.55, startP));
-    var frames = 0, phase = 'in';
-    var FIN = 55, FHOLD = 100, FOUT = 70;
-    airCamTween = function() {
-        var t, ease;
-        if (phase === 'in') {
-            frames++;
-            t = Math.min(1, frames / FIN);
-            ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
-            radius = startR + (targR - startR) * ease;
-            phi    = startP + (targP - startP) * ease;
-            if (frames >= FIN) { frames = 0; phase = 'hold'; }
-        } else if (phase === 'hold') {
-            frames++;
-            if (frames >= FHOLD) { frames = 0; phase = 'out'; }
-        } else {
-            frames++;
-            t = Math.min(1, frames / FOUT);
-            ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
-            radius = targR + (startR - targR) * ease;
-            phi    = targP + (startP - targP) * ease;
-            if (frames >= FOUT) { airCamTween = null; radius = startR; phi = startP; }
-        }
-    };
-}
-
-function _airInjectDirect(ev, cl) {
-    var vc = resolveClass(ev);
-    var vo = buildVehicle(ev);
-    var overlays = buildSpeedOverlay(ev, vo.p, vo.isAir, vo.altY);
-    vo.overlays = overlays;
-    scene.add(vo.meshP); scene.add(vo.meshS); scene.add(vo.meshT);
-    if (vo.labelP) scene.add(vo.labelP);
-    if (vo.labelS) scene.add(vo.labelS);
-    if (vo.labelT) scene.add(vo.labelT);
-    overlays.forEach(function(m){ scene.add(m); });
-    vehicleObjects.push(vo);
-    var aEl = document.getElementById('stAir');
-    if (aEl) aEl.textContent = (+aEl.textContent||0) + 1;
-}
-
-// ══════════════════════════════════════════════════════════════════════
-// 3D VIEW: Map overlay + Bridge path + Zone pins + Bearing-based movement
-// Duplicated from Traffic3D — adapted for air vehicles with altitude
-// ══════════════════════════════════════════════════════════════════════
-
-var _air3dCanvas = document.getElementById('air3dCanvas');
-var _airRenderer = null, _airScene = null, _airCam = null;
-var _airRoadGroup = null, _airRoadWidth = 20;
-var _airMap = null, _airMapReady = false;
-var _airBridgePath = [];
-var _airHwBearing = 90;
-var _airHwyIsEW = true;
-var _air3dAnimRunning = false;
-var _airRadius = 280, _airPhi = 0.35;
-var _airZoneMarkers = [];
-var _air3DBoundsCache = null;
-var _airHwyPolyline = null;
-var _airVehicleMeshes = [];
-var _airMapCtrLat = _airMidLat, _airMapCtrLon = _airMidLon;
-var _airViewMode = 'split';  // '3d' or 'split'
-
-var _airViewMode = 'perspective'; // perspective | side | top | split
-
-function airSetView(mode) {
-    _airViewMode = mode;
-
-    // Update toggle button states
-    document.querySelectorAll('#airViewToggle button').forEach(function(b) {
-        b.classList.toggle('btn-primary', b.dataset.airview === mode);
-        b.classList.toggle('btn-outline-primary', b.dataset.airview !== mode);
-    });
-
-    var c3d  = document.getElementById('air3dCanvas');
-    var c2d  = document.getElementById('airCanvas');
-    var map  = document.getElementById('airMiniMap');
-    var lblA = document.getElementById('airLabelA');
-    var lblB = document.getElementById('airLabelB');
-    var lblC = document.getElementById('airLabelC');
-    var dAB  = document.getElementById('divAB');
-    var dBC  = document.getElementById('divBC');
-    var altAxis = document.getElementById('altAxis');
-    var locBadge = document.getElementById('airLocBadge');
-
-    // Hide all labels and dividers first
-    if (lblA) lblA.style.display = 'none';
-    if (lblB) lblB.style.display = 'none';
-    if (lblC) lblC.style.display = 'none';
-    if (dAB) dAB.style.display = 'none';
-    if (dBC) dBC.style.display = 'none';
-    if (altAxis) altAxis.style.display = 'none';
-
-    if (mode === 'perspective') {
-        if (c3d) c3d.style.display = 'block';
-        if (c2d) c2d.style.display = 'none';
-        if (map) { map.style.opacity = '0.55'; map.style.visibility = 'visible'; }
-        if (lblA) lblA.style.display = '';
-        if (locBadge) locBadge.style.display = '';
-        _airInit3D();
-        _airInitMap();
-        _airCenterMapOnZone();
+    _air3dCanvas.addEventListener('mouseup', function() { drag.on = false; });
+    _air3dCanvas.addEventListener('mouseleave', function() { drag.on = false; });
+    _air3dCanvas.addEventListener('wheel', function(e) {
+        e.preventDefault(); e.stopPropagation();
+        _airRadius = Math.max(40, Math.min(800, _airRadius + e.deltaY * 0.35));
         _airSyncZoom();
-        if (!_air3dAnimRunning) { _air3dAnimRunning = true; _airAnimate3D(); }
-    } else if (mode === 'side') {
-        if (c3d) c3d.style.display = 'none';
-        if (c2d) c2d.style.display = 'block';
-        if (map) { map.style.opacity = '0.3'; map.style.visibility = 'visible'; }
-        if (lblB) lblB.style.display = '';
-        if (altAxis) altAxis.style.display = '';
-        _air3dAnimRunning = false;
-    } else if (mode === 'top') {
-        if (c3d) c3d.style.display = 'none';
-        if (c2d) c2d.style.display = 'block';
-        if (map) { map.style.opacity = '0.9'; map.style.visibility = 'visible'; }
-        if (lblC) lblC.style.display = '';
-        _air3dAnimRunning = false;
-    } else if (mode === 'split') {
-        if (c3d) c3d.style.display = 'none';
-        if (c2d) c2d.style.display = 'block';
-        if (map) { map.style.opacity = '0.7'; map.style.visibility = 'visible'; }
-        if (lblA) lblA.style.display = '';
-        if (lblB) lblB.style.display = '';
-        if (lblC) lblC.style.display = '';
-        if (dAB) dAB.style.display = '';
-        if (dBC) dBC.style.display = '';
-        if (altAxis) altAxis.style.display = '';
-        _air3dAnimRunning = false;
+    }, { passive: false });
+
+    // Leaflet map event — keep map+3D in sync
+    if (typeof _airMap !== 'undefined' && _airMap) {
+        _airMap.on('zoomend moveend', function() {
+            var zoom = _airMap.getZoom();
+            _airRadius = Math.max(40, Math.min(800, 600 / Math.pow(2, zoom - 10)));
+            var ctr = _airMap.getCenter();
+            _airMidLat = ctr.lat; _airMidLon = ctr.lng;
+            _air3DBoundsCache = null;
+        });
     }
-
-    // Resize canvases
-    if (c3d) { c3d.width = c3d.clientWidth; c3d.height = c3d.clientHeight; }
-    if (c2d) { c2d.width = c2d.clientWidth; c2d.height = c2d.clientHeight; }
-
-    console.log('[AirScene] View mode:', mode);
 }
-
-function airZoomIn() {
-    if (typeof _airMap !== 'undefined' && _airMap) _airMap.zoomIn();
-    console.log('[AirScene] Zoom in');
-}
-
-function airZoomOut() {
-    if (typeof _airMap !== 'undefined' && _airMap) _airMap.zoomOut();
-    console.log('[AirScene] Zoom out');
-}
-
-// Wire up view toggle buttons
-document.querySelectorAll('#airViewToggle button').forEach(function(b) {
-    b.addEventListener('click', function() { airSetView(this.dataset.airview); });
-});
-
 function _airInit3D() {
     if (_airRenderer) return;  // already initialized
     _airRenderer = new THREE.WebGLRenderer({ canvas: _air3dCanvas, antialias: true });
@@ -1731,26 +661,40 @@ function _airInit3D() {
 }
 
 function _airBuildRoad() {
-    // Clear old road elements
     while (_airRoadGroup.children.length > 0) _airRoadGroup.remove(_airRoadGroup.children[0]);
     var rw = _airRoadWidth;
     // Road surface
     var roadGeo = new THREE.PlaneGeometry(1800, rw);
     roadGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-    var roadMat = new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.85, transparent: true });
-    _airRoadGroup.add(new THREE.Mesh(roadGeo, roadMat));
-    // Centre line
+    _airRoadGroup.add(new THREE.Mesh(roadGeo, new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.92, transparent: true })));
+    // Centre line (yellow)
     var clGeo = new THREE.PlaneGeometry(1800, 0.6);
     clGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
     var clMesh = new THREE.Mesh(clGeo, new THREE.MeshPhongMaterial({ color: 0xfde047 }));
     clMesh.position.y = 0.02; _airRoadGroup.add(clMesh);
-    // Edge lines
+    // Lane dashes (white) — 4 lanes
+    [-rw * 0.25, rw * 0.25].forEach(function(lz) {
+        for (var di = -20; di <= 20; di++) {
+            var dg = new THREE.PlaneGeometry(8, 0.3);
+            dg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+            var dm = new THREE.Mesh(dg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
+            dm.position.set(di * 40, 0.02, lz); _airRoadGroup.add(dm);
+        }
+    });
+    // Edge lines (white solid)
     [-rw * 0.5 + 0.3, rw * 0.5 - 0.3].forEach(function(ez) {
         var eg = new THREE.PlaneGeometry(1800, 0.4);
         eg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
         var em = new THREE.Mesh(eg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
         em.position.set(0, 0.02, ez); _airRoadGroup.add(em);
     });
+    // Guard rails
+    var railGeo = new THREE.BoxGeometry(1800, 1.2, 0.4);
+    var railMat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa });
+    var rL = new THREE.Mesh(railGeo, railMat); rL.position.set(0, 1.5, rw * 0.5);
+    _airRoadGroup.add(rL);
+    var rR = new THREE.Mesh(railGeo.clone(), railMat); rR.position.set(0, 1.5, -rw * 0.5);
+    _airRoadGroup.add(rR);
 }
 
 function _airInitMap() {
@@ -1881,18 +825,26 @@ function _airUpdateLocBadge() {
 
 function _airUpdateCamera() {
     var brg = (_airHwBearing || 90) * Math.PI / 180;
-    var camHeight = _airRadius * Math.sin(_airPhi);
-    var camHoriz = _airRadius * Math.cos(_airPhi);
-    _airCam.position.x = -camHoriz * Math.sin(brg - Math.PI / 2);
-    _airCam.position.y = Math.max(15, camHeight);
-    _airCam.position.z = -camHoriz * Math.cos(brg - Math.PI / 2);
-    _airCam.lookAt(0, 0, 0);
+    var ch = _airRadius * Math.sin(_airPhi);
+    var co = _airRadius * Math.cos(_airPhi);
+    _airCam.position.x = -co * Math.sin(brg - Math.PI / 2);
+    _airCam.position.y = Math.max(20, ch);
+    _airCam.position.z = -co * Math.cos(brg - Math.PI / 2);
+    _airCam.lookAt(0, 20, 0);
+
+    // Sync side camera to road bearing
+    if (_airCamSide) {
+        _airCamSide.position.x = -400 * Math.cos(brg);
+        _airCamSide.position.z = -400 * Math.sin(brg);
+        _airCamSide.lookAt(0, 20, 0);
+    }
 }
 
 function _airSyncVehicles3D() {
+    if (!_airScene) return;
     // Remove stale meshes
     _airVehicleMeshes = _airVehicleMeshes.filter(function(m) {
-        if (!vehicleObjects.find(function(vo) { return vo.ev && vo.ev.vehicleId === m.userData.vid; })) {
+        if (!vehicleObjects.find(function(vo) { return vo.vid === m.userData.vid; })) {
             _airScene.remove(m);
             if (m.userData.labelSprite) _airScene.remove(m.userData.labelSprite);
             return false;
@@ -1904,23 +856,136 @@ function _airSyncVehicles3D() {
         var vid = vo.vid;
         var exists = _airVehicleMeshes.find(function(m) { return m.userData.vid === vid; });
         if (!exists && vo.ev) {
+            var mesh = _make3DAirVehicle(vo);
+            if (!mesh) return;
             var ev = vo.ev;
-            var altY = (ev.altitudeMeters || 60) * ALT_SCALE;
-            var geo = new THREE.BoxGeometry(3, 0.8, 3);
-            var mat = new THREE.MeshPhongMaterial({ color: new THREE.Color(vo.vc.color || '#00bcd4') });
-            var mesh = new THREE.Mesh(geo, mat);
+            var altY = Math.max(5, (ev.altitudeMeters || 80)) * _airAltScale;
             var p = _airNorm(ev.latitude || _airMidLat, ev.longitude || _airMidLon);
             mesh.position.set(p.x, altY, p.z);
             mesh.userData = {
                 vid: vid, ev: vo.ev, vc: vo.vc,
-                spd: ev.speedMph || 30,
-                dir: ev.direction || _airHwBearing || 90,
+                spd: ev.speedMph || 40,
+                dir: _airHwBearing || 90,
                 altY: altY
             };
             _airScene.add(mesh);
+            if (mesh.userData.labelSprite) _airScene.add(mesh.userData.labelSprite);
             _airVehicleMeshes.push(mesh);
         }
     });
+}
+
+function _make3DAirVehicle(vo) {
+    var ev  = vo.ev;
+    var vc  = vo.vc || {};
+    var vid = vo.vid || '';
+    var make = vo.make || (vid.split('-')[0]) || '';
+
+    // Use AirCar registry spec for dimensions
+    var airSpec = _airGetSpec(make);
+    var l = airSpec ? airSpec.lengthM * 1.5 : 6.0;
+    var w = airSpec ? airSpec.widthM  * 0.8 : 8.0;
+    var h = airSpec ? airSpec.heightM * 1.5 : 1.6;
+
+    var group = new THREE.Group();
+
+    // Fuselage (elongated box)
+    var bodyColor = vc.color || (airSpec && airSpec.colors && airSpec.colors[0]) || '#00bcd4';
+    var bodyGeo = new THREE.BoxGeometry(l, h * 0.6, w * 0.25);
+    var bodyMat = new THREE.MeshPhongMaterial({ color: new THREE.Color(bodyColor) });
+    var body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = h * 0.3;
+    group.add(body);
+
+    // Cockpit dome
+    var domeGeo = new THREE.SphereGeometry(h * 0.55, 8, 6, 0, Math.PI*2, 0, Math.PI/2);
+    var domeMat = new THREE.MeshPhongMaterial({ color: 0x90caf9, transparent: true, opacity: 0.75 });
+    var dome = new THREE.Mesh(domeGeo, domeMat);
+    dome.position.set(l * 0.2, h * 0.6, 0);
+    group.add(dome);
+
+    // Tail fin (vertical stabiliser)
+    var finGeo = new THREE.BoxGeometry(l * 0.18, h * 0.8, 0.3);
+    var finMat = new THREE.MeshPhongMaterial({ color: new THREE.Color(bodyColor) });
+    var fin = new THREE.Mesh(finGeo, finMat);
+    fin.position.set(-l * 0.38, h * 0.6, 0);
+    group.add(fin);
+
+    // Wings (wide flat plane)
+    var wingGeo = new THREE.BoxGeometry(l * 0.45, h * 0.08, w * 0.85);
+    var wingMat = new THREE.MeshPhongMaterial({ color: new THREE.Color(bodyColor) });
+    var wings = new THREE.Mesh(wingGeo, wingMat);
+    wings.position.set(-l * 0.05, h * 0.3, 0);
+    group.add(wings);
+
+    // Wing tips — small perpendicular winglets
+    [-1, 1].forEach(function(side) {
+        var wt = new THREE.Mesh(new THREE.BoxGeometry(l*0.08, h*0.35, 0.25), wingMat);
+        wt.position.set(-l*0.05, h*0.48, side * w * 0.44);
+        group.add(wt);
+    });
+
+    // Propeller rotors (eVTOL style — 4 rotor discs)
+    var rotorGeo = new THREE.CylinderGeometry(w * 0.22, w * 0.22, 0.2, 12);
+    var rotorMat = new THREE.MeshPhongMaterial({ color: 0xcccccc, transparent: true, opacity: 0.55 });
+    [[-1,-1],[-1,1],[1,-1],[1,1]].forEach(function(pos) {
+        var rotor = new THREE.Mesh(rotorGeo, rotorMat);
+        rotor.position.set(pos[0] * l * 0.3, h * 0.4, pos[1] * w * 0.38);
+        group.add(rotor);
+        // Rotor mast
+        var mast = new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.15,h*0.35,6), bodyMat);
+        mast.position.set(pos[0]*l*0.3, h*0.22, pos[1]*w*0.38);
+        group.add(mast);
+    });
+
+    // Nose cone
+    var noseGeo = new THREE.ConeGeometry(h * 0.28, l * 0.25, 8);
+    noseGeo.applyMatrix4(new THREE.Matrix4().makeRotationZ(-Math.PI / 2));
+    var nose = new THREE.Mesh(noseGeo, bodyMat);
+    nose.position.set(l * 0.5, h * 0.3, 0);
+    group.add(nose);
+
+    // Side-view logo texture
+    var sideTex = _airGetSideTexture(make);
+    if (sideTex) {
+        var svGeo = new THREE.PlaneGeometry(l * 0.8, h * 0.5);
+        var svMat = new THREE.MeshBasicMaterial({ map: sideTex, transparent: true });
+        var svL = new THREE.Mesh(svGeo, svMat);
+        svL.position.set(0, h * 0.3, w * 0.13 + 0.01);
+        group.add(svL);
+        var svR = new THREE.Mesh(svGeo.clone(), svMat);
+        svR.position.set(0, h * 0.3, -w * 0.13 - 0.01);
+        svR.rotation.y = Math.PI; group.add(svR);
+    }
+
+    // ── Vehicle label sprite ──────────────────────────────────────────────
+    var vidShort = vid.slice(0, 14);
+    var makeName = make || (airSpec ? airSpec.make : '');
+    var badge = AIR_BRAND_BADGES[makeName] || '✈';
+
+    var lc = document.createElement('canvas');
+    lc.width = 320; lc.height = 80;
+    var lctx = lc.getContext('2d');
+    lctx.fillStyle = 'rgba(2,10,28,0.82)';
+    lctx.beginPath(); lctx.roundRect(0, 0, 320, 80, 10); lctx.fill();
+    lctx.font = 'bold 22px Arial'; lctx.fillStyle = '#60a5fa';
+    lctx.fillText(vidShort, 12, 32);
+    lctx.font = '18px Arial'; lctx.fillStyle = '#93c5fd';
+    lctx.fillText(badge + ' ' + (makeName || 'AirCar'), 12, 60);
+    var logoI = AIR_BRAND_LOGO_IMAGES[makeName];
+    if (logoI && logoI.complete && logoI.naturalWidth > 0) {
+        lctx.drawImage(logoI, 278, 4, 36, 36);
+    }
+    var lTex = new THREE.CanvasTexture(lc);
+    lTex.needsUpdate = true;
+    var sGeo = new THREE.PlaneGeometry(16, 4);
+    var sMat = new THREE.SpriteMaterial({ map: lTex, transparent: true, depthTest: false });
+    var sprite = new THREE.Sprite(sMat);
+    sprite.scale.set(16, 4, 1);
+    group.userData = group.userData || {};
+    group.userData.labelSprite = sprite;
+
+    return group;
 }
 
 function _airAnimate3D() {
@@ -1962,6 +1027,15 @@ function _airAnimate3D() {
     _airRenderer.setSize(cw, ch, false);
     _airCam.aspect = cw / ch;
     _airCam.updateProjectionMatrix();
+    // Update label sprite positions above each vehicle
+    _airVehicleMeshes.forEach(function(m) {
+        var sp = m.userData.labelSprite;
+        if (sp) {
+            sp.position.set(m.position.x, m.position.y + 8, m.position.z);
+            if (!sp.parent) _airScene.add(sp);
+        }
+    });
+
     _airRenderer.render(_airScene, _airCam);
 }
 
