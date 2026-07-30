@@ -1359,14 +1359,13 @@ function _airBuildRoad3D() {
     airRoadGroup3.add(rR); _airRoadMeshes3D.push(rR);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-// REAL 3D STRUCTURES — fetched from OpenStreetMap via Overpass API
-// Buildings are projected using the same norm() function as the bridge path,
-// ensuring proportional alignment to the highway in the 3D scene.
-// ══════════════════════════════════════════════════════════════════════════
-var _airStructures3D = [];
+// ══════════════════════════════════════════════════════════════════════════════
+// REAL 3D STRUCTURES — fetched via .NET proxy → Overpass OSM API
+// All buildings positioned with norm() — aligned to the bridge coordinate system
+// ══════════════════════════════════════════════════════════════════════════════
+var _airStructures3D    = [];
 var _airStructureLabels = [];
-var _airOSMLoaded = false;
+var _airOSMLoaded       = false;
 
 function _airClearStructures3D() {
     _airStructures3D.forEach(function(m) { airScene3.remove(m); });
@@ -1375,223 +1374,168 @@ function _airClearStructures3D() {
     _airStructureLabels = [];
 }
 
-// Height scale: converts real-world meters to 3D scene units
-// Proportional to XZ_SCALE so buildings scale with zoom
+var _airBldColors = [0x4a7a9b, 0x5b8fa8, 0x3d6b8a, 0x6a9ab0, 0x476d84, 0x527d94, 0x3f6070, 0x648ba0];
+
 function _airHeightScale() {
-    // XZ_SCALE maps GPS degrees → 3D units. 1 degree ≈ 111000m.
-    // So 1 meter ≈ XZ_SCALE / 111000 units. But that's too small for visual.
-    // Use a visual amplification: 3D units per meter = (XZ_SCALE/800) * 0.35
-    return (XZ_SCALE / 800) * 0.35;
+    var unitsPerMeter = XZ_SCALE / 111000;
+    return Math.max(0.08, unitsPerMeter * 6);
 }
 
-// Nav-map building palette (muted blues/grays)
-var _airBldColors = [0x4a6a8a, 0x5a7a9a, 0x6a8aaa, 0x3a5a7a, 0x5a6a8a, 0x4a5a6a, 0x7a9aba, 0x3a4a6a];
-
-function _airMakeLabel(text, x, y, z, scale) {
+function _airMakeLabel3D(text, x, topY, z) {
     var lc = document.createElement('canvas');
-    lc.width = 256; lc.height = 64;
+    lc.width = 256; lc.height = 56;
     var lctx = lc.getContext('2d');
-    lctx.fillStyle = 'rgba(15, 25, 45, 0.85)';
-    lctx.beginPath(); lctx.roundRect(4, 4, 248, 56, 10); lctx.fill();
-    lctx.strokeStyle = 'rgba(100, 160, 255, 0.6)';
-    lctx.lineWidth = 2;
-    lctx.beginPath(); lctx.roundRect(4, 4, 248, 56, 10); lctx.stroke();
-    lctx.font = 'bold 24px Arial';
+    lctx.fillStyle = 'rgba(10,20,40,0.82)';
+    lctx.beginPath(); lctx.roundRect(2, 2, 252, 52, 8); lctx.fill();
+    lctx.strokeStyle = 'rgba(96,165,250,0.7)';
+    lctx.lineWidth = 1.5;
+    lctx.beginPath(); lctx.roundRect(2, 2, 252, 52, 8); lctx.stroke();
+    lctx.font = 'bold 20px Arial';
     lctx.fillStyle = '#93c5fd';
-    lctx.textAlign = 'center';
-    lctx.textBaseline = 'middle';
-    lctx.fillText(text.slice(0, 22), 128, 32);
-    var lTex = new THREE.CanvasTexture(lc);
-    lTex.needsUpdate = true;
-    var sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: lTex, transparent: true, depthTest: true }));
-    sprite.scale.set(scale || 18, (scale || 18) * 0.25, 1);
-    sprite.position.set(x, y, z);
+    lctx.textAlign = 'center'; lctx.textBaseline = 'middle';
+    lctx.fillText(text.slice(0, 24), 128, 28);
+    var tex = new THREE.CanvasTexture(lc); tex.needsUpdate = true;
+    var sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+    sprite.scale.set(22, 5, 1);
+    sprite.position.set(x, topY + 4, z);
     airScene3.add(sprite);
     _airStructureLabels.push(sprite);
 }
 
-function _airRenderOSMStructures(elements) {
-    _airClearStructures3D();
-    var hScale = _airHeightScale();
-    var bldCount = 0;
-    var labeledCount = 0;
+// Render one building box at real GPS lat/lon using norm() for 3D alignment
+function _airRenderBuilding(latC, lonC, widthM, depthM, heightM, name, idx) {
+    var hScale  = _airHeightScale();
+    var hUnits  = Math.max(1.5, heightM * hScale);
+    var p       = norm(latC, lonC);
+    var mpu     = XZ_SCALE / 111000;
+    var wUnits  = Math.max(3, widthM * mpu);
+    var dUnits  = Math.max(3, depthM * mpu);
+    var col     = _airBldColors[idx % _airBldColors.length];
 
-    elements.forEach(function(el, idx) {
-        // Only process ways (polygon footprints) with geometry
-        if (el.type !== 'way' || !el.geometry || el.geometry.length < 3) return;
+    var geo  = new THREE.BoxGeometry(wUnits, hUnits, dUnits);
+    var mat  = new THREE.MeshPhongMaterial({ color: col, transparent: true, opacity: 0.70, shininess: 55 });
+    var mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(p.x, hUnits / 2, p.z);
+    airScene3.add(mesh); _airStructures3D.push(mesh);
 
-        // Get building height from OSM tags
-        var heightM = 0;
-        if (el.tags) {
-            if (el.tags.height) {
-                heightM = parseFloat(el.tags.height) || 0;
-            }
-            if (!heightM && el.tags['building:levels']) {
-                heightM = (parseInt(el.tags['building:levels']) || 0) * 3.5;
-            }
-        }
-        if (!heightM || heightM < 3) heightM = 10 + Math.random() * 20; // default height
+    var edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(geo),
+        new THREE.LineBasicMaterial({ color: 0x93c5fd, opacity: 0.50, transparent: true })
+    );
+    edges.position.copy(mesh.position);
+    airScene3.add(edges); _airStructures3D.push(edges);
 
-        var hUnits = Math.max(2, heightM * hScale);
+    var roofGeo = new THREE.BoxGeometry(wUnits + 0.5, 0.8, dUnits + 0.5);
+    var roofMat = new THREE.MeshPhongMaterial({ color: col, transparent: true, opacity: 0.80 });
+    var roof    = new THREE.Mesh(roofGeo, roofMat);
+    roof.position.set(p.x, hUnits + 0.4, p.z);
+    airScene3.add(roof); _airStructures3D.push(roof);
 
-        // Project footprint to 3D coordinates using norm()
-        var pts3D = el.geometry.map(function(pt) {
-            var p = norm(pt.lat, pt.lon);
-            return new THREE.Vector2(p.x, p.z);
-        });
-
-        // Skip if all points are too far from the road (outside visible area)
-        var maxDist = 1200;
-        var tooFar = pts3D.every(function(p) { return Math.abs(p.x) > maxDist && Math.abs(p.y) > maxDist; });
-        if (tooFar) return;
-
-        // Create extruded shape from footprint
-        var shape = new THREE.Shape(pts3D);
-
-        // Skip degenerate shapes (area too small)
-        var area = 0;
-        for (var si = 0; si < pts3D.length; si++) {
-            var sj = (si + 1) % pts3D.length;
-            area += pts3D[si].x * pts3D[sj].y - pts3D[sj].x * pts3D[si].y;
-        }
-        area = Math.abs(area) / 2;
-        if (area < 0.5) return; // too small to render
-
-        var extrudeSettings = {
-            depth: hUnits,
-            bevelEnabled: false,
-            steps: 1
-        };
-
-        var geo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-        // Extrude goes +Z by default; rotate so it goes +Y (up)
-        geo.rotateX(-Math.PI / 2);
-        // After rotation, depth is along -Y, so we translate up by hUnits
-        geo.translate(0, hUnits, 0);
-
-        var col = _airBldColors[idx % _airBldColors.length];
-        var mat = new THREE.MeshPhongMaterial({
-            color: col,
-            transparent: true,
-            opacity: 0.65,
-            shininess: 60,
-            flatShading: true,
-            side: THREE.DoubleSide   // render both faces — handles winding order issues
-        });
-        var mesh = new THREE.Mesh(geo, mat);
-        airScene3.add(mesh);
-        _airStructures3D.push(mesh);
-
-        // Building edges (nav-map outline)
-        var edgeGeo = new THREE.EdgesGeometry(geo);
-        var edgeMat = new THREE.LineBasicMaterial({ color: col + 0x222222, opacity: 0.5, transparent: true });
-        var edges = new THREE.LineSegments(edgeGeo, edgeMat);
-        airScene3.add(edges);
-        _airStructures3D.push(edges);
-
-        // Label — only for named buildings or larger structures
-        var name = el.tags && el.tags.name ? el.tags.name : '';
-        if (name || area > 50) {
-            // Compute centroid for label position
-            var cx = 0, cz = 0;
-            pts3D.forEach(function(p) { cx += p.x; cz += p.y; });
-            cx /= pts3D.length; cz /= pts3D.length;
-            _airMakeLabel(name || ('Bldg ' + bldCount), cx, hUnits + 4, cz, Math.min(22, Math.max(10, Math.sqrt(area) * 0.8)));
-            labeledCount++;
-        }
-
-        bldCount++;
-    });
-
-    // Ground grid (nav-map style)
-    var gridMat = new THREE.LineBasicMaterial({ color: 0x3a5a7a, opacity: 0.10, transparent: true });
-    var gridGeo = new THREE.BufferGeometry();
-    var gridPts = [];
-    for (var gx = -600; gx <= 600; gx += 40) {
-        gridPts.push(new THREE.Vector3(gx, 0.05, -900));
-        gridPts.push(new THREE.Vector3(gx, 0.05, 200));
-    }
-    for (var gz = -900; gz <= 200; gz += 40) {
-        gridPts.push(new THREE.Vector3(-600, 0.05, gz));
-        gridPts.push(new THREE.Vector3( 600, 0.05, gz));
-    }
-    gridGeo.setFromPoints(gridPts);
-    var grid = new THREE.LineSegments(gridGeo, gridMat);
-    airScene3.add(grid);
-    _airStructures3D.push(grid);
-
-    console.log('[AirScene] OSM structures rendered: ' + bldCount + ' buildings, ' + labeledCount + ' labeled');
+    if (name) _airMakeLabel3D(name, p.x, hUnits, p.z);
 }
 
-// Fetch real building data from OpenStreetMap Overpass API
-async function _airFetchOSMStructures() {
-    if (!midLat || !midLon) {
-        console.warn('[AirScene] Cannot fetch OSM structures — no map center');
-        return;
-    }
-
-    var lat = midLat, lon = midLon;
-    var radius = 2000; // 2km radius around highway center
-
-    var query = '[out:json][timeout:25];'
-        + '(way["building"](around:' + radius + ',' + lat + ',' + lon + ');'
-        + 'relation["building"](around:' + radius + ',' + lat + ',' + lon + '););'
-        + 'out geom;';
-
-    console.log('[AirScene] Fetching OSM structures from Overpass API (lat=' + lat.toFixed(4) + ', lon=' + lon.toFixed(4) + ', r=' + radius + 'm)');
-
-    try {
-        var resp = await fetch('https://overpass-api.de/api/interpreter', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'data=' + encodeURIComponent(query)
+// Parse Overpass elements → render buildings at their real GPS centroids
+function _airRenderOSMStructures(elements) {
+    _airClearStructures3D();
+    var count = 0;
+    elements.forEach(function(el, idx) {
+        if (el.type !== 'way' || !el.geometry || el.geometry.length < 3) return;
+        var sumLat = 0, sumLon = 0;
+        var minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+        el.geometry.forEach(function(pt) {
+            sumLat += pt.lat; sumLon += pt.lon;
+            if (pt.lat < minLat) minLat = pt.lat; if (pt.lat > maxLat) maxLat = pt.lat;
+            if (pt.lon < minLon) minLon = pt.lon; if (pt.lon > maxLon) maxLon = pt.lon;
         });
-        if (!resp.ok) throw new Error('Overpass returned ' + resp.status);
-        var data = await resp.json();
-        if (data && data.elements && data.elements.length > 0) {
+        var n = el.geometry.length;
+        var cLat = sumLat / n, cLon = sumLon / n;
+        var p3   = norm(cLat, cLon);
+        if (Math.abs(p3.x) > 1400 || Math.abs(p3.z) > 1400) return;
+        var widthM  = Math.abs(maxLon - minLon) * 111000 * Math.cos(cLat * Math.PI / 180);
+        var depthM  = Math.abs(maxLat - minLat) * 111000;
+        if (widthM < 3 || depthM < 3) return;
+        var heightM = 0;
+        if (el.tags) {
+            heightM = parseFloat(el.tags.height) || 0;
+            if (!heightM && el.tags['building:levels'])
+                heightM = (parseInt(el.tags['building:levels']) || 1) * 3.5;
+        }
+        if (!heightM || heightM < 3) heightM = 8 + Math.random() * 18;
+        var name = (el.tags && el.tags.name) ? el.tags.name : null;
+        _airRenderBuilding(cLat, cLon, widthM, depthM, heightM, name, idx);
+        count++;
+    });
+    _airAddGroundGrid();
+    console.log('[AirScene] OSM: ' + count + ' buildings rendered at (' + midLat.toFixed(4) + ',' + midLon.toFixed(4) + ')');
+}
+
+// Fallback: synthetic buildings distributed ALONG the bridge path via norm()
+function _airBuildFallbackStructures() {
+    _airClearStructures3D();
+    if (!_airBridgePathCoords || _airBridgePathCoords.length < 2) {
+        setTimeout(_airBuildFallbackStructures, 800); return;
+    }
+    var bearing = (_airHwBearingDeg || 90) * Math.PI / 180;
+    var perpX   = Math.cos(bearing);
+    var perpZ   = -Math.sin(bearing);
+    var nPts    = _airBridgePathCoords.length;
+    var step    = Math.max(1, Math.floor(nPts / 10));
+    var idx     = 0;
+    for (var i = step; i < nPts - step; i += step) {
+        var bp = _airBridgePathCoords[i];
+        [[  -1, 65 ], [ -1, 110 ], [ 1, 65 ], [ 1, 110 ]].forEach(function(s) {
+            var sign = s[0], off = s[1];
+            var hM   = 8 + Math.random() * 22;
+            var wM   = 20 + Math.random() * 30;
+            var dM   = 18 + Math.random() * 25;
+            var bx   = norm(bp.lat, bp.lon).x + sign * perpX * off;
+            var bz   = norm(bp.lat, bp.lon).z + sign * perpZ * off;
+            var bLat = midLat + bz / XZ_SCALE;
+            var bLon = midLon + bx / XZ_SCALE;
+            _airRenderBuilding(bLat, bLon, wM, dM, hM, null, idx++);
+        });
+    }
+    _airAddGroundGrid();
+    console.log('[AirScene] Fallback: ' + idx + ' synthetic buildings along bridge');
+}
+
+function _airAddGroundGrid() {
+    var mat = new THREE.LineBasicMaterial({ color: 0x3a6080, opacity: 0.08, transparent: true });
+    var pts = [];
+    for (var gx = -700; gx <= 700; gx += 50) {
+        pts.push(new THREE.Vector3(gx, 0.1, -900)); pts.push(new THREE.Vector3(gx, 0.1, 200));
+    }
+    for (var gz = -900; gz <= 200; gz += 50) {
+        pts.push(new THREE.Vector3(-700, 0.1, gz)); pts.push(new THREE.Vector3(700, 0.1, gz));
+    }
+    var grid = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), mat);
+    airScene3.add(grid); _airStructures3D.push(grid);
+}
+
+// Fetch via .NET proxy (same-origin, no CORS/mixed-content issues)
+async function _airFetchOSMStructures() {
+    if (!midLat || !midLon) { _airBuildFallbackStructures(); return; }
+    var url = '/AirScene/GetOSMBuildings?lat=' + midLat.toFixed(6) + '&lon=' + midLon.toFixed(6) + '&radius=1500';
+    console.log('[AirScene] Fetching OSM via proxy: ' + url);
+    try {
+        var r = await fetch(url);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var data = await r.json();
+        if (data.elements && data.elements.length > 0) {
             _airOSMLoaded = true;
             _airRenderOSMStructures(data.elements);
         } else {
-            console.warn('[AirScene] Overpass returned 0 buildings — using fallback');
+            console.warn('[AirScene] 0 OSM buildings — fallback');
             _airBuildFallbackStructures();
         }
     } catch(e) {
-        console.warn('[AirScene] Overpass API failed:', e.message, '— using fallback structures');
+        console.warn('[AirScene] Proxy failed (' + e.message + ') — fallback');
         _airBuildFallbackStructures();
     }
 }
 
-// Fallback: simple synthetic structures if Overpass fails
-function _airBuildFallbackStructures() {
-    _airClearStructures3D();
-    var hScale = _airHeightScale();
-    var positions = [
-        [-100, -200, 30, 30, 35], [-60, -280, 25, 25, 45], [-130, -360, 35, 30, 28],
-        [ 100, -200, 30, 30, 40], [ 60, -280, 25, 25, 32], [ 130, -360, 35, 30, 50],
-        [-80, -440, 20, 20, 25], [ 80, -440, 20, 20, 22],
-    ];
-    positions.forEach(function(b, idx) {
-        var h = b[4] * hScale;
-        var geo = new THREE.BoxGeometry(b[2], h, b[3]);
-        var col = _airBldColors[idx % _airBldColors.length];
-        var mat = new THREE.MeshPhongMaterial({ color: col, transparent: true, opacity: 0.55 });
-        var mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(b[0], h/2, b[1]);
-        airScene3.add(mesh); _airStructures3D.push(mesh);
-        var edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
-            new THREE.LineBasicMaterial({ color: col, opacity: 0.6, transparent: true }));
-        edges.position.copy(mesh.position);
-        airScene3.add(edges); _airStructures3D.push(edges);
-    });
-}
-
-// Call this when bridge path is loaded/rebuilt to fetch real structures
 function _airRebuildStructures() {
-    if (midLat && midLon) {
-        _airFetchOSMStructures();
-    } else {
-        _airBuildFallbackStructures();
-    }
+    _airFetchOSMStructures();
 }
 _airBuildRoad3D();
 
