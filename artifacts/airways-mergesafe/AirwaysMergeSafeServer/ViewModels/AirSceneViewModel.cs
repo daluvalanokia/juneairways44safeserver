@@ -24,4 +24,7 @@ public class AirSceneViewModel
 
     // Air Scene speed-alert configuration (JSON blob)
     public string AirSceneAlertsJson { get; set; } = "{}";
+
+    // AirCar registry specs (JSON): logos, colors, dimensions for 3D rendering
+    public string AirCarSpecsJson { get; set; } = "[]";
 }
