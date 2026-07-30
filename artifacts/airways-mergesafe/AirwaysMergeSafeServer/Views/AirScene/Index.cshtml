@@ -82,8 +82,8 @@
         </select>
         <a href="/Traffic3D" class="btn btn-sm btn-outline-secondary">⬡ Traffic3D</a>
         <!-- Bug Fix 1: Pause/Resume button (ported from MergeSafeServer original) -->
-        <button id="btnAnimToggle" class="btn btn-sm btn-outline-warning" onclick="toggleFeed()">⏸ Hold Feed</button>
-        <button class="btn btn-sm btn-outline-success" onclick="doRefresh()">⟳ Live</button>
+        <button id="btnAnimToggle" class="btn btn-sm btn-outline-warning" onclick="_airToggleFeed()">⏸ Hold Feed</button>
+        <button class="btn btn-sm btn-outline-success" onclick="_airDoRefresh()">⟳ Live</button>
     </div>
 </div>
 
@@ -246,7 +246,7 @@
    ══════════════════════════════════════════════════════════════════════ */
 
 const ALT_SCALE = 0.05;
-let  XZ_SCALE  = 800;
+let  _airXZ_SCALE  = 800;
 const HW        = '@hw';
 
 const SERVERS = @Html.Raw(serversJson);
@@ -380,8 +380,8 @@ function findBand(altM) {
     return null;
 }
 
-let midLat = 32.75, midLon = -97.0;
-function norm(lat, lon) { return { x: (lon - midLon) * XZ_SCALE, z: (lat - midLat) * XZ_SCALE }; }
+let _airMidLat = 32.75, _airMidLon = -97.0;
+function _airNorm(lat, lon) { return { x: (lon - _airMidLon) * _airXZ_SCALE, z: (lat - _airMidLat) * _airXZ_SCALE }; }
 
 // ── Three.js scene ────────────────────────────────────────────────────
 const canvas   = document.getElementById('airCanvas');
@@ -448,7 +448,7 @@ SERVERS.forEach((s, i) => {
 
 ZONES.forEach(z => {
     if (!z.lat || !z.lon) return;
-    const p = norm(z.lat, z.lon);
+    const p = _airNorm(z.lat, z.lon);
     const r = (z.radius / 20) || 12;
     const cy = new THREE.Mesh(
         new THREE.CylinderGeometry(r, r, 0.15, 32),
@@ -488,7 +488,7 @@ camT.layers.enable(3);
 const vehicleObjects = [];
 const conflictRings  = [];
 
-// Persistent orbit state keyed by vehicleId — survives doRefresh() rebuilds
+// Persistent orbit state keyed by vehicleId — survives _airDoRefresh() rebuilds
 const airVehicleState = new Map();
 function _getAirState(ev, vid) {
     if (!airVehicleState.has(vid)) {
@@ -590,11 +590,11 @@ function buildVehicle(ev) {
     const col   = vc.conflictFlag ? '#ef4444' : (vc.color || sp.color);
     const c3    = new THREE.Color(col);
 
-    // Air vehicles use persistent orbit state so position survives doRefresh() rebuilds
+    // Air vehicles use persistent orbit state so position survives _airDoRefresh() rebuilds
     const vid = ev.vehicleId || ('AIR-' + (ev.id ?? Math.random().toString(36).slice(2,6)));
     const st  = isAir ? _getAirState(ev, vid) : null;
 
-    const gpsPt = (ev.latitude && ev.longitude) ? norm(ev.latitude, ev.longitude)
+    const gpsPt = (ev.latitude && ev.longitude) ? _airNorm(ev.latitude, ev.longitude)
                 : { x: (Math.random()-0.5)*160, z: (Math.random()-0.5)*160 };
     const px  = isAir ? Math.sin(st.angle) * st.orbitR : gpsPt.x;
     const pz  = isAir ? Math.cos(st.angle) * st.orbitR : gpsPt.z;
@@ -759,18 +759,18 @@ function clearScene() {
     conflictRings.length = 0;
 }
 
-function loadEvents(evs) {
+function _airLoadEvents(evs) {
     // ── Guard: no DB/live data enters the scene while simulation is active ──
-    // Catches async doRefresh() fetches that were in-flight when
-    // onSimStateChange(true) cleared the scene and set feedHeld.
-    if (simRunning) return;
+    // Catches async _airDoRefresh() fetches that were in-flight when
+    // onSimStateChange(true) cleared the scene and set _airFeedHeld.
+    if (_airSimRunning) return;
 
     clearScene();
     const lats = evs.filter(e => e.latitude).map(e => e.latitude);
     const lons = evs.filter(e => e.longitude).map(e => e.longitude);
     if (lats.length) {
-        midLat = lats.reduce((a,b) => a + b, 0) / lats.length;
-        midLon = lons.reduce((a,b) => a + b, 0) / lons.length;
+        _airMidLat = lats.reduce((a,b) => a + b, 0) / lats.length;
+        _airMidLon = lons.reduce((a,b) => a + b, 0) / lons.length;
     }
 
     // Air Scene: controller already filtered to air-only — all events rendered as air
@@ -803,16 +803,16 @@ function loadEvents(evs) {
     document.getElementById('stTime').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 
-async function doRefresh() {
-    if (feedHeld) return;  // feed on hold — skip DB poll
+async function _airDoRefresh() {
+    if (_airFeedHeld) return;  // feed on hold — skip DB poll
     try {
         const zq  = selectedZoneId   ? `&zoneId=${encodeURIComponent(selectedZoneId)}`   : '';
         const sq  = selectedServerId ? `&serverId=${encodeURIComponent(selectedServerId)}` : '';
-        const r   = await fetch(`/api/events/live?highwayId=${HW}&take=140&mode=air${zq}${sq}`);
+        const r   = await fetch(`/AirScene/GetLiveEvents?highwayId=${HW}&take=140${zq}${sq}`);
         if (!r.ok) return;
         // Double-check: sim may have started while we were fetching
-        if (feedHeld || simRunning) return;
-        loadEvents(await r.json());
+        if (_airFeedHeld || _airSimRunning) return;
+        _airLoadEvents(await r.json());
     } catch(e) { console.warn('AirScene refresh error:', e); }
 }
 
@@ -843,10 +843,10 @@ canvas.addEventListener('click', e => {
     selectedAirVehicle = vo;
     applyAirHighlight(vo);
     showVehicleDetail(hitMesh.userData, e.clientX, e.clientY);
-    showInspector(hitMesh.userData);
+    _airShowInspector(hitMesh.userData);
 });
 
-function showInspector({ ev, vc }) {
+function _airShowInspector({ ev, vc }) {
     const conf    = vc.confidence ?? 0;
     const pct     = Math.round(conf * 100);
     const confCls = conf < 0.4 ? 'danger' : conf < 0.65 ? 'warning' : 'success';
@@ -1147,23 +1147,23 @@ function renderAltAxis() {
 // onSimStateChange handles both sim-started and sim-stopped lifecycle events.
 // Initial state is synced from localStorage on page load.
 let tick = 0;
-// feedHeld = user explicitly paused the data feed (DB polling stopped)
+// _airFeedHeld = user explicitly paused the data feed (DB polling stopped)
 // When sim starts, feed auto-holds to show only sim data.
 // Vehicles already on screen keep their orbit animation — only NEW data intake is suspended.
 let animationPaused = false;
-var feedHeld = false;
+var _airFeedHeld = false;
 
-function toggleFeed() {
-    feedHeld = !feedHeld;
+function _airToggleFeed() {
+    _airFeedHeld = !_airFeedHeld;
     var btn = document.getElementById('btnAnimToggle');
     if (btn) {
-        btn.textContent = feedHeld ? '▶ Resume Feed' : '⏸ Hold Feed';
-        btn.className   = feedHeld ? 'btn btn-sm btn-warning' : 'btn btn-sm btn-outline-warning';
+        btn.textContent = _airFeedHeld ? '▶ Resume Feed' : '⏸ Hold Feed';
+        btn.className   = _airFeedHeld ? 'btn btn-sm btn-warning' : 'btn btn-sm btn-outline-warning';
     }
-    if (!feedHeld) {
-        doRefresh(); // resuming — pull latest data immediately
-        if (simRunning && !_airFastTimer) {
-            _airFastTimer = setInterval(function() { if (!feedHeld) doRefresh(); }, _airIntervalMs);
+    if (!_airFeedHeld) {
+        _airDoRefresh(); // resuming — pull latest data immediately
+        if (_airSimRunning && !_airFastTimer) {
+            _airFastTimer = setInterval(function() { if (!_airFeedHeld) _airDoRefresh(); }, _airIntervalMs);
         }
     } else {
         if (_airFastTimer) { clearInterval(_airFastTimer); _airFastTimer = null; }
@@ -1172,8 +1172,8 @@ function toggleFeed() {
 
 // Keep animationPaused as alias (camera tween check uses it)
 Object.defineProperty(window, 'animationPaused', {
-    get: function() { return feedHeld; },
-    set: function(v) { /* no-op — use toggleFeed() */ }
+    get: function() { return _airFeedHeld; },
+    set: function(v) { /* no-op — use _airToggleFeed() */ }
 });
 
 // ── Air Sim Data Feed Panel JS ─────────────────────────────────────────
@@ -1218,12 +1218,12 @@ function _updateAirSimPanel(ev, dbStatus) {
     if (badge) badge.textContent = '● LIVE #' + window._airSimEventCount;
 }
 
-var simRunning      = false;   // true while sim is broadcasting
+var _airSimRunning      = false;   // true while sim is broadcasting
 var _airFastTimer   = null;    // fast poll timer during sim
 var _airIntervalMs  = 30000;   // synced with DIF post interval on first message
 
 function onSimStateChange(isRunning) {
-    simRunning = isRunning;
+    _airSimRunning = isRunning;
     var badge = document.getElementById('airSimFeedBadge');
     if (badge) {
         badge.style.display = isRunning ? '' : 'none';
@@ -1240,8 +1240,8 @@ function onSimStateChange(isRunning) {
         // Only sim-injected data should be visible — no pre-existing DB events.
         clearScene();
         vehicleObjects.length = 0;
-        if (!feedHeld) {
-            feedHeld = true;
+        if (!_airFeedHeld) {
+            _airFeedHeld = true;
             var btn = document.getElementById('btnAnimToggle');
             if (btn) {
                 btn.textContent = '▶ Resume Feed';
@@ -1249,18 +1249,18 @@ function onSimStateChange(isRunning) {
             }
         }
         // No fast poll timer — sim events arrive via BroadcastChannel instantly.
-        // doRefresh() is gated by feedHeld so no DB fetch happens during sim.
+        // _airDoRefresh() is gated by _airFeedHeld so no DB fetch happens during sim.
     } else {
         // ── Sim stopped → auto-RESUME feed ─────────────────────────────────
-        if (feedHeld) {
-            feedHeld = false;
+        if (_airFeedHeld) {
+            _airFeedHeld = false;
             var btn2 = document.getElementById('btnAnimToggle');
             if (btn2) {
                 btn2.textContent = '⏸ Hold Feed';
                 btn2.className   = 'btn btn-sm btn-outline-warning';
             }
         }
-        doRefresh();
+        _airDoRefresh();
         window._airSimEventCount = 0;
         var el = document.getElementById('airSimFeedLine');
         if (el) { el.style.color = '#475569'; el.textContent = 'Sim stopped — viewing live data.'; }
@@ -1314,7 +1314,7 @@ function _airApplySimContext() {
             }
         }
 
-        if (changed) { airHighlightCorridors(); doRefresh(); }
+        if (changed) { airHighlightCorridors(); _airDoRefresh(); }
     } catch(e) {}
 }
 
@@ -1401,12 +1401,12 @@ function animate() {
 (async () => {
     renderBandLegend();
     renderAltAxis();
-    await doRefresh();
+    await _airDoRefresh();
     animate();
 })();
 
 // 30s slow poll — gated: skip when sim running or feed held
-setInterval(function() { if (!simRunning && !feedHeld) doRefresh(); }, 30000);
+setInterval(function() { if (!_airSimRunning && !_airFeedHeld) _airDoRefresh(); }, 30000);
 window.addEventListener('resize', renderAltAxis);
 // Restore sim feed state from localStorage on page load (handles DataInputFormats navigation)
 (function() { if (localStorage.getItem('airways_sim_active') === 'true') onSimStateChange(true); })();
@@ -1433,17 +1433,17 @@ function _airNorm(evObj, cl) {
     ev.zoneId    = evObj.zone_id    || '';
     // Extract vehicle_make for brand badge display
     ev.vehicleMake = evObj.vehicle_make || evObj.vehicleMake || null;
-    // EMA-update midLat/midLon so sim-spawned vehicles match DB-poll positions
+    // EMA-update _airMidLat/_airMidLon so sim-spawned vehicles match DB-poll positions
     if (ev.latitude && ev.longitude) {
-        midLat = midLat * 0.85 + ev.latitude  * 0.15;
-        midLon = midLon * 0.85 + ev.longitude * 0.15;
+        _airMidLat = _airMidLat * 0.85 + ev.latitude  * 0.15;
+        _airMidLon = _airMidLon * 0.85 + ev.longitude * 0.15;
     }
     return ev;
 }
 
 function _airInject(evObj, cl) {
-    // Sim events ALWAYS flow while sim is running — feedHeld blocks DB refresh only.
-    if (!simRunning) return;
+    // Sim events ALWAYS flow while sim is running — _airFeedHeld blocks DB refresh only.
+    if (!_airSimRunning) return;
     var ev = _airNorm(evObj, cl);
 
     _updateAirSimPanel(ev, '⏳ saving…');
@@ -1460,7 +1460,7 @@ function _airInject(evObj, cl) {
     }
 
     // ── Always save to DB + refresh (works in both live and sim-only modes) ──
-    fetch('/api/sim/event', {
+    fetch('/AirScene/InjectSimEvent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1485,7 +1485,7 @@ function _airInject(evObj, cl) {
         _airInjectDirect(ev, cl); // fallback: direct inject for visual continuity
     }).then(function() {
         // Refresh 500ms after POST resolves — DB has the new row
-        if (!feedHeld) setTimeout(function() { doRefresh(); }, 500);
+        if (!_airFeedHeld) setTimeout(function() { _airDoRefresh(); }, 500);
     });
 
     var lbl = document.getElementById('airSimLiveLabel');
@@ -1554,7 +1554,7 @@ var _airZoneMarkers = [];
 var _air3DBoundsCache = null;
 var _airHwyPolyline = null;
 var _airVehicleMeshes = [];
-var _airMapCtrLat = midLat, _airMapCtrLon = midLon;
+var _airMapCtrLat = _airMidLat, _airMapCtrLon = _airMidLon;
 var _airViewMode = 'split';  // '3d' or 'split'
 
 function airSetView(mode) {
@@ -1643,7 +1643,7 @@ function _airInit3D() {
         var mpp = 156543 * Math.cos(_airMapCtrLat * Math.PI / 180) / Math.pow(2, zoom);
         _airMapCtrLat += -(dy * mpp) / 111000;
         _airMapCtrLon += -(dx * mpp) / (111000 * Math.cos(_airMapCtrLat * Math.PI / 180));
-        midLat = _airMapCtrLat; midLon = _airMapCtrLon;
+        _airMidLat = _airMapCtrLat; _airMidLon = _airMapCtrLon;
         _airMap.setView([_airMapCtrLat, _airMapCtrLon], zoom, { animate: false });
         _airUpdateZoneMarkers();
         _air3DBoundsCache = null;
@@ -1686,7 +1686,7 @@ function _airInitMap() {
         zoomControl: false, attributionControl: false,
         dragging: false, scrollWheelZoom: false,
         doubleClickZoom: false, keyboard: false, boxZoom: false, touchZoom: false
-    }).setView([midLat, midLon], 13);
+    }).setView([_airMidLat, _airMidLon], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(_airMap);
     _airMapReady = true;
     setTimeout(function() { if (_airMap) _airMap.invalidateSize(true); }, 80);
@@ -1695,12 +1695,12 @@ function _airInitMap() {
 
 function _airCenterMapOnZone() {
     if (!_airMap) return;
-    var ctrLat = midLat, ctrLon = midLon;
+    var ctrLat = _airMidLat, ctrLon = _airMidLon;
     if (selectedZoneId && ZONES && ZONES.length) {
         var z = ZONES.find(function(zz) { return zz.zoneId === selectedZoneId; });
         if (z && z.lat && z.lon) { ctrLat = z.lat; ctrLon = z.lon; }
     }
-    // Compute XZ_SCALE from bridge path span
+    // Compute _airXZ_SCALE from bridge path span
     if (_airBridgePath && _airBridgePath.length >= 2) {
         var maxAbs = 0;
         for (var i = 0; i < _airBridgePath.length; i++) {
@@ -1709,10 +1709,10 @@ function _airCenterMapOnZone() {
             if (dLat > maxAbs) maxAbs = dLat;
             if (dLon > maxAbs) maxAbs = dLon;
         }
-        if (maxAbs > 0.0001) XZ_SCALE = 900 / maxAbs;
+        if (maxAbs > 0.0001) _airXZ_SCALE = 900 / maxAbs;
     }
     _airMapCtrLat = ctrLat; _airMapCtrLon = ctrLon;
-    midLat = ctrLat; midLon = ctrLon;
+    _airMidLat = ctrLat; _airMidLon = ctrLon;
     _airMap.setView([ctrLat, ctrLon], _airMap.getZoom(), { animate: false });
     // Road rotation
     _airRoadGroup.rotation.y = ((_airHwBearing || 90) - 90) * Math.PI / 180;
@@ -1746,7 +1746,7 @@ function _airUpdateZoneMarkers() {
     // Bridge path pins
     for (var i = 0; i < _airBridgePath.length; i++) {
         if (i > 0 && i < _airBridgePath.length - 1 && i % 5 !== 0) continue;
-        var p = norm(_airBridgePath[i].lat, _airBridgePath[i].lon);
+        var p = _airNorm(_airBridgePath[i].lat, _airBridgePath[i].lon);
         var pole = new THREE.Mesh(
             new THREE.CylinderGeometry(0.3, 0.3, 8, 6),
             new THREE.MeshPhongMaterial({ color: 0xffd700 }));
@@ -1757,8 +1757,8 @@ function _airUpdateZoneMarkers() {
         sph.position.set(p.x, 9, p.z); _airScene.add(sph); _airZoneMarkers.push(sph);
     }
     // Endpoint pins
-    var p0 = norm(_airBridgePath[0].lat, _airBridgePath[0].lon);
-    var pN = norm(_airBridgePath[_airBridgePath.length-1].lat, _airBridgePath[_airBridgePath.length-1].lon);
+    var p0 = _airNorm(_airBridgePath[0].lat, _airBridgePath[0].lon);
+    var pN = _airNorm(_airBridgePath[_airBridgePath.length-1].lat, _airBridgePath[_airBridgePath.length-1].lon);
     [{p: p0, c: 0xff4444}, {p: pN, c: 0x44ff44}].forEach(function(ep) {
         var eMesh = new THREE.Mesh(
             new THREE.CylinderGeometry(0.6, 0.6, 10, 8),
@@ -1773,7 +1773,7 @@ function _airGetBounds() {
     if (!_airBridgePath || _airBridgePath.length < 2) return r;
     var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (var i = 0; i < _airBridgePath.length; i++) {
-        var p = norm(_airBridgePath[i].lat, _airBridgePath[i].lon);
+        var p = _airNorm(_airBridgePath[i].lat, _airBridgePath[i].lon);
         if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
         if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
     }
@@ -1786,7 +1786,7 @@ function _airSyncZoom() {
     if (!_airMap) return;
     var r = (_airRadius - 40) / (700 - 40);
     var baseZoom = 18 - r * 9;
-    var scaleAdj = Math.log(XZ_SCALE / 800) / Math.LN2 * 0.6;
+    var scaleAdj = Math.log(_airXZ_SCALE / 800) / Math.LN2 * 0.6;
     var z = Math.round(baseZoom - scaleAdj);
     z = Math.max(8, Math.min(18, z));
     if (z !== _airMap.getZoom()) _airMap.setZoom(z, { animate: false });
@@ -1834,7 +1834,7 @@ function _airSyncVehicles3D() {
             var geo = new THREE.BoxGeometry(3, 0.8, 3);
             var mat = new THREE.MeshPhongMaterial({ color: new THREE.Color(vo.vc.color || '#00bcd4') });
             var mesh = new THREE.Mesh(geo, mat);
-            var p = norm(ev.latitude || midLat, ev.longitude || midLon);
+            var p = _airNorm(ev.latitude || _airMidLat, ev.longitude || _airMidLon);
             mesh.position.set(p.x, altY, p.z);
             mesh.userData = {
                 vid: vid, ev: vo.ev, vc: vo.vc,
@@ -1898,7 +1898,7 @@ async function _airRefresh3D() {
                      '&zoneId=' + encodeURIComponent(selectedZoneId) +
                      '&serverId=' + encodeURIComponent(selectedServerId) +
                      '&mode=air' +
-                     (simRunning ? '&simOnly=true' : '');
+                     (_airSimRunning ? '&simOnly=true' : '');
         var r = await fetch('/AirScene/GetAnimationData?' + params);
         if (!r.ok) return;
         var data = await r.json();
@@ -1968,7 +1968,7 @@ if (typeof BroadcastChannel !== 'undefined') {
 // airways_sim_last_event handles vehicle payloads only (no dead sim_started check).
 window.addEventListener('storage', function(e) {
     if (e.key === 'airways_sim_active') { onSimStateChange(e.newValue === 'true'); return; }
-    if (e.key === 'airways_sim_context' && simRunning) { _airApplySimContext(); return; }
+    if (e.key === 'airways_sim_context' && _airSimRunning) { _airApplySimContext(); return; }
     if (e.key !== 'airways_sim_last_event' || !e.newValue) return;
     try {
         var msg = JSON.parse(e.newValue);
