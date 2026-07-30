@@ -2043,16 +2043,22 @@ function _syncAirMeshes() {
                 ? _bridgeH + (_altM * (XZ_SCALE / 111000) * 4)
                 : 0;
 
+            // Save label data from _makeAir3DVehicle before userData overwrite
+            var _savedLabel = mesh.userData.labelSprite || null;
+            var _savedLabelH = mesh.userData.labelHeight || 0;
+
             mesh.userData = { vid: vid, vx: vx3, vz: vz3,
                               laneX: laneX, laneZ: laneZ,
                               isFlyCar: _isFC,
                               altitudeMeters: _altM,
                               baseY: _altUnits,
                               phase: Math.random() * Math.PI * 2,
-                              spd: spd3, dir: dir3v };
+                              spd: spd3, dir: dir3v,
+                              labelSprite: _savedLabel,
+                              labelHeight: _savedLabelH };
             airScene3.add(mesh);
-            // Add label sprite to scene immediately (not just in animation loop)
-            if (mesh.userData.labelSprite) airScene3.add(mesh.userData.labelSprite);
+            // Add label sprite to scene immediately
+            if (_savedLabel) airScene3.add(_savedLabel);
             airVehicleMeshes3.push(mesh);
         }
     });
