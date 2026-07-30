@@ -252,6 +252,16 @@ const HW        = '@hw';
 const SERVERS = @Html.Raw(serversJson);
 const ZONES   = @Html.Raw(zonesJson);
 const ALERT   = @Html.Raw(Model.AirSceneAlertsJson);
+const AIR_CAR_SPECS = @Html.Raw(Model.AirCarSpecsJson);
+
+// Build lookup map: make → spec for vehicle rendering
+var _airCarSpecMap = {};
+AIR_CAR_SPECS.forEach(function(s) { _airCarSpecMap[s.make.toLowerCase()] = s; });
+
+function _airGetSpec(make) {
+    if (!make) return null;
+    return _airCarSpecMap[make.toLowerCase()] || _airCarSpecMap[make.split(' ')[0].toLowerCase()] || null;
+}
 
 // ── Zone / Server dropdown state ──────────────────────────────────────
 var selectedZoneId   = (function(){
@@ -531,6 +541,7 @@ var BRAND_BADGES = {
 // ── Canvas-texture label sprite for vehicle ID + brand badge ──────────
 // Rendered in all three panels (perspective, side, top) so the ID is always visible.
 function _makeAirLabel(vid, category, make) {
+    var spec = _airGetSpec(make);
     const canvas  = document.createElement('canvas');
     canvas.width  = 200; canvas.height = 42;
     const ctx     = canvas.getContext('2d');
@@ -588,6 +599,11 @@ function buildVehicle(ev) {
     const altY  = isAir ? (ev.altitudeMeters || 60) * ALT_SCALE : 0.3;
     const topY  = isAir ? altY : 0.15;
     const col   = vc.conflictFlag ? '#ef4444' : (vc.color || sp.color);
+    // Use AirCar registry brand colors if available
+    var airSpec = _airGetSpec(ev.vehicleMake);
+    if (airSpec && airSpec.colors && airSpec.colors.length > 0 && !vc.conflictFlag) {
+        col = airSpec.colors[0];
+    }
     const c3    = new THREE.Color(col);
 
     // Air vehicles use persistent orbit state so position survives _airDoRefresh() rebuilds
