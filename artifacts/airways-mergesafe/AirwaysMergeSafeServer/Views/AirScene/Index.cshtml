@@ -1,0 +1,3603 @@
+@model AirwaysMergeSafeServer.ViewModels.AirSceneViewModel
+@{
+    ViewData["Title"] = "3D Air Scene";
+    var zonesJson   = System.Text.Json.JsonSerializer.Serialize(
+        Model.Zones.Where(z => z.Latitude.HasValue).Select(z => new {
+            zoneId = z.ZoneId, zoneName = z.ZoneName, status = z.Status,
+            lat = z.Latitude, lon = z.Longitude,
+            highwayId = z.HighwayId,
+            altM = z.AltitudeMeters ?? 0, radius = z.GeofenceRadius
+        }));
+    var sensorsJson = System.Text.Json.JsonSerializer.Serialize(
+        Model.Sensors.Where(s => s.Latitude.HasValue).Select(s => new {
+            deviceId = s.DeviceId, deviceName = s.DeviceName,
+            deviceType = s.DeviceType, status = s.Status,
+            lat = s.Latitude, lon = s.Longitude,
+            altM = s.AltitudeMeters ?? 0
+        }));
+    var serversJson = System.Text.Json.JsonSerializer.Serialize(
+        Model.SwitchServers.Select(s => new {
+            serverId   = s.ServerId,   serverName = s.ServerName,
+            zoneId     = s.ZoneId,     status     = s.Status,
+            ipAddress  = s.IpAddress,  port       = s.Port
+        }));
+    var hw          = Model.SelectedHighwayId ?? "";
+    var zoneCtrLat  = Model.Zones.Where(z => z.Latitude.HasValue).Select(z => z.Latitude!.Value).FirstOrDefault();
+    var zoneCtrLon  = Model.Zones.Where(z => z.Longitude.HasValue).Select(z => z.Longitude!.Value).FirstOrDefault();
+    // I-20 Grand Prairie centreline fallback — not downtown Dallas
+    if (zoneCtrLat == 0) zoneCtrLat = 32.7213;
+    if (zoneCtrLon == 0) zoneCtrLon = -97.0207;
+}
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <div>
+        <h4 class="mb-0">🛫 3D Air Scene</h4>
+        <small class="text-muted">Air vehicles · FlyCar-ready rendering</small>
+    </div>
+    <div class="d-flex gap-2 align-items-center flex-wrap">
+        <select id="hwSel" class="form-select form-select-sm" style="width:190px"
+                onchange="t3dHighwayChanged(this.value)">
+            @foreach (var h in Model.Highways)
+            {
+                @if (h.HighwayId == Model.SelectedHighwayId)
+                { <option value="@h.HighwayId" selected>@h.Name</option> }
+                else
+                { <option value="@h.HighwayId">@h.Name</option> }
+            }
+        </select>
+        <!-- Zone dropdown -->
+        <select id="airZoneSel" class="form-select form-select-sm" style="width:150px"
+                onchange="t3dZoneChanged()">
+            <option value="">(Select Zone)</option>
+            @foreach (var z in Model.Zones)
+            {
+                <option value="@z.ZoneId"
+                        data-hw="@z.HighwayId"
+                        data-lat="@(z.Latitude?.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture) ?? "")"
+                        data-lon="@(z.Longitude?.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture) ?? "")">@z.ZoneName</option>
+            }
+        </select>
+        <!-- Switch Server dropdown -->
+        <select id="airServerSel" class="form-select form-select-sm" style="width:160px"
+                onchange="t3dServerChanged()">
+            <option value="">(Select Server)</option>
+            @foreach (var s in Model.SwitchServers)
+            {
+                var sZone = Model.Zones.FirstOrDefault(z => z.ZoneId == s.ZoneId);
+                <option value="@s.ServerId"
+                        data-zone="@(s.ZoneId ?? "")"
+                        data-zonename="@(sZone?.ZoneName ?? s.ZoneId ?? "")">@s.ServerName (@(sZone?.ZoneName ?? s.ZoneId ?? "?"))</option>
+            }
+        </select>
+        <!-- View-mode toggle -->
+        <div class="btn-group btn-group-sm" id="viewToggle">
+            <button class="btn btn-primary active"    data-view="perspective" title="Perspective">⬡ 3D</button>
+            <button class="btn btn-outline-primary"   data-view="side"        title="Side / Elevation">↕ Side</button>
+            <button class="btn btn-outline-primary"   data-view="top"         title="Top / Plan">⊞ Top</button>
+            <button class="btn btn-outline-primary"   data-view="split"       title="All three panels">⊟ Split</button>
+        </div>
+        <a href="/AirScene" class="btn btn-sm btn-outline-warning">🛫 Air Scene</a>
+        <button id="btnAnimToggle" class="btn btn-sm btn-outline-warning" onclick="toggleAirFeed()">⏸ Hold Feed</button>
+        <button class="btn btn-sm btn-success" onclick="refreshAirAnimation()" title="Sync to simulation + load animation">⟳ Refresh</button>
+    </div>
+</div>
+
+<!-- ── Sim Data Feed Panel ─────────────────────────────────────────────── -->
+<div id="airSimFeedPanel" style="background:rgba(5,12,5,.93);border:1px solid #1e4a1e;border-radius:6px;
+     font-family:monospace;font-size:12px;margin-bottom:6px;overflow:hidden">
+    <div onclick="toggleSimPanel()"
+         style="padding:5px 10px;cursor:pointer;display:flex;align-items:center;gap:8px;user-select:none">
+        <span style="color:#4ade80;font-size:.7rem;font-weight:700;letter-spacing:.05em">📡 SIM FEED</span>
+        <span id="airSimFeedBadge" style="background:#dc2626;color:#fff;font-size:.6rem;font-weight:700;
+              padding:1px 6px;border-radius:9px;letter-spacing:.08em;display:none">● LIVE</span>
+        <span id="airSimFeedLine" style="color:#475569;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+            No sim events yet — start the simulator on Data Input Formats.
+        </span>
+        <span id="airSimFeedToggle" style="color:#4ade80;font-size:.65rem;flex-shrink:0">▼</span>
+    </div>
+    <div id="airSimFeedBody" style="max-height:0;overflow:hidden;transition:max-height .25s ease">
+        <div style="padding:6px 12px 8px;border-top:1px solid #1e4a1e">
+            <table style="width:100%;font-size:.68rem;border-collapse:collapse">
+                <tr>
+                    <td style="color:#4ade80;padding:1px 8px 1px 0;width:18%">Vehicle ID</td>
+                    <td id="sfVehicleId" style="color:#d1fae5;width:30%">–</td>
+                    <td style="color:#4ade80;padding:1px 8px;width:12%">Type</td>
+                    <td id="sfType" style="color:#d1fae5">–</td>
+                </tr>
+                <tr>
+                    <td style="color:#4ade80;padding:1px 8px 1px 0">Speed</td>
+                    <td id="sfSpeed" style="color:#d1fae5">–</td>
+                    <td style="color:#4ade80;padding:1px 8px">Zone</td>
+                    <td id="sfZone" style="color:#d1fae5">–</td>
+                </tr>
+                <tr>
+                    <td style="color:#4ade80;padding:1px 8px 1px 0">Lat / Lon</td>
+                    <td id="sfLatLon" colspan="3" style="color:#d1fae5">–</td>
+                </tr>
+                <tr>
+                    <td style="color:#4ade80;padding:1px 8px 1px 0">DB Save</td>
+                    <td id="sfDbStatus" colspan="3" style="color:#fbbf24">–</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- ── Scene grid (split / single-panel modes) ────────────────────────── -->
+<div id="sceneWrap" style="position:relative;height:520px;border-radius:8px;overflow:hidden;background:#1a2f1a">
+    <!-- Leaflet map — fills entire scene as background -->
+    <div id="airMiniMap" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:0"></div>
+    <!-- Three.js 3D canvas — transparent, renders on top of map -->
+    <canvas id="air3dCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1"></canvas>
+    <!-- 2D label overlay — on top of everything -->
+    <canvas id="air-label-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2"></canvas>
+    <!-- Overlay labels for split mode -->
+    <div id="labelA" class="badge bg-secondary position-absolute" style="top:6px;left:6px;display:none;z-index:3">Perspective</div>
+    <div id="labelB" class="badge bg-info text-dark position-absolute"    style="top:6px;display:none;z-index:3">Side ↕</div>
+    <div id="labelC" class="badge bg-warning text-dark position-absolute" style="top:6px;display:none;z-index:3">Top ⊞</div>
+    <div id="airSimLiveLabel" class="badge bg-success position-absolute"
+         style="top:6px;right:6px;font-size:.72rem;opacity:0;transition:opacity .5s ease;pointer-events:none;z-index:10">
+        🛰 Live Sim — Vehicle Added
+    </div>
+    <div id="airLocationBadge" class="position-absolute"
+         style="bottom:10px;left:10px;display:none;z-index:10;
+                background:rgba(15,23,42,0.85);color:#e2e8f0;
+                border:1px solid rgba(255,255,255,0.25);
+                border-radius:8px;padding:8px 12px;
+                font-size:.78rem;line-height:1.5;pointer-events:none;
+                max-width:280px;backdrop-filter:blur(4px)">
+        <div style="font-weight:700;color:#60a5fa;font-size:.85rem;margin-bottom:2px" id="airLocHwy">-</div>
+        <div id="airLocZone">-</div>
+        <div id="airLocCoords" style="font-family:monospace;font-size:.72rem;color:#94a3b8">-</div>
+    </div>
+    <!-- Zoom controls (bottom-right) -->
+    <div style="position:absolute;bottom:10px;right:10px;z-index:8;display:flex;flex-direction:column;gap:4px">
+        <button id="btnZoomIn" onclick="t3dZoomIn()" title="Zoom In"
+                style="width:38px;height:38px;border-radius:8px;background:rgba(15,23,42,.92);
+                       color:#fff;border:1px solid rgba(99,179,237,.5);font-size:1.4rem;font-weight:700;
+                       cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.5);line-height:1">＋</button>
+        <button id="btnZoomOut" onclick="t3dZoomOut()" title="Zoom Out"
+                style="width:38px;height:38px;border-radius:8px;background:rgba(15,23,42,.92);
+                       color:#fff;border:1px solid rgba(99,179,237,.5);font-size:1.4rem;font-weight:700;
+                       cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.5);line-height:1">−</button>
+    </div>
+</div>
+
+<!-- ── Classification legend + inspector ─────────────────────────────── -->
+<div class="row mt-3 g-3">
+    <div class="col-lg-8">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body py-2 px-3">
+                <h6 class="mb-2">🔑 Classification Legend</h6>
+                <div class="d-flex flex-wrap gap-2" id="classLegend">
+                    <span class="badge rounded-pill px-3 py-2" style="background:#3b82f6">sedan</span>
+                    <span class="badge rounded-pill px-3 py-2" style="background:#22c55e">suv</span>
+                    <span class="badge rounded-pill px-3 py-2" style="background:#f59e0b;color:#000">truck</span>
+                    <span class="badge rounded-pill px-3 py-2" style="background:#a855f7">motorcycle</span>
+                    <span class="badge rounded-pill px-3 py-2" style="background:#64748b">van</span>
+                </div>
+                <!-- Stats bar -->
+                <div class="d-flex flex-wrap gap-3 mt-2 small text-muted" id="statsRow">
+                    <span>Ground: <b id="statGround">–</b></span>
+                    <span>Zones: <b>@Model.Zones.Count</b></span>
+                    <span>Sensors: <b>@Model.Sensors.Count</b></span>
+                    <span>Highway: <b id="statHighway">@(Model.SelectedHighwayId ?? "–")</b></span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body py-2 px-3">
+                <h6 class="mb-1">🔍 Inspector <small class="text-muted">(click vehicle)</small></h6>
+                <div id="inspector" class="text-muted small">No vehicle selected.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script id="brandLogosData" type="application/json">@Html.Raw(Model.BrandLogosJson)</script>
+<script>
+/* ══════════════════════════════════════════════════════════════════════
+   TRAFFIC3D — Leaflet-first architecture with 2D canvas vehicle overlay
+   
+   Design:
+   - Leaflet owns the map (real OSM tiles centred on zone GPS coordinates)
+   - A transparent 2D canvas overlay sits on top (z-index:2)
+   - Vehicles are drawn as coloured circles with brand badges + ID labels
+     projected from GPS lat/lon → Leaflet pixelpoint → canvas px
+   - Three.js is kept ONLY for the 3D/Side/Perspective views (optional)
+   - Zoom: Leaflet.setZoom controls both map tiles AND vehicle scale
+   
+   The previous architecture had Three.js vehicles in an abstract scene
+   coordinate system (XZ_SCALE=800 units) that did not match the real
+   GPS positions coming from simulation, causing vehicles to render
+   outside the canvas bounds as hexagons.
+   ══════════════════════════════════════════════════════════════════════ */
+
+// ── Constants ─────────────────────────────────────────────────────────
+let  HW        = '@hw';
+let  XZ_SCALE  = 800;   // dynamic: updated to fit highway bridge path span
+const ALT_SCALE = 0.05;
+
+// ── Initial events preloaded by controller ────────────────────────────
+const _INITIAL_EVENTS = @Html.Raw(Model.RecentEventsJson ?? "[]");
+
+// ── Zone / Server data from Razor ─────────────────────────────────────
+const AIR_SERVERS = @Html.Raw(serversJson);
+let AIR_ZONES   = @Html.Raw(zonesJson);
+var selectedZoneId   = '';
+var selectedServerId = '';
+
+// ── Map centre: zone GPS coordinates (or Dallas default) ──────────────
+var _airMapCtrLat = @Html.Raw(zoneCtrLat.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture));
+var _airMapCtrLon = @Html.Raw(zoneCtrLon.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture));
+
+// Initialise from first zone that has coordinates
+if (typeof AIR_ZONES !== 'undefined' && AIR_ZONES.length > 0) {
+    var _z0 = AIR_ZONES.find(function(z){ return z.lat && z.lon; });
+    if (_z0) { _airMapCtrLat = _z0.lat; _airMapCtrLon = _z0.lon; }
+}
+
+// midLat/midLon: scene origin for 3D perspective view
+var midLat = _airMapCtrLat, midLon = _airMapCtrLon;
+function norm(lat, lon) {
+    return { x: (lon - midLon) * XZ_SCALE, z: (lat - midLat) * XZ_SCALE };
+}
+
+// ── Brand badges from VehicleRegistry ────────────────────────────────
+var AIR_BRAND_BADGES = {};
+var AIR_BRAND_LOGO_IMAGES = {};
+var AIR_AIR_BRAND_SIDEVIEW_IMAGES = {};
+(function() {
+    try {
+        var raw = document.getElementById('brandLogosData');
+        if (!raw) return;
+        var data = JSON.parse(raw.textContent || raw.innerHTML);
+        if (!data) return;
+        Object.keys(data).forEach(function(make) {
+            var d = data[make];
+            AIR_BRAND_BADGES[make] = { color: d.color || '#334155', initials: d.initials || make.slice(0,2).toUpperCase() };
+            // Top-view logo (BrandLogo field)
+            if (d.svgDataUri) {
+                var img = new Image();
+                img.src = d.svgDataUri;
+                AIR_BRAND_LOGO_IMAGES[make] = img;
+            }
+            // Side-view logo (SideViewLogo field)
+            if (d.sideViewLogo) {
+                var img2 = new Image();
+                img2.src = d.sideViewLogo;
+                AIR_AIR_BRAND_SIDEVIEW_IMAGES[make] = img2;
+            }
+        });
+        console.log('[T3D] Brand logos loaded:', Object.keys(AIR_BRAND_BADGES).length,
+                     'top-view:', Object.keys(AIR_BRAND_LOGO_IMAGES).length,
+                     'side-view:', Object.keys(AIR_AIR_BRAND_SIDEVIEW_IMAGES).length);
+    } catch(e) { console.warn('Brand badge load error:', e); }
+})();
+
+// ── Category colours ──────────────────────────────────────────────────
+const CAT_COLORS = {
+    sedan:      '#1d4ed8',
+    suv:        '#15803d',
+    truck:      '#b45309',
+    motorcycle: '#7e22ce',
+    van:        '#334155'
+};
+const CAT_SPEC = {
+    sedan:      { color: '#3b82f6' },
+    suv:        { color: '#22c55e' },
+    truck:      { color: '#f59e0b' },
+    motorcycle: { color: '#a855f7' },
+    van:        { color: '#64748b' }
+};
+
+// ── Vehicle classification heuristic ─────────────────────────────────
+function classifyVehicle(ev) {
+    var cat = 'sedan';
+    // Check multiple field names: vehicle_category, vehicleCategory, vehicle_type, vehicleType
+    var raw = (ev.vehicle_category || ev.vehicleCategory || ev.VehicleCategory ||
+               ev.vehicle_type || ev.vehicleType || ev.VehicleType ||
+               ev.vehicle_mode || ev.vehicleMode || ev.VehicleMode || '').toLowerCase();
+    if (raw.includes('truck') || raw.includes('pickup'))   cat = 'truck';
+    else if (raw.includes('suv'))   cat = 'suv';
+    else if (raw.includes('motor') || raw.includes('bike')) cat = 'motorcycle';
+    else if (raw.includes('van'))   cat = 'van';
+    else if (raw.includes('coupe')) cat = 'sedan';
+    else if (raw.includes('sedan'))  cat = 'sedan';
+    else {
+        var sp = ev.speedMph || ev.SpeedMph || ev.speed_mph || 0;
+        if (sp > 85) cat = 'motorcycle';
+    }
+    // Use classification data if available (from sim broadcast)
+    var domain = 'ground';
+    if (ev.classification_domain)  domain = ev.classification_domain;
+    else if (ev.classification && ev.classification.domain) domain = ev.classification.domain;
+    var color = CAT_SPEC[cat]?.color || '#3b82f6';
+    if (ev.classification_color) color = ev.classification_color;
+    else if (ev.classification && ev.classification.color) color = ev.classification.color;
+    return { category: cat, domain: domain, color: color };
+}
+
+// ── Simulation / feed state ───────────────────────────────────────────
+var simRunning = false;
+var feedHeld   = false;
+var _simHwId   = null;
+var _simZoneId = null;
+var _simSrvId  = null;
+
+// ── Vehicle map: vehicleId → { ev, vc, lat, lon, speedMph, make, lastSeen } ──
+var vehicleData = new Map();   // GPS-based vehicle store for 2D overlay
+
+// ── Overlay canvas ────────────────────────────────────────────────────
+var _oc  = document.getElementById('air-label-overlay');
+var _octx = _oc ? _oc.getContext('2d') : null;
+
+// ── Leaflet map ───────────────────────────────────────────────────────
+var _map = null;
+var _tileLayer = null;
+var _tileErrors = 0;
+var _mapReady = false;
+
+function _initMap() {
+    var el = document.getElementById('airMiniMap');
+    if (!el || typeof L === 'undefined') return;
+    if (_map) { _map.remove(); _map = null; }
+
+    _map = L.map('airMiniMap', {
+        zoomControl: false,
+        attributionControl: false,
+        dragging: true,
+        scrollWheelZoom: false,
+        doubleClickZoom: false,
+        keyboard: false, boxZoom: false, touchZoom: false
+    }).setView([_airMapCtrLat, _airMapCtrLon], 15);
+
+    // Mark ready immediately — _map.project() works as soon as setView is called.
+    // Don't gate rendering on a setTimeout that may fire before DOM is painted.
+    _mapReady = true;
+
+    // invalidateSize fixes tile gaps after DOM paint — but doesn't block rendering
+    setTimeout(function() { if (_map) _map.invalidateSize(true); }, 80);
+    setTimeout(function() { if (_map) _map.invalidateSize(true); }, 300);
+
+    // Allow map to receive mouse events for dragging
+    // The 2D overlay canvas (z-index:2) already has pointer-events:none
+    _map.getContainer().style.pointerEvents = 'auto';
+
+    _tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, subdomains: 'abc', attribution: '', maxRetries: 1
+    }).addTo(_map);
+
+    _tileErrors = 0;
+    var _fallbackTimer = setTimeout(function() {
+        if (_map && !_map._tileFallback) _applyTileFallback();
+    }, 3000);
+
+    _tileLayer.on('tileerror', function() {
+        _tileErrors++;
+        if (_tileErrors >= 3 && _map && !_map._tileFallback) {
+            clearTimeout(_fallbackTimer);
+            _applyTileFallback();
+        }
+    });
+    _tileLayer.on('tileload', function() {
+        _tileErrors = 0;
+        clearTimeout(_fallbackTimer);
+    });
+
+    // ── Keep _leafletZoom in sync so the overlay road-width scales correctly ──
+    _map.on('zoomend', function() {
+        _leafletZoom = _map.getZoom();
+        _bridgeDirty = true;
+    });
+    // ── Keep _airMapCtrLat/Lon in sync when the map is panned (e.g. auto-pan) ──
+    _map.on('moveend', function() {
+        if (_map) {
+            var c = _map.getCenter();
+            _airMapCtrLat = c.lat; _airMapCtrLon = c.lng;
+            midLat = _airMapCtrLat; midLon = _airMapCtrLon;
+            if (airCurrentView !== 'top') {
+                _updateLocationBadge();
+                _update3DZoneMarkers();
+                _3DBridgeBoundsCache = null;
+            }
+        }
+    });
+
+    // ── Highway highlight polyline on the Leaflet map ──
+    // Draws a visible orange line along the bridge path coordinates so
+    // the highway is identifiable on the map and aligns with the 3D bridge.
+    var _hwyPolyline = null;
+    function _drawHwyPolyline() {
+        if (_hwyPolyline) { _map.removeLayer(_hwyPolyline); _hwyPolyline = null; }
+        if (!_airBridgePathCoords || _airBridgePathCoords.length < 2) return;
+        var latlngs = _airBridgePathCoords.map(function(p) { return [p.lat, p.lon]; });
+        _hwyPolyline = L.polyline(latlngs, {
+            color: '#ff6600', weight: 4, opacity: 0.7, dashArray: '8,4'
+        }).addTo(_map);
+    }
+}
+
+function _applyTileFallback() {
+    if (!_map) return;
+    _map._tileFallback = true;
+    if (_tileLayer) _tileLayer.remove();
+    var el = document.getElementById('airMiniMap');
+    if (el) el.style.background = 'linear-gradient(135deg, #1a2f1a 0%, #2a3a2a 50%, #1a2040 100%)';
+}
+
+function _panMapTo(lat, lon) {
+    if (!_map) return;
+    _airMapCtrLat = lat; _airMapCtrLon = lon;
+    _map.setView([lat, lon], _map.getZoom() || _leafletZoom, { animate: false });
+    _map.invalidateSize();
+    // Force a second invalidateSize + bridge redraw after the map
+    // has processed the setView — tiles may not be loaded yet but
+    // the projection needs the correct container size.
+    var _panLat = lat, _panLon = lon;
+    setTimeout(function() {
+        if (_map) {
+            _map.invalidateSize(true);
+            _bridgeDirty = true;
+            _forceAirBridgeRedraw();
+        }
+    }, 150);
+}
+
+// ── Zoom: Leaflet zoom level controls both map + vehicle size ─────────
+var _leafletZoom = 15;
+
+function t3dZoomIn() {
+    if (!_map) return;
+    _leafletZoom = Math.min(18, (_map.getZoom() || _leafletZoom) + 1);
+    _map.setZoom(_leafletZoom, { animate: false });
+    _bridgeDirty = true;
+    if (_map) _map.invalidateSize();
+}
+function t3dZoomOut() {
+    if (!_map) return;
+    _leafletZoom = Math.max(10, (_map.getZoom() || _leafletZoom) - 1);
+    _map.setZoom(_leafletZoom, { animate: false });
+    _bridgeDirty = true;
+    if (_map) _map.invalidateSize();
+}
+
+// Mouse wheel: zoom in/out
+document.getElementById('airMiniMap').addEventListener('wheel', function(e) {
+    e.preventDefault();
+    if (e.deltaY < 0) t3dZoomIn(); else t3dZoomOut();
+}, { passive: false });
+
+// ── Highway overlay: GPS-locked road strip aligned to the real highway ──
+// _hwyLat/Lon: the exact centreline GPS coordinate of the selected zone.
+// _hwyIsEW:    true for E-W highways (I-20, I-10, I-30), false for N-S.
+// The overlay is redrawn every animation frame using Leaflet projection,
+// so it automatically tracks zoom + pan without any extra re-computation.
+var _hwyLat   = 0, _hwyLon = 0;
+var _hwyIsEW  = true;
+// Array of {lat, lon} for ALL zones on the current highway — used to draw
+// a multi-segment polyline that follows the actual road curvature.
+var _hwyPath  = [];
+var _bridgeDirty = true;  // forces full bridge re-projection on next frame
+
+function _isEWHighway(hwId) {
+    var h = (hwId || '').toUpperCase();
+    if (h.indexOf('I35') >= 0 || h.indexOf('I-35') >= 0 ||
+        h.indexOf('I45') >= 0 || h.indexOf('I-45') >= 0 ||
+        h.indexOf('I25') >= 0 || h.indexOf('I-25') >= 0) return false;
+    return true;
+}
+
+// ── Highway bearing: server-provided value takes priority ────────────
+// _airHwBearingDeg is set from data.hwBearing on every GetAnimationData
+// fetch. It is computed server-side from actual zone GPS in the DB.
+// Hardcoded fallbacks (corrected from zone GPS) only apply pre-fetch.
+function _airHwBearing(hwId) {
+    if (typeof _airHwBearingDeg === 'number' && _airHwBearingDeg !== 90.0) {
+        return _airHwBearingDeg;
+    }
+    // Corrected fallbacks (atan2 from zone GPS, not guessed):
+    var h = (hwId || '').toUpperCase();
+    if (h.indexOf('I35') >= 0 || h.indexOf('I-35') >= 0) return 206;
+    if (h.indexOf('I45') >= 0 || h.indexOf('I-45') >= 0) return 348;
+    if (h.indexOf('I25') >= 0 || h.indexOf('I-25') >= 0) return 355;
+    if (h.indexOf('I20') >= 0 || h.indexOf('I-20') >= 0) return 269;
+    if (h.indexOf('I10') >= 0 || h.indexOf('I-10') >= 0) return  75;
+    return _airHwBearingDeg || 90;
+}
+
+// ── Extend a point along a bearing by distDeg degrees ────────────────
+function _bearingPoint(lat, lon, bearing, distDeg) {
+    var rad = bearing * Math.PI / 180;
+    var cosLat = Math.cos(lat * Math.PI / 180);
+    return {
+        lat: lat + Math.cos(rad) * distDeg,
+        lon: lon + Math.sin(rad) * distDeg / cosLat
+    };
+}
+
+function _setHighwayCoords(lat, lon, hwId) {
+    _hwyLat  = lat;
+    _hwyLon  = lon;
+    _hwyIsEW = _isEWHighway(hwId);
+    _hwyHeading = _hwyIsEW ? 'EW' : 'NS';
+
+    // ── PRIORITY: use server-provided dense bridge path ──────────────
+    // When bridgePath is available from GetAnimationData, use it directly
+    // as the road polyline — it is computed from real zone GPS coordinates
+    // and is always geometrically correct.
+    if (_airBridgePathCoords && _airBridgePathCoords.length >= 2) {
+        _hwyPath = _airBridgePathCoords.map(function(p) {
+            return { lat: p.lat, lon: p.lon };
+        });
+        console.log('[T3D] _setHighwayCoords: using server bridgePath (' + _hwyPath.length + ' pts)');
+        if (typeof airRoadGroup3 !== 'undefined') {
+            airRoadGroup3.rotation.y = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
+        }
+        return;
+    }
+
+    // ── FALLBACK: build path from zone anchors + server bearing ─────
+    var bearing = _airHwBearing(hwId);
+    _hwyPath = [];
+    if (typeof AIR_ZONES !== 'undefined' && AIR_ZONES.length > 0) {
+        var cosLat = Math.cos(lat * Math.PI / 180);
+        var bearRad = bearing * Math.PI / 180;
+        var sorted = AIR_ZONES.filter(function(z){ return z.lat && z.lon; }).slice();
+        sorted.sort(function(a, b) {
+            var pa = Math.cos(bearRad) * a.lat + Math.sin(bearRad) * a.lon * cosLat;
+            var pb = Math.cos(bearRad) * b.lat + Math.sin(bearRad) * b.lon * cosLat;
+            return pa - pb;
+        });
+        sorted.forEach(function(z) {
+            _hwyPath.push({ lat: z.lat, lon: z.lon, zoneId: z.zoneId });
+        });
+    }
+    if (_hwyPath.length === 0 && lat && lon) {
+        _hwyPath = [{ lat: lat, lon: lon, zoneId: '' }];
+    }
+    if (typeof airRoadGroup3 !== 'undefined') {
+        airRoadGroup3.rotation.y = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
+    }
+}
+
+function _forceAirBridgeRedraw() {
+    if (AIR_ZONES.length > 0) {
+        var z0 = AIR_ZONES.find(function(z){ return z.lat && z.lon; }) || AIR_ZONES[0];
+        _setHighwayCoords(z0.lat, z0.lon, HW);
+    }
+    _bridgeDirty = true;
+    if (_map) _map.invalidateSize();
+    console.log('[T3D] Bridge redraw forced: path=' + _hwyPath.length + ' isEW=' + _hwyIsEW);
+}
+
+function _projectLatLng(lat, lon) {
+    // Project a GPS coordinate to screen-relative pixel coords.
+    if (_map && _mapReady) {
+        var origin = _map.getPixelOrigin();
+        var p = _map.project([lat, lon], _map.getZoom());
+        return { x: p.x - origin.x, y: p.y - origin.y };
+    }
+    var zfb = _leafletZoom || 15;
+    var pxPerDeg = Math.pow(2, zfb) * 256 / 360;
+    return {
+        x: _oc.width/2  + (lon - _airMapCtrLon) * pxPerDeg,
+        y: _oc.height/2 - (lat - _airMapCtrLat) * pxPerDeg
+    };
+}
+
+// ── Bridge path + bearing from server ───────────────────────────────
+// Populated from GetAnimationData response.
+// _airHwBearingDeg: actual road bearing computed from zone GPS (0=N, 90=E)
+// _airBridgePathCoords: dense GPS waypoints end-to-end (330m spacing)
+// _bridgeRoadWidth: perpendicular clamping width (~39m)
+var _airBridgePathCoords = [];
+var _bridgeRoadWidth  = 0.00018;  // ±road width in degrees (~20m per lane)
+var _airHwBearingDeg     = 90.0;     // updated from server on every fetch
+
+/// Find the nearest point on the bridge path to a GPS coordinate.
+/// Returns: { lat, lon, bearing, perpDist, clampedLat, clampedLon, segIndex }
+///   bearing   — road heading at the nearest segment (degrees, 0=N 90=E)
+///   perpDist  — perpendicular distance from the path (degrees)
+///   clampedLat/Lon — position clamped to ±roadWidth of the path
+function _nearestOnBridgePath(lat, lon) {
+    if (!_airBridgePathCoords || _airBridgePathCoords.length < 2) return null;
+    var bestDist = Infinity;
+    var best = null;
+
+    for (var i = 0; i < _airBridgePathCoords.length - 1; i++) {
+        var p1 = _airBridgePathCoords[i];
+        var p2 = _airBridgePathCoords[i + 1];
+        var dx = p2.lat - p1.lat;
+        var dy = p2.lon - p1.lon;
+        var segLen2 = dx * dx + dy * dy;
+        if (segLen2 < 1e-12) continue;
+
+        // Project vehicle point onto segment
+        var t = ((lat - p1.lat) * dx + (lon - p1.lon) * dy) / segLen2;
+        t = Math.max(0, Math.min(1, t));
+        var projLat = p1.lat + dx * t;
+        var projLon = p1.lon + dy * t;
+        var perpLat = lat - projLat;
+        var perpLon = lon - projLon;
+        var perpDist = Math.sqrt(perpLat * perpLat + perpLon * perpLon);
+
+        if (perpDist < bestDist) {
+            bestDist = perpDist;
+            var cosLat = Math.cos(p1.lat * Math.PI / 180);
+            var bearing = Math.atan2(dy * cosLat, dx) * 180 / Math.PI;
+            if (bearing < 0) bearing += 360;
+
+            // Clamp to ±roadWidth perpendicular to path
+            var clampedLat = projLat, clampedLon = projLon;
+            if (perpDist > _bridgeRoadWidth && perpDist > 0) {
+                var clampT = _bridgeRoadWidth / perpDist;
+                clampedLat = projLat + perpLat * clampT;
+                clampedLon = projLon + perpLon * clampT;
+            }
+
+            best = {
+                lat: projLat, lon: projLon,
+                bearing: bearing,
+                perpDist: perpDist,
+                clampedLat: clampedLat, clampedLon: clampedLon,
+                segIndex: i
+            };
+        }
+    }
+    return best;
+}
+
+// ── Clip the highway polyline to geographic bounds ──────────────────
+// Takes the projected screen pts + raw GPS path + clip rect (in GPS degrees).
+// Returns a new array of screen pts, clipped to the bounding box.
+function _clipPathToBounds(screenPts, gpsPts, minLat, maxLat, minLon, maxLon) {
+    if (screenPts.length === 0) return screenPts;
+    if (screenPts.length === 1) {
+        // Single point — check if it's inside bounds
+        var p = gpsPts[0];
+        if (p.lat >= minLat && p.lat <= maxLat && p.lon >= minLon && p.lon <= maxLon) {
+            return screenPts;
+        }
+        return [];
+    }
+
+    // For each segment, clip to the GPS bounds using Cohen-Sutherland-style logic
+    // We work in GPS space, then project the clipped endpoints to screen coords.
+    var result = [];
+    for (var i = 0; i < gpsPts.length - 1; i++) {
+        var lat1 = gpsPts[i].lat, lon1 = gpsPts[i].lon;
+        var lat2 = gpsPts[i+1].lat, lon2 = gpsPts[i+1].lon;
+        var inside1 = lat1 >= minLat && lat1 <= maxLat && lon1 >= minLon && lon1 <= maxLon;
+        var inside2 = lat2 >= minLat && lat2 <= maxLat && lon2 >= minLon && lon2 <= maxLon;
+
+        if (inside1 && inside2) {
+            // Both inside — add both (dedup: only add p1 if result is empty or different)
+            if (result.length === 0) {
+                result.push(_projectLatLng(lat1, lon1));
+            }
+            result.push(_projectLatLng(lat2, lon2));
+        } else if (inside1 && !inside2) {
+            // p1 inside, p2 outside — clip at boundary
+            var clip = _clipSegmentToBox(lat1, lon1, lat2, lon2, minLat, maxLat, minLon, maxLon, false);
+            if (result.length === 0) result.push(_projectLatLng(lat1, lon1));
+            if (clip) result.push(_projectLatLng(clip.lat, clip.lon));
+        } else if (!inside1 && inside2) {
+            // p1 outside, p2 inside — clip at boundary
+            var clip = _clipSegmentToBox(lat1, lon1, lat2, lon2, minLat, maxLat, minLon, maxLon, true);
+            if (clip) result.push(_projectLatLng(clip.lat, clip.lon));
+            result.push(_projectLatLng(lat2, lon2));
+        }
+        // Both outside — skip segment entirely
+    }
+    // Handle single-point path
+    if (result.length === 0 && gpsPts.length === 1) {
+        var p = gpsPts[0];
+        if (p.lat >= minLat && p.lat <= maxLat && p.lon >= minLon && p.lon <= maxLon) {
+            // Single point inside — extend along highway axis to fill bounds
+            var extLat = (maxLat - minLat) / 2;
+            var extLon = (maxLon - minLon) / 2;
+            if (_hwyIsEW) {
+                result.push(_projectLatLng(p.lat, p.lon - extLon));
+                result.push(_projectLatLng(p.lat, p.lon + extLon));
+            } else {
+                result.push(_projectLatLng(p.lat - extLat, p.lon));
+                result.push(_projectLatLng(p.lat + extLat, p.lon));
+            }
+        }
+    }
+    // Extend first/last points slightly beyond bounds so the line reaches the clip edge
+    if (result.length >= 2) {
+        var extPx = Math.max(cw, ch) * 0.1;
+        var d0x = result[0].x - result[1].x, d0y = result[0].y - result[1].y;
+        var l0 = Math.hypot(d0x, d0y);
+        if (l0 > 0) { result[0].x += d0x/l0 * extPx; result[0].y += d0y/l0 * extPx; }
+        var n = result.length;
+        var dNx = result[n-1].x - result[n-2].x, dNy = result[n-1].y - result[n-2].y;
+        var lN = Math.hypot(dNx, dNy);
+        if (lN > 0) { result[n-1].x += dNx/lN * extPx; result[n-1].y += dNy/lN * extPx; }
+    }
+    return result;
+}
+
+// Helper: clip a GPS line segment to a bounding box — returns the intersection point
+function _clipSegmentToBox(lat1, lon1, lat2, lon2, minLat, maxLat, minLon, maxLon, fromOutside) {
+    // Simple parametric clipping: find t where the line crosses the box edge
+    var dLat = lat2 - lat1, dLon = lon2 - lon1;
+    var t = 1;
+    // Check each boundary
+    if (dLat !== 0) {
+        var tMin = (minLat - lat1) / dLat;
+        var tMax = (maxLat - lat1) / dLat;
+        if (tMin > 0 && tMin <= 1) t = Math.min(t, tMin);
+        if (tMax > 0 && tMax <= 1) t = Math.min(t, tMax);
+    }
+    if (dLon !== 0) {
+        var tMin2 = (minLon - lon1) / dLon;
+        var tMax2 = (maxLon - lon1) / dLon;
+        if (tMin2 > 0 && tMin2 <= 1) t = Math.min(t, tMin2);
+        if (tMax2 > 0 && tMax2 <= 1) t = Math.min(t, tMax2);
+    }
+    if (t <= 0 || t > 1) return null;
+    return { lat: lat1 + dLat * t, lon: lon1 + dLon * t };
+}
+
+function _drawHighwayOverlay() {
+    if (!_oc || !_octx) return;
+    if (!_hwyPath.length) return;
+    var cw = _oc.width, ch = _oc.height;
+    if (cw < 2 || ch < 2) return;
+    if (_bridgeDirty && _map) { _map.invalidateSize(); _bridgeDirty = false; }
+    // Debug: log bridge state every 5 seconds (throttled)
+    if (!window._lastBridgeLog || Date.now() - window._lastBridgeLog > 5000) {
+        window._lastBridgeLog = Date.now();
+        var _dbgCenter = _map ? _map.getCenter() : { lat: _airMapCtrLat, lng: _airMapCtrLon };
+        console.log('[T3D] Bridge: path=' + _hwyPath.length + ' isEW=' + _hwyIsEW +
+            ' HW=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId +
+            ' mapCenter=(' + _dbgCenter.lat.toFixed(4) + ',' + _dbgCenter.lng.toFixed(4) + ')' +
+            ' canvas=' + cw + 'x' + ch + ' mapReady=' + _mapReady);
+    }
+
+    var zoomFactor;
+    if (_map && _mapReady) {
+        zoomFactor = Math.pow(2, _map.getZoom() - 15);
+    } else {
+        zoomFactor = Math.pow(2, (_leafletZoom || 15) - 15);
+    }
+    var roadPx = Math.max(4, Math.round(6 * zoomFactor));
+
+    // ── Project ALL highway zone points to screen coords ────────────────
+    var pts = _hwyPath.map(function(p) {
+        return _projectLatLng(p.lat, p.lon);
+    });
+
+    // ── Always extend the first and last segments to fill the screen ──
+    // The bridge is a polyline connecting ALL zones on the highway.
+    // It should always be fully drawn — the map zoom/pan handles what's
+    // visible. Previous zone-based clipping could eliminate all points
+    // when zones were far apart (e.g., I-10 Z001 vs Z003 are 1.4° apart),
+    // resulting in pts.length < 2 and no bridge drawn at all.
+    if (pts.length >= 2) {
+        var extLen = Math.max(cw, ch) * 1.5;
+        var dx0 = pts[0].x - pts[1].x, dy0 = pts[0].y - pts[1].y;
+        var len0 = Math.hypot(dx0, dy0);
+        if (len0 > 0) {
+            pts[0].x += dx0 / len0 * extLen;
+            pts[0].y += dy0 / len0 * extLen;
+        }
+        var n = pts.length;
+        var dxN = pts[n-1].x - pts[n-2].x, dyN = pts[n-1].y - pts[n-2].y;
+        var lenN = Math.hypot(dxN, dyN);
+        if (lenN > 0) {
+            pts[n-1].x += dxN / lenN * extLen;
+            pts[n-1].y += dyN / lenN * extLen;
+        }
+    } else if (pts.length === 1) {
+        // Single zone — extend along highway axis to fill the screen
+        var extLen2 = Math.max(cw, ch) * 1.5;
+        if (_hwyIsEW) {
+            pts = [
+                { x: pts[0].x - extLen2, y: pts[0].y },
+                { x: pts[0].x + extLen2, y: pts[0].y }
+            ];
+        } else {
+            pts = [
+                { x: pts[0].x, y: pts[0].y - extLen2 },
+                { x: pts[0].x, y: pts[0].y + extLen2 }
+            ];
+        }
+    }
+
+    if (pts.length < 2) {
+        console.warn('[T3D] Bridge: pts.length=' + pts.length + ' path=' + _hwyPath.length + ' — cannot draw');
+        return;
+    }
+
+    // ── Helper: draw a polyline through all projected points ───────────
+    function _strokePath() {
+        _octx.beginPath();
+        _octx.moveTo(pts[0].x, pts[0].y);
+        for (var i = 1; i < pts.length; i++) {
+            _octx.lineTo(pts[i].x, pts[i].y);
+        }
+        _octx.stroke();
+    }
+
+    // ── Road surface (semi-transparent asphalt) ────────────────────────
+    _octx.strokeStyle = 'rgba(80, 100, 120, 0.55)';
+    _octx.lineWidth = roadPx;
+    _octx.lineCap = 'butt';
+    _octx.lineJoin = 'round';
+    _strokePath();
+
+    // ── Centre yellow line ──────────────────────────────────────────────
+    _octx.strokeStyle = 'rgba(253, 224, 71, 0.90)';
+    _octx.lineWidth = Math.max(2, 3 * zoomFactor);
+    _octx.setLineDash([]);
+    _strokePath();
+
+    // ── Lane dashes — perpendicular offset from centre ──────────────────
+    _octx.strokeStyle = 'rgba(255,255,255,0.70)';
+    _octx.lineWidth = Math.max(1, 1.5 * zoomFactor);
+    _octx.setLineDash([20 * zoomFactor, 14 * zoomFactor]);
+    var laneOff = roadPx / 4;
+    // Compute perpendicular for each segment — use average direction
+    for (var si = 0; si < pts.length - 1; si++) {
+        var sdx = pts[si+1].x - pts[si].x;
+        var sdy = pts[si+1].y - pts[si].y;
+        var slen = Math.hypot(sdx, sdy);
+        if (slen < 1) continue;
+        var spx = -sdy / slen, spy = sdx / slen;
+        [-laneOff, laneOff].forEach(function(off) {
+            _octx.beginPath();
+            _octx.moveTo(pts[si].x + spx * off, pts[si].y + spy * off);
+            _octx.lineTo(pts[si+1].x + spx * off, pts[si+1].y + spy * off);
+            _octx.stroke();
+        });
+    }
+    _octx.setLineDash([]);
+
+    // ── Edge kerb lines ─────────────────────────────────────────────────
+    _octx.strokeStyle = 'rgba(255,255,255,0.55)';
+    _octx.lineWidth = Math.max(2, 3 * zoomFactor);
+    for (var ki = 0; ki < pts.length - 1; ki++) {
+        var kdx = pts[ki+1].x - pts[ki].x;
+        var kdy = pts[ki+1].y - pts[ki].y;
+        var klen = Math.hypot(kdx, kdy);
+        if (klen < 1) continue;
+        var kpx = -kdy / klen, kpy = kdx / klen;
+        [-roadPx/2, roadPx/2].forEach(function(off) {
+            _octx.beginPath();
+            _octx.moveTo(pts[ki].x + kpx * off, pts[ki].y + kpy * off);
+            _octx.lineTo(pts[ki+1].x + kpx * off, pts[ki+1].y + kpy * off);
+            _octx.stroke();
+        });
+    }
+
+    // ── Zone anchor pins — mark each real GPS coordinate on the map ────
+    // These show exactly where the bridge connects to the highway.
+    _hwyPath.forEach(function(zp) {
+        var pp = _projectLatLng(zp.lat, zp.lon);
+        // Pin circle — small, just enough to mark the zone anchor
+        _octx.beginPath();
+        _octx.arc(pp.x, pp.y, 3, 0, Math.PI * 2);
+        _octx.fillStyle = 'rgba(253,224,71,0.85)';
+        _octx.fill();
+        _octx.strokeStyle = 'rgba(0,0,0,0.6)';
+        _octx.lineWidth = 1;
+        _octx.stroke();
+        // Inner dot
+        _octx.beginPath();
+        _octx.arc(pp.x, pp.y, 1.2, 0, Math.PI * 2);
+        _octx.fillStyle = '#fff';
+        _octx.fill();
+        // Zone label
+        _octx.save();
+        _octx.shadowColor = 'rgba(255,255,255,0.8)';
+        _octx.shadowBlur = 3;
+        _octx.fillStyle = '#000';
+        _octx.font = 'bold 8px monospace';
+        _octx.textAlign = 'center';
+        _octx.textBaseline = 'bottom';
+        _octx.fillText(zp.zoneId || '', pp.x, pp.y - 9);
+        _octx.restore();
+    });
+}
+
+// ── Vehicle overlay: draw vehicles as GPS-projected circles with labels ──
+function _drawVehicles() {
+    if (!_oc || !_octx) return;
+    var cw = _oc.width, ch = _oc.height;
+    if (cw < 2 || ch < 2) return;
+
+    vehicleData.forEach(function(vd, vid) {
+        if (!vd.lat || !vd.lon) return;
+
+        var sx, sy;
+        if (_map && _mapReady) {
+            // Primary: Leaflet projection — exact GPS → pixel
+            var origin = _map.getPixelOrigin();
+            var mapPt  = _map.project([vd.lat, vd.lon], _map.getZoom());
+            sx = mapPt.x - origin.x;
+            sy = mapPt.y - origin.y;
+        } else {
+            // Fallback: simple linear projection from map centre
+            var zoom = _leafletZoom || 15;
+            var pxPerDeg = Math.pow(2, zoom) * 256 / 360;
+            sx = cw / 2 + (vd.lon - _airMapCtrLon) * pxPerDeg;
+            sy = ch / 2 - (vd.lat - _airMapCtrLat) * pxPerDeg;
+        }
+
+        // ── Directional lane separation ─────────────────────────────────
+        // Apply a perpendicular visual offset so opposing traffic renders
+        // on opposite sides of the road centreline.
+        // Road overlay is ~28px wide so ±10px keeps each lane distinct.
+        var laneHalfPx = 10;
+        var vDir = vd.direction || 0;
+        if (vd.isNSHwy) {
+            // N-S highway: northbound (0°) shift left (−sx), southbound (180°) shift right (+sx)
+            sx += (vDir <= 90 || vDir >= 270) ? -laneHalfPx : laneHalfPx;
+        } else {
+            // E-W highway: eastbound (90°) shift north (−sy), westbound (270°) shift south (+sy)
+            sy += (vDir >= 45 && vDir <= 135) ? -laneHalfPx : laneHalfPx;
+        }
+
+        // Cull off-screen
+        if (sx < -60 || sx > cw + 60 || sy < -60 || sy > ch + 60) return;
+
+        var cat   = vd.vc ? vd.vc.category : 'sedan';
+        var color = CAT_COLORS[cat] || '#1d4ed8';
+        var make  = vd.make || '';
+        var badge = AIR_BRAND_BADGES[make];
+        var logoImg = AIR_BRAND_LOGO_IMAGES[make];
+        var sideImg = AIR_AIR_BRAND_SIDEVIEW_IMAGES[make];
+        var dir = vd.direction || 0;
+        var spd = vd.speedMph || 0;
+
+        // ── Car silhouette with brand logo ─────────────────────────────
+        // Car drawn with long axis = X (pointing East by default).
+        // Rotation formula: carRot = (dir - 90) * PI/180
+        //   dir=90  (East)  → carRot=0   → long axis East  ✅
+        //   dir=0   (North) → carRot=-PI/2 → long axis North ✅
+        //   dir=270 (West)  → carRot=PI   → long axis West  ✅
+        //   dir=180 (South) → carRot=PI/2 → long axis South ✅
+        var carW = 30, carH = 15;   // long=X, short=Y (body dimensions in px)
+        var carRot = (dir - 90) * Math.PI / 180;
+
+        _octx.save();
+        _octx.translate(sx, sy);
+        _octx.rotate(carRot);
+
+        // ── Car body ──────────────────────────────────────────────────
+        _octx.beginPath();
+        _octx.roundRect(-carW/2, -carH/2, carW, carH, 5);
+        _octx.fillStyle = color;
+        _octx.fill();
+        _octx.strokeStyle = 'rgba(255,255,255,0.9)';
+        _octx.lineWidth = 1.8;
+        _octx.stroke();
+
+        // ── Roof / cabin highlight (raised section, centred) ──────────
+        _octx.beginPath();
+        _octx.roundRect(-carW/2 + 5, -carH/2 + 2, carW - 10, carH - 4, 3);
+        _octx.fillStyle = 'rgba(255,255,255,0.18)';
+        _octx.fill();
+
+        // ── Front nose — brighter tint shows drive direction ──────────
+        _octx.beginPath();
+        _octx.roundRect(carW/2 - 6, -carH/2 + 2, 5, carH - 4, 2);
+        _octx.fillStyle = 'rgba(255,255,255,0.45)';
+        _octx.fill();
+
+        // ── Wheels — 4 ellipses perpendicular to car long-axis ────────
+        // Wheels are along the Y axis (short axis) so they are always
+        // perpendicular to the road — this is the natural result of the
+        // correct rotation formula above.
+        var wW = 4, wH = 7;   // wheel: narrow along car axis, tall across it
+        _octx.fillStyle = '#111827';
+        _octx.strokeStyle = 'rgba(255,255,255,0.6)';
+        _octx.lineWidth = 0.8;
+        // Front-left, front-right, rear-left, rear-right
+        [[carW/2 - 6,  carH/2 - 1],
+         [carW/2 - 6, -carH/2 - 2],
+         [-carW/2 + 3,  carH/2 - 1],
+         [-carW/2 + 3, -carH/2 - 2]].forEach(function(w) {
+            _octx.beginPath();
+            _octx.ellipse(w[0], w[1], wW/2, wH/2, 0, 0, Math.PI * 2);
+            _octx.fill();
+            _octx.stroke();
+        });
+
+        // ── Brand side-view logo on car body ───────────────────────────
+        // Side-view logo: wider than tall (80x40 aspect ratio)
+        // Drawn over the car body to show make + side silhouette
+        if (sideImg && sideImg.complete && sideImg.naturalWidth > 0) {
+            _octx.drawImage(sideImg, -carW/2 + 1, -carH/2 - 1, carW - 2, carH + 2);
+        } else if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
+            // Fallback: top-view logo
+            _octx.drawImage(logoImg, -10, -7, 20, 14);
+        } else if (badge) {
+            // Initials badge
+            _octx.beginPath();
+            _octx.arc(0, 0, 7, 0, Math.PI * 2);
+            _octx.fillStyle = badge.color;
+            _octx.fill();
+            _octx.strokeStyle = 'rgba(255,255,255,0.55)';
+            _octx.lineWidth = 1.2;
+            _octx.stroke();
+            _octx.fillStyle = '#fff';
+            _octx.font = badge.initials.length > 2 ? 'bold 6px Arial' : 'bold 9px Arial';
+            _octx.textAlign = 'center';
+            _octx.textBaseline = 'middle';
+            _octx.fillText(badge.initials, 0, 0.5);
+        } else {
+            // Generic dot fallback
+            _octx.beginPath();
+            _octx.arc(0, 0, 5, 0, Math.PI * 2);
+            _octx.fillStyle = 'rgba(255,255,255,0.4)';
+            _octx.fill();
+        }
+
+        _octx.restore();
+
+        // Heading arrow — extends from the front of the car
+        if (dir && spd > 0) {
+            var arrowRad = (dir - 90) * Math.PI / 180;
+            var arrowLen = 14;
+            var ax2 = sx + Math.cos(arrowRad) * arrowLen;
+            var ay2 = sy + Math.sin(arrowRad) * arrowLen;
+            _octx.beginPath();
+            _octx.moveTo(sx + Math.cos(arrowRad) * 10, sy + Math.sin(arrowRad) * 10);
+            _octx.lineTo(ax2, ay2);
+            _octx.strokeStyle = 'rgba(255,255,255,0.7)';
+            _octx.lineWidth = 2;
+            _octx.stroke();
+        }
+
+        // Speed indicator ring (arc proportional to speed)
+        var arc = (Math.min(spd, 120) / 120) * Math.PI * 2;
+        _octx.beginPath();
+        _octx.arc(sx, sy, 15, -Math.PI / 2, -Math.PI / 2 + arc);
+        _octx.strokeStyle = 'rgba(253,224,71,0.75)';
+        _octx.lineWidth = 2;
+        _octx.stroke();
+
+        // ── Transparent tooltip (no dark background) ────────────────────
+        // Text with shadow for readability — no filled pill background.
+        var tipW = 120, tipH = 30;
+        var tipX = Math.max(2, Math.min(cw - tipW - 2, sx - tipW / 2));
+        var tipY = sy - 48;
+        if (tipY < 2) tipY = sy + 20;
+
+        // Connector line (thin, semi-transparent)
+        var lineFx = tipX + tipW / 2;
+        var lineFy = tipY < sy ? tipY + tipH : tipY;
+        _octx.strokeStyle = 'rgba(0,0,0,0.35)';
+        _octx.lineWidth = 1;
+        _octx.setLineDash([3, 3]);
+        _octx.beginPath();
+        _octx.moveTo(lineFx, lineFy);
+        _octx.lineTo(sx, sy);
+        _octx.stroke();
+        _octx.setLineDash([]);
+
+        // Vehicle ID — bold black text with light shadow for legibility
+        _octx.save();
+        _octx.shadowColor = 'rgba(255,255,255,0.85)';
+        _octx.shadowBlur = 3;
+        _octx.fillStyle = '#000';
+        _octx.font = 'bold 10px monospace';
+        _octx.textAlign = 'left';
+        _octx.textBaseline = 'top';
+        _octx.fillText((vid || '–').slice(0, 14), tipX + 4, tipY + 3);
+
+        // Make + category — smaller, dark grey
+        _octx.fillStyle = 'rgba(0,0,0,0.8)';
+        _octx.font = '9px Arial';
+        _octx.textBaseline = 'bottom';
+        var makeCat = (make ? make.slice(0, 12) : '') + (make && cat ? ' · ' : '') + cat;
+        _octx.fillText(makeCat, tipX + 4, tipY + tipH - 3);
+
+        // Speed — right-aligned, dark with amber tint
+        if (spd > 0) {
+            _octx.fillStyle = 'rgba(120,53,15,0.95)';
+            _octx.font = 'bold 9px monospace';
+            _octx.textAlign = 'right';
+            _octx.textBaseline = 'top';
+            _octx.fillText(spd + 'mph', tipX + tipW - 4, tipY + 3);
+        }
+        _octx.restore();
+    });
+}
+
+// ── Animation loop: runs at 60fps, redraws overlay on every frame ─────
+
+// ── Per-frame vehicle movement ──────────────────────────────────────
+// Moves each vehicle along its heading at its speed (mph → deg/s).
+// 1 mph ≈ 0.447 m/s; 1° lat ≈ 111,000 m; 1° lon at 32.7°N ≈ 93,100 m.
+var _lastMoveTime = Date.now();
+function _updateVehiclePositions() {
+    var now = Date.now();
+    var dt = (now - _lastMoveTime) / 1000;
+    if (dt > 0.5) dt = 0.5;   // max 0.5s step to prevent teleports on tab resume
+    _lastMoveTime = now;
+    if (dt <= 0) return;
+
+    // Pre-compute degree-per-metre ratios at current map centre
+    var refLat = _airMapCtrLat || 32.7213;
+    var latPerM = 1 / 111000;
+    var lonPerM = 1 / (111000 * Math.cos(refLat * Math.PI / 180));
+
+    // ── Compute bridge path endpoints for vehicle removal ────────────────
+    // Vehicles that travel past the first or last bridge path coordinate
+    // have reached the end of the highway and should disappear.
+    var pathStart = null, pathEnd = null;
+    if (_airBridgePathCoords.length >= 2) {
+        pathStart = _airBridgePathCoords[0];
+        pathEnd   = _airBridgePathCoords[_airBridgePathCoords.length - 1];
+    }
+    // Extend the endpoints slightly so vehicles exit the visible area
+    // before being removed (20% of the total path length as margin).
+    var pathMargin = 0;
+    if (_airBridgePathCoords.length >= 2) {
+        var totalLat = Math.abs(pathEnd.lat - pathStart.lat);
+        var totalLon = Math.abs(pathEnd.lon - pathStart.lon);
+        pathMargin = Math.max(totalLat, totalLon) * 0.15;
+    }
+
+    // ── Move each vehicle in the sim's direction at the sim's speed ──────
+    // No wrapping, no bouncing, no re-projection. Vehicles move freely
+    // from their starting GPS in the direction the sim specified, at the
+    // speed the sim specified. They disappear when they pass the highway
+    // endpoints.
+    var toRemove = [];
+    vehicleData.forEach(function(vd, vid) {
+        var spd = vd.speedMph || 0;
+        if (spd < 1) return;
+        var ms  = spd * 0.44704;          // mph -> m/s
+        var dir = vd.direction || 0;
+        if (dir <= 0) dir = _airHwBearingDeg; // fallback if missing
+
+        // ── 1. Move along the sim's direction ────────────────────────────
+        var rad  = dir * Math.PI / 180;
+        var dLat = ms * Math.cos(rad) * dt * latPerM;
+        var dLon = ms * Math.sin(rad) * dt * lonPerM;
+        var newLat = vd.lat + dLat;
+        var newLon = vd.lon + dLon;
+
+        // ── 2. Gentle lane keeping — nudge toward road if drifting ────────
+        // Apply a very gentle correction only if the vehicle has drifted
+        // more than 3x road width from the bridge centreline. This keeps
+        // vehicles roughly on the road without overriding their position.
+        if (_airBridgePathCoords.length >= 2) {
+            var snap = _nearestOnBridgePath(newLat, newLon);
+            if (snap && snap.perpDist > _bridgeRoadWidth * 3) {
+                var perpRad = snap.bearing * Math.PI / 180 + Math.PI / 2;
+                var cosLat2 = Math.cos(snap.lat * Math.PI / 180);
+                newLat = snap.lat + Math.cos(perpRad) * vd.laneSide * _bridgeRoadWidth;
+                newLon = snap.lon + Math.sin(perpRad) * vd.laneSide * _bridgeRoadWidth / cosLat2;
+            }
+        }
+
+        // ── 3. Check if vehicle has reached the end of the highway ───────
+        // Compare the vehicle's along-axis position against the bridge
+        // endpoints. If it has passed either end (plus margin), remove it.
+        if (pathStart && pathEnd) {
+            if (_hwyIsEW) {
+                // E-W highway: check longitude
+                var minLon = Math.min(pathStart.lon, pathEnd.lon) - pathMargin;
+                var maxLon = Math.max(pathStart.lon, pathEnd.lon) + pathMargin;
+                if (newLon < minLon || newLon > maxLon) {
+                    console.log('[T3D] Vehicle ' + vid + ' reached highway end (lon=' + newLon.toFixed(4) + ') — removing');
+                    toRemove.push(vid);
+                    return;
+                }
+            } else {
+                // N-S highway: check latitude
+                var minLat = Math.min(pathStart.lat, pathEnd.lat) - pathMargin;
+                var maxLat = Math.max(pathStart.lat, pathEnd.lat) + pathMargin;
+                if (newLat < minLat || newLat > maxLat) {
+                    console.log('[T3D] Vehicle ' + vid + ' reached highway end (lat=' + newLat.toFixed(4) + ') — removing');
+                    toRemove.push(vid);
+                    return;
+                }
+            }
+        }
+
+        // ── FINAL SANITY CHECK ─────────────────────────────────────────────
+        if (isNaN(newLat) || isNaN(newLon) || (newLat === 0 && newLon === 0)) {
+            return;
+        }
+        vd.lat = newLat;
+        vd.lon = newLon;
+    });
+
+    // Remove vehicles that reached the highway end
+    toRemove.forEach(function(vid) { vehicleData.delete(vid); });
+}
+
+var _animFrame = null;
+var _renderErrors = 0;
+function _renderLoop() {
+    _animFrame = requestAnimationFrame(_renderLoop);
+    try {
+        // Sync overlay canvas size with container
+        var wrap = document.getElementById('sceneWrap');
+        if (wrap && _oc) {
+            var cw = wrap.clientWidth, ch = wrap.clientHeight;
+            if (_oc.width !== cw || _oc.height !== ch) { _oc.width = cw; _oc.height = ch; }
+        }
+        if (_octx && _oc) {
+            _octx.clearRect(0, 0, _oc.width, _oc.height);
+            _updateVehiclePositions();
+            // ── 2D overlay only renders in top view ──
+            // In perspective/side views, the Three.js 3D meshes handle
+            // vehicle rendering. Drawing 2D flat cars on the overlay canvas
+            // (z-index:2, above the 3D canvas at z-index:1) would show
+            // flat vehicles on top of the 3D scene.
+            if (airCurrentView === 'top') {
+                _drawHighwayOverlay();
+                _drawVehicles();
+            }
+        }
+    } catch(e) {
+        _renderErrors++;
+        if (_renderErrors <= 5) console.warn('[T3D] Render error #' + _renderErrors + ':', e);
+    }
+}
+// ── THREE.JS SCENE (Perspective/Side/Split views) ─────────────────────
+// Enhanced 3D side-view with textured vehicles, roadside scenery, and
+// a richer camera perspective showing vehicles moving along the road
+// with background scenery (trees, lights, terrain, sky gradient).
+
+const _air3dCanvas = document.getElementById('air3dCanvas');
+const renderer  = new THREE.WebGLRenderer({ canvas: _air3dCanvas, antialias: true, alpha: true });
+renderer.setClearColor(0x000000, 0);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(_air3dCanvas.clientWidth, _air3dCanvas.clientHeight);
+
+const airScene3 = new THREE.Scene();
+airScene3.fog = new THREE.Fog(0xa0c0e0, 600, 1800);
+airScene3.add(new THREE.HemisphereLight(0xbfd4ea, 0x4a6b3a, 0.65));
+airScene3.add(new THREE.AmbientLight(0xffffff, 0.5));
+var dir3 = new THREE.DirectionalLight(0xfff5e0, 1.4);
+dir3.position.set(120, 250, 80); airScene3.add(dir3);
+var dir3b = new THREE.DirectionalLight(0xb0d0ff, 0.5);
+dir3b.position.set(-100, 120, -80); airScene3.add(dir3b);
+
+// ── Sky gradient background (large sphere with gradient material) ──
+var skyGeo = new THREE.SphereGeometry(1800, 32, 16);
+var skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    transparent: true,
+    uniforms: {
+        topColor:    { value: new THREE.Color(0x2a6ab5) },
+        bottomColor: { value: new THREE.Color(0xd0e8f0) },
+        offset:      { value: 200 },
+        exponent:    { value: 0.7 }
+    },
+    vertexShader: 'varying vec3 vWorldPos; void main() { vec4 wp = modelMatrix * vec4(position, 1.0); vWorldPos = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }',
+    fragmentShader: 'uniform vec3 topColor; uniform vec3 bottomColor; uniform float offset; uniform float exponent; varying vec3 vWorldPos; void main() { float h = normalize(vWorldPos + vec3(0.0, offset, 0.0)).y; float t = max(pow(max(h, 0.0), exponent), 0.0); gl_FragColor = vec4(mix(bottomColor, topColor, t), 0.65); }'
+});
+var skyDome = new THREE.Mesh(skyGeo, skyMat);
+airScene3.add(skyDome);
+
+// ── Road group (rotatable parent) ──
+var airRoadGroup3 = new THREE.Group();
+airScene3.add(airRoadGroup3);
+
+// Road surface
+// ── Dynamic road geometry — rebuilt when highway loads ──────────────
+// Road width is fixed at a visually appropriate size (20 units) — it
+// represents the visual lane structure, not real-world meters.
+// Ground planes removed: they were enormous cream strips obscuring the map.
+var _airRoadWidth3D = 20;   // fixed visual width, NOT scaled with XZ_SCALE
+var _airRoadMeshes3D = [];  // rebuildable road elements
+
+function _airBuildRoad3D() {
+    // Remove old road elements
+    _airRoadMeshes3D.forEach(function(m) { airRoadGroup3.remove(m); });
+    _airRoadMeshes3D = [];
+
+    var rw = _airRoadWidth3D;
+
+    // Road surface
+    var roadGeo3 = new THREE.PlaneGeometry(1800, rw);
+    roadGeo3.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+    var roadMat3 = new THREE.MeshPhongMaterial({ color: 0x374151, opacity: 0.92, transparent: true });
+    var roadMesh = new THREE.Mesh(roadGeo3, roadMat3);
+    airRoadGroup3.add(roadMesh); _airRoadMeshes3D.push(roadMesh);
+
+    // Centre line (yellow)
+    var clGeo = new THREE.PlaneGeometry(1800, 0.6);
+    clGeo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+    var clMesh = new THREE.Mesh(clGeo, new THREE.MeshPhongMaterial({ color: 0xfde047 }));
+    clMesh.position.y = 0.02;
+    airRoadGroup3.add(clMesh); _airRoadMeshes3D.push(clMesh);
+
+    // Lane dashes (white) — 4 lanes, ±rw/4 from centre
+    [-rw * 0.25, rw * 0.25].forEach(function(lz) {
+        for (var di = -20; di <= 20; di++) {
+            var dg = new THREE.PlaneGeometry(8, 0.3);
+            dg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+            var dm = new THREE.Mesh(dg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
+            dm.position.set(di * 40, 0.02, lz);
+            airRoadGroup3.add(dm); _airRoadMeshes3D.push(dm);
+        }
+    });
+
+    // Road edge lines (white solid)
+    [-rw * 0.5 + 0.3, rw * 0.5 - 0.3].forEach(function(ez) {
+        var eg = new THREE.PlaneGeometry(1800, 0.4);
+        eg.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+        var em = new THREE.Mesh(eg, new THREE.MeshPhongMaterial({ color: 0xffffff }));
+        em.position.set(0, 0.02, ez);
+        airRoadGroup3.add(em); _airRoadMeshes3D.push(em);
+    });
+
+    // Guard rails (both sides)
+    var railGeo = new THREE.BoxGeometry(1800, 1.2, 0.4);
+    var railMat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa });
+    var rL = new THREE.Mesh(railGeo, railMat); rL.position.set(0, 1.5, rw * 0.5);
+    airRoadGroup3.add(rL); _airRoadMeshes3D.push(rL);
+    var rR = new THREE.Mesh(railGeo.clone(), railMat); rR.position.set(0, 1.5, -rw * 0.5);
+    airRoadGroup3.add(rR); _airRoadMeshes3D.push(rR);
+}
+_airBuildRoad3D();
+
+// ── Roadside trees (cone + trunk) ──
+var trunkGeo = new THREE.CylinderGeometry(1.2, 1.5, 6, 6);
+var trunkMat = new THREE.MeshPhongMaterial({ color: 0x5a3a1a });
+var leavesGeo = new THREE.ConeGeometry(5, 14, 7);
+var leavesMat = new THREE.MeshPhongMaterial({ color: 0x2d6a2d });
+var leavesMat2 = new THREE.MeshPhongMaterial({ color: 0x3a7a3a });
+
+for (var ti = -18; ti <= 18; ti += 3) {
+    var tx = ti * 45;
+    // Left side trees
+    var tl = new THREE.Group();
+    tl.add(new THREE.Mesh(trunkGeo, trunkMat));
+    var leafL = new THREE.Mesh(leavesGeo, leavesMat);
+    leafL.position.y = 9; tl.add(leafL);
+    tl.position.set(tx + (Math.random() - 0.5) * 10, 0, 90 + Math.random() * 30);
+    tl.scale.setScalar(0.7 + Math.random() * 0.5);
+    airRoadGroup3.add(tl);
+    // Right side trees
+    var tr = new THREE.Group();
+    tr.add(new THREE.Mesh(trunkGeo, trunkMat));
+    var leafR = new THREE.Mesh(leavesGeo, leavesMat2);
+    leafR.position.y = 9; tr.add(leafR);
+    tr.position.set(tx + (Math.random() - 0.5) * 10, 0, -90 - Math.random() * 30);
+    tr.scale.setScalar(0.7 + Math.random() * 0.5);
+    airRoadGroup3.add(tr);
+}
+
+// ── Street lights (pole + lamp head) ──
+var poleGeo = new THREE.CylinderGeometry(0.5, 0.6, 18, 6);
+var poleMat = new THREE.MeshPhongMaterial({ color: 0x555555 });
+var lampGeo = new THREE.SphereGeometry(1.5, 8, 6);
+var lampMat = new THREE.MeshPhongMaterial({ color: 0xfff9c4, emissive: 0xfff5b0, emissiveIntensity: 0.3 });
+
+for (var li = -15; li <= 15; li += 5) {
+    var lx = li * 55;
+    // Left
+    var pl = new THREE.Group();
+    var poleL = new THREE.Mesh(poleGeo, poleMat); poleL.position.y = 9; pl.add(poleL);
+    var armL = new THREE.Mesh(new THREE.BoxGeometry(5, 0.5, 0.5), poleMat);
+    armL.position.set(2, 17, 0); pl.add(armL);
+    var lampL = new THREE.Mesh(lampGeo, lampMat); lampL.position.set(4.5, 16.5, 0); pl.add(lampL);
+    pl.position.set(lx, 0, 40); airRoadGroup3.add(pl);
+    // Right
+    var pr = new THREE.Group();
+    var poleR = new THREE.Mesh(poleGeo, poleMat); poleR.position.y = 9; pr.add(poleR);
+    var armR = new THREE.Mesh(new THREE.BoxGeometry(5, 0.5, 0.5), poleMat);
+    armR.position.set(-2, 17, 0); pr.add(armR);
+    var lampR = new THREE.Mesh(lampGeo, lampMat); lampR.position.set(-4.5, 16.5, 0); pr.add(lampR);
+    pr.position.set(lx, 0, -40); airRoadGroup3.add(pr);
+}
+
+// Guard rails moved into _airBuildRoad3D() above
+
+// ── Distant hills (low-poly ridge on both sides) ──
+for (var hi = 0; hi < 8; hi++) {
+    var hillGeo = new THREE.SphereGeometry(80 + Math.random() * 60, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+    var hillMat = new THREE.MeshPhongMaterial({ color: 0x3a5a3a });
+    var hillL = new THREE.Mesh(hillGeo, hillMat);
+    hillL.position.set(-700 + hi * 180, -2, 350 + Math.random() * 100);
+    hillL.scale.set(1.5, 0.4 + Math.random() * 0.3, 1);
+    airRoadGroup3.add(hillL);
+    var hillR = new THREE.Mesh(hillGeo.clone(), hillMat);
+    hillR.position.set(-700 + hi * 180, -2, -350 - Math.random() * 100);
+    hillR.scale.set(1.5, 0.4 + Math.random() * 0.3, 1);
+    airRoadGroup3.add(hillR);
+}
+
+// ── Cameras ──
+const airCamP = new THREE.PerspectiveCamera(50, _air3dCanvas.clientWidth / _air3dCanvas.clientHeight, 0.1, 4000);
+airCamP.position.set(-180, 45, 90); airCamP.lookAt(60, 0, 0);
+// Side camera — positioned for a nice side-elevation view showing road + scenery
+const airCamS = new THREE.OrthographicCamera(-300, 300, 80, -80, 0.1, 3000);
+airCamS.position.set(0, 40, 400); airCamS.lookAt(0, 15, 0);
+
+var airCurrentView = 'top';
+var airRadius3 = 280, airTheta3 = 0.6, airPhi3 = 0.5;
+var airVehicleMeshes3 = [];
+
+// ── Side-view texture cache (CanvasTexture from SVG images) ──
+var _sideTexCache = {};
+function _getSideTexture(make) {
+    if (_sideTexCache[make]) return _sideTexCache[make];
+    var img = AIR_AIR_BRAND_SIDEVIEW_IMAGES[make];
+    if (!img || !img.complete || img.naturalWidth <= 0) return null;
+    var c = document.createElement('canvas');
+    c.width = 256; c.height = 128;
+    var cx = c.getContext('2d');
+    cx.fillStyle = '#2a3a5a';
+    cx.fillRect(0, 0, 256, 128);
+    cx.drawImage(img, 8, 8, 240, 112);
+    var tex = new THREE.CanvasTexture(c);
+    tex.needsUpdate = true;
+    _sideTexCache[make] = tex;
+    return tex;
+}
+
+// ── 3D vehicle mesh factory — textured box with side-view logo ──
+function _makeAir3DVehicle(ev, vc, vd) {
+    var l = 4.5, w = 1.9, h = 1.4;
+    if (vc.category === 'truck') { l = 9; w = 2.4; h = 2.8; }
+    else if (vc.category === 'suv') { l = 5; w = 2.1; h = 1.8; }
+    else if (vc.category === 'van') { l = 5.5; w = 2.1; h = 2.2; }
+    else if (vc.category === 'motorcycle') { l = 2.2; w = 0.6; h = 1.1; }
+
+    // Extract make from the passed vd parameter (from _syncAirMeshes).
+    // Do NOT re-lookup by ev.id — that's the DB integer ID, not the
+    // vehicle_id string used as the vehicleData Map key.
+    var make = (vd && vd.make) ? vd.make
+             : (ev && ev.vehicle_id) ? ev.vehicle_id.split('-')[0] : '';
+
+    var group = new THREE.Group();
+
+    // Body mesh — coloured box
+    var bodyColor = vc.color || '#3b82f6';
+    var geo = new THREE.BoxGeometry(l, h, w);
+    var mat = new THREE.MeshPhongMaterial({ color: new THREE.Color(bodyColor) });
+    var body = new THREE.Mesh(geo, mat);
+    body.position.y = h / 2;
+    group.add(body);
+
+    // Roof/cabin — slightly smaller box on top (sedan/suv/van only)
+    if (vc.category !== 'motorcycle' && vc.category !== 'truck') {
+        var roofGeo = new THREE.BoxGeometry(l * 0.55, h * 0.55, w * 0.85);
+        var roofMat = new THREE.MeshPhongMaterial({ color: new THREE.Color(bodyColor), transparent: true, opacity: 0.85 });
+        var roof = new THREE.Mesh(roofGeo, roofMat);
+        roof.position.y = h + h * 0.25;
+        group.add(roof);
+    }
+    // Truck cab
+    if (vc.category === 'truck') {
+        var cabGeo = new THREE.BoxGeometry(l * 0.3, h * 0.85, w);
+        var cab = new THREE.Mesh(cabGeo, mat);
+        cab.position.set(l * 0.3, h / 2, 0);
+        group.add(cab);
+    }
+
+    // Wheels — 4 cylinders (or 6 for truck)
+    var wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.4, 10);
+    var wheelMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a });
+    var wheelPositions = vc.category === 'truck'
+        ? [[l*0.3, 0, w/2], [l*0.3, 0, -w/2], [-l*0.2, 0, w/2], [-l*0.2, 0, -w/2], [-l*0.4, 0, w/2], [-l*0.4, 0, -w/2]]
+        : [[l*0.3, 0, w/2], [l*0.3, 0, -w/2], [-l*0.3, 0, w/2], [-l*0.3, 0, -w/2]];
+    if (vc.category === 'motorcycle') {
+        wheelPositions = [[l*0.35, 0, 0], [-l*0.35, 0, 0]];
+        wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.3, 10);
+    }
+    wheelPositions.forEach(function(wp) {
+        var wheel = new THREE.Mesh(wheelGeo, wheelMat);
+        wheel.rotation.x = Math.PI / 2;
+        wheel.position.set(wp[0], 0.5, wp[2]);
+        group.add(wheel);
+    });
+
+    // Side-view logo texture on both sides (left and right)
+    var sideTex = _getSideTexture(make);
+    if (sideTex) {
+        var sideGeo = new THREE.PlaneGeometry(l * 0.9, h * 0.7);
+        var sideMat = new THREE.MeshBasicMaterial({ map: sideTex, transparent: true });
+        var sideL = new THREE.Mesh(sideGeo, sideMat);
+        sideL.position.set(0, h / 2, w / 2 + 0.01);
+        group.add(sideL);
+        var sideR = new THREE.Mesh(sideGeo.clone(), sideMat);
+        sideR.position.set(0, h / 2, -w / 2 - 0.01);
+        sideR.rotation.y = Math.PI;
+        group.add(sideR);
+    }
+
+    // Headlights (front) + taillights (rear)
+    var hlGeo = new THREE.SphereGeometry(0.3, 6, 4);
+    var hlMat = new THREE.MeshPhongMaterial({ color: 0xffffe0, emissive: 0xffffaa, emissiveIntensity: 0.5 });
+    var tlMat = new THREE.MeshPhongMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0.3 });
+    [[w/2+0.01, h*0.6], [-w/2-0.01, h*0.6]].forEach(function(pos) {
+        var isFront = pos[0] > 0;
+        [-w*0.25, w*0.25].forEach(function(zoff) {
+            var light = new THREE.Mesh(hlGeo, isFront ? hlMat : tlMat);
+            light.position.set(pos[0] * (isFront ? 1 : -1) + (isFront ? l/2 : -l/2), pos[1] * 0.5, zoff);
+            group.add(light);
+        });
+    });
+
+    // ── Vehicle ID + maker logo label sprite ──
+    // Floating canvas-textured sprite above the vehicle. NOT added to the
+    // vehicle group — it's added to the scene directly so it doesn't rotate
+    // with the vehicle and always stays above it. Positioned in _animateAir3D.
+    var vidShort = (vd && vd.vid) ? vd.vid.slice(0, 14) : '';
+    var makeName = (vd && vd.make) ? vd.make : '';
+    var badge = AIR_BRAND_BADGES[makeName];
+    var logoImg = AIR_BRAND_LOGO_IMAGES[makeName];
+
+    // High-res canvas for crisp text at distance
+    var labelCanvas = document.createElement('canvas');
+    labelCanvas.width = 512; labelCanvas.height = 128;
+    var lx = labelCanvas.getContext('2d');
+
+    // Background pill (darker for readability)
+    lx.fillStyle = 'rgba(15, 20, 35, 0.92)';
+    lx.beginPath();
+    lx.roundRect(6, 12, 500, 104, 16);
+    lx.fill();
+    lx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    lx.lineWidth = 2.5;
+    lx.stroke();
+
+    // Maker logo on the left (larger)
+    if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
+        lx.save();
+        lx.beginPath();
+        lx.arc(56, 64, 38, 0, Math.PI * 2);
+        lx.clip();
+        lx.drawImage(logoImg, 18, 26, 76, 76);
+        lx.restore();
+        lx.beginPath();
+        lx.arc(56, 64, 40, 0, Math.PI * 2);
+        lx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        lx.lineWidth = 2;
+        lx.stroke();
+    } else if (badge) {
+        lx.beginPath();
+        lx.arc(56, 64, 35, 0, Math.PI * 2);
+        lx.fillStyle = badge.color;
+        lx.fill();
+        lx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+        lx.lineWidth = 2.5;
+        lx.stroke();
+        lx.fillStyle = '#fff';
+        lx.font = 'bold 28px Arial';
+        lx.textAlign = 'center';
+        lx.textBaseline = 'middle';
+        lx.fillText(badge.initials.slice(0, 3), 56, 66);
+    }
+
+    // Vehicle ID text (bold, white, larger)
+    lx.fillStyle = '#ffffff';
+    lx.font = 'bold 30px monospace';
+    lx.textAlign = 'left';
+    lx.textBaseline = 'middle';
+    lx.fillText(vidShort, 110, 42);
+
+    // Make name + category (light grey)
+    var catName = vc ? vc.category : '';
+    var subText = makeName + (makeName && catName ? ' · ' : '') + catName;
+    lx.fillStyle = 'rgba(210, 220, 235, 0.95)';
+    lx.font = '22px Arial';
+    lx.fillText(subText.slice(0, 26), 110, 84);
+
+    // Speed badge (amber, right side)
+    if (vd && vd.speedMph) {
+        var spdText = Math.round(vd.speedMph) + ' mph';
+        lx.fillStyle = 'rgba(253, 224, 71, 1.0)';
+        lx.font = 'bold 22px monospace';
+        lx.textAlign = 'right';
+        lx.fillText(spdText, 494, 64);
+    }
+
+    var labelTex = new THREE.CanvasTexture(labelCanvas);
+    labelTex.needsUpdate = true;
+    labelTex.minFilter = THREE.LinearFilter;
+    labelTex.magFilter = THREE.LinearFilter;
+    var labelMat = new THREE.SpriteMaterial({
+        map: labelTex, transparent: true, depthTest: false,
+        depthWrite: false, sizeAttenuation: true
+    });
+    var labelSprite = new THREE.Sprite(labelMat);
+    labelSprite.scale.set(50, 12.5, 1);
+    labelSprite.renderOrder = 999;
+    // Do NOT add to group — add to scene directly so it doesn't rotate
+    // with the vehicle. Position is updated in _animateAir3D.
+    group.userData.labelSprite = labelSprite;
+    group.userData.labelHeight = h + 6;
+
+    return group;
+}
+
+// Build or update 3D mesh from vehicleData
+// ── Compute 3D bounds of the bridge path for vehicle containment ──
+// Returns { minX, maxX, minZ, maxZ } in 3D scene coordinates using norm().
+var _3DBridgeBoundsCache = null;
+function _airGetBridgeBounds() {
+    if (_3DBridgeBoundsCache) return _3DBridgeBoundsCache;
+    var r = { minX: -900, maxX: 900, minZ: -900, maxZ: 900 };
+    if (!_airBridgePathCoords || _airBridgePathCoords.length < 2) return r;
+    var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (var i = 0; i < _airBridgePathCoords.length; i++) {
+        var p = norm(_airBridgePathCoords[i].lat, _airBridgePathCoords[i].lon);
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.z < minZ) minZ = p.z;
+        if (p.z > maxZ) maxZ = p.z;
+    }
+    r = { minX: minX, maxX: maxX, minZ: minZ, maxZ: maxZ };
+    _3DBridgeBoundsCache = r;
+    return r;
+}
+
+function _syncAirMeshes() {
+    // Remove stale meshes (vehicle no longer in vehicleData)
+    airVehicleMeshes3 = airVehicleMeshes3.filter(function(m) {
+        if (!vehicleData.has(m.userData.vid)) {
+            if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
+            airScene3.remove(m);
+            return false;
+        }
+        return true;
+    });
+    // Add new meshes for vehicles not yet in the 3D scene
+    vehicleData.forEach(function(vd, vid) {
+        var exists = airVehicleMeshes3.find(function(m){ return m.userData.vid === vid; });
+        if (!exists) {
+            var mesh = _makeAir3DVehicle(vd.ev, vd.vc, vd);
+
+            // ── Position vehicle along the 3D road based on its relative ──
+            // ── position along the highway bridge path ───────────────────
+            // The 3D road spans -850 to +850 units. Map the vehicle's GPS
+            // position to a fraction (0..1) along the bridge path, then
+            // scale to the 3D road range.
+            // ── Position vehicle using norm() — maps GPS to 3D coords ──
+            // norm() uses midLat/midLon (zone/server GPS) as origin and
+            // XZ_SCALE (fits bridge path to ±900). This places the vehicle
+            // at the correct 3D coordinate matching its GPS on the map.
+            var p3 = norm(vd.lat, vd.lon);
+
+            // Lane offset: perpendicular to road direction
+            var spd3 = vd.speedMph || 30;
+            var dir3v = vd.direction || _airHwBearingDeg || 0;
+            if (dir3v < 0 || isNaN(dir3v)) dir3v = _airHwBearingDeg || 90;
+            var rad3 = dir3v * Math.PI / 180;
+
+            // ── Bearing-based velocity decomposition (matches 2D overlay) ──
+            // bearing 0°=N → +Z, 90°=E → +X, 180°=S → -Z, 270°=W → -X
+            var vx3 = spd3 * 0.025 * Math.sin(rad3);
+            var vz3 = spd3 * 0.025 * Math.cos(rad3);
+
+            // Perpendicular lane offset (perpendicular to bearing)
+            var perpRad = rad3 + Math.PI / 2;
+            var laneOff = (Math.random() - 0.5) * _airRoadWidth3D * 0.7;
+            var laneX = Math.cos(perpRad) * laneOff;
+            var laneZ = -Math.sin(perpRad) * laneOff;
+
+            // Clamp initial position to bridge path bounds
+            var bp3 = _airGetBridgeBounds();
+            var px = Math.max(bp3.minX, Math.min(bp3.maxX, p3.x + laneX));
+            var pz = Math.max(bp3.minZ, Math.min(bp3.maxZ, p3.z + laneZ));
+
+            mesh.position.set(px, 0, pz);
+            mesh.rotation.y = -(dir3v - 90) * Math.PI / 180;
+            mesh.userData = { vid: vid, vx: vx3, vz: vz3,
+                              laneX: laneX, laneZ: laneZ,
+                              baseY: 0, phase: Math.random() * Math.PI * 2,
+                              spd: spd3, dir: dir3v };
+            airScene3.add(mesh);
+            airVehicleMeshes3.push(mesh);
+        }
+    });
+}
+
+// 3D animate loop
+var _3dAnimRunning = false;
+var _tick3 = 0;
+function _animateAir3D() {
+    if (!_3dAnimRunning) return;
+    requestAnimationFrame(_animateAir3D); _tick3++;
+
+    // ── Periodically sync new vehicles from vehicleData into 3D meshes ──
+    // This picks up simulation vehicles that arrived via loadEvents after
+    // the 3D view was activated. Throttled to every ~0.5s (30 frames).
+    if (_tick3 % 30 === 0) {
+        _syncAirMeshes();
+    }
+
+    // Fixed camera angle — aligned to highway bearing, gentle tilt
+    // No orbit: camera stays at a constant angle to maintain alignment
+    _updateCamera3D();
+
+    // ── Velocity-driven vehicle movement (3D scene scale) ──
+    // The 3D road is 1800 units long. Vehicles move at speed * 0.025
+    // units/frame, so 60mph → 1.5 units/frame → ~90 units/sec.
+    // This gives visible, smooth movement across the 3D road.
+    // Live speed/direction from sim data is read back each frame.
+    airVehicleMeshes3.forEach(function(m) {
+        var ud = m.userData;
+        var vd = vehicleData.get(ud.vid);
+
+        // ── Update velocity from live sim data using bearing decomposition ──
+        if (vd) {
+            var spd = vd.speedMph || 0;
+            var dir = vd.direction || _airHwBearingDeg || 0;
+            if (dir < 0 || isNaN(dir)) dir = _airHwBearingDeg || 90;
+            ud.spd = spd;
+            ud.dir = dir;
+            // Bearing 0°=N→+Z, 90°=E→+X, 180°=S→-Z, 270°=W→-X
+            var rad = dir * Math.PI / 180;
+            ud.vx = spd * 0.025 * Math.sin(rad);
+            ud.vz = spd * 0.025 * Math.cos(rad);
+            // Update rotation to match direction from input data
+            m.rotation.y = -(dir - 90) * Math.PI / 180;
+        }
+
+        // Move vehicle in 3D scene coordinates — both X and Z from bearing
+        m.position.x += ud.vx;
+        m.position.z += ud.vz;
+        // Gentle lane keeping — nudge toward lane offset
+        m.position.x += (ud.laneX - (m.position.x - ud.vx)) * 0.02;
+        m.position.z += (ud.laneZ - (m.position.z - ud.vz)) * 0.02;
+
+        // Gentle bob for visual life
+        m.position.y = (ud.baseY || 0) + Math.sin(_tick3 * 0.15 + ud.phase) * 0.15;
+
+        // ── Remove vehicles that exit bridge path coordinate bounds ──
+        // Uses actual bridge path extent in 3D coordinates, not hardcoded ±880
+        var bp = _airGetBridgeBounds();
+        var margin = 30;  // small margin beyond path endpoints
+        if (m.position.x > bp.maxX + margin || m.position.x < bp.minX - margin ||
+            m.position.z > bp.maxZ + margin || m.position.z < bp.minZ - margin) {
+            if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
+            airScene3.remove(m);
+            airVehicleMeshes3 = airVehicleMeshes3.filter(function(x){ return x !== m; });
+        }
+    });
+
+    // Street light flicker
+    if (_tick3 % 180 === 0) {
+        airScene3.children.forEach(function(c) {
+            if (c.userData && c.userData.isLamp) c.material.emissiveIntensity = 0.2 + Math.random() * 0.2;
+        });
+    }
+
+    // ── Position and scale label sprites in scene coordinates ──
+    // Labels are NOT children of the vehicle group (so they don't rotate).
+    // We update their world position to follow the vehicle each frame.
+    airVehicleMeshes3.forEach(function(m) {
+        if (m.userData.labelSprite) {
+            var spr = m.userData.labelSprite;
+            // Only add to scene once
+            if (!spr.parent) airScene3.add(spr);
+            // Position above the vehicle in world coords
+            spr.position.set(m.position.x, m.position.y + (m.userData.labelHeight || 6), m.position.z);
+            // Scale based on camera distance for consistent readability
+            var dist = airCamP.position.distanceTo(m.position);
+            var w = Math.max(30, Math.min(80, dist * 0.22));
+            spr.scale.set(w, w * 0.25, 1);
+        }
+    });
+
+    var cw = _air3dCanvas.clientWidth, ch = _air3dCanvas.clientHeight;
+    renderer.setSize(cw, ch, false);
+    var cam = airCurrentView === 'side' ? airCamS : airCamP;
+    if (cam.isPerspectiveCamera) { cam.aspect = cw/ch; cam.updateProjectionMatrix(); }
+    renderer.render(airScene3, cam);
+}
+
+// ── 3D view: pan + proportional zoom (camera angle is FIXED) ──────────
+// The camera is locked to a near-top-down angle aligned with the highway
+// bearing. This keeps the 3D road, pins, and map highway aligned at all
+// times because the projection never changes.
+// Drag = pan the map (midLat/midLon update → norm() repositions all 3D objects)
+// Zoom = adjust airRadius3 + XZ_SCALE together → proportional scaling
+var _isDrag3 = false, _prevM3 = {x:0,y:0};
+
+// Camera angle is fixed: airTheta3 aligned to highway bearing, airPhi3 = gentle tilt
+var _camPhiFixed = 0.35;   // ~20° tilt from top-down — enough 3D depth, stable alignment
+
+function _updateCamera3D() {
+    // Camera looks along the highway direction from above
+    var brg = (_airHwBearingDeg || 90) * Math.PI / 180;
+    // Camera positioned above and along the highway, looking down the road
+    var camDist = airRadius3 * 0.4;
+    var camHeight = airRadius3 * Math.sin(_camPhiFixed);
+    var camHoriz = airRadius3 * Math.cos(_camPhiFixed);
+    // Position camera along the highway bearing direction
+    airCamP.position.x = -camHoriz * Math.sin(brg - Math.PI/2);
+    airCamP.position.y = Math.max(15, camHeight);
+    airCamP.position.z = -camHoriz * Math.cos(brg - Math.PI/2);
+    airCamP.lookAt(0, 0, 0);
+}
+
+_air3dCanvas.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    _isDrag3 = true;
+    _prevM3 = {x:e.clientX, y:e.clientY};
+    _air3dCanvas.style.cursor = 'grabbing';
+}, { passive: false });
+window.addEventListener('mouseup', function() {
+    if (_isDrag3) { _isDrag3 = false; _air3dCanvas.style.cursor = 'grab'; }
+});
+window.addEventListener('mousemove', function(e) {
+    if (!_isDrag3) return;
+    e.preventDefault();
+    // ── Drag = PAN the map (not orbit) ──
+    // Convert screen pixel delta to GPS degrees and update center.
+    // All 3D objects use norm() with midLat/midLon, so they follow.
+    var dx = e.clientX - _prevM3.x;
+    var dy = e.clientY - _prevM3.y;
+    _prevM3 = {x:e.clientX, y:e.clientY};
+    if (!_map) return;
+    var zoom = _map.getZoom();
+    var metersPerPixel = 156543.03392 * Math.cos(_airMapCtrLat * Math.PI / 180) / Math.pow(2, zoom);
+    var dLat = -(dy * metersPerPixel) / 111000;
+    var dLon = -(dx * metersPerPixel) / (111000 * Math.cos(_airMapCtrLat * Math.PI / 180));
+    _airMapCtrLat += dLat; _airMapCtrLon += dLon;
+    midLat = _airMapCtrLat; midLon = _airMapCtrLon;
+    _map.setView([_airMapCtrLat, _airMapCtrLon], zoom, { animate: false });
+    // Reposition pins to follow the pan
+    _update3DZoneMarkers();
+    // Invalidate bridge bounds cache (positions changed via norm())
+    _3DBridgeBoundsCache = null;
+});
+_air3dCanvas.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    // ── Zoom = proportional scaling of 3D scene + map ──
+    var oldR = airRadius3;
+    airRadius3 = Math.max(40, Math.min(700, airRadius3 + e.deltaY * 0.3));
+    if (airRadius3 === oldR) return;
+    // Adjust XZ_SCALE proportionally so the 3D road geographic extent
+    // matches the map's visible area at the new zoom level
+    _syncZoomAndScale3D();
+}, { passive: false });
+// Touch support
+var _touchPrev = null, _touchDist = null;
+_air3dCanvas.addEventListener('touchstart', function(e) {
+    if (e.touches.length === 1) {
+        _touchPrev = {x: e.touches[0].clientX, y: e.touches[0].clientY};
+        _isDrag3 = true;
+    } else if (e.touches.length === 2) {
+        _isDrag3 = false;
+        var dx = e.touches[0].clientX - e.touches[1].clientX;
+        var dy = e.touches[0].clientY - e.touches[1].clientY;
+        _touchDist = Math.sqrt(dx*dx + dy*dy);
+    }
+    e.preventDefault();
+}, { passive: false });
+_air3dCanvas.addEventListener('touchmove', function(e) {
+    if (e.touches.length === 1 && _isDrag3) {
+        var dx = e.touches[0].clientX - _touchPrev.x;
+        var dy = e.touches[0].clientY - _touchPrev.y;
+        _touchPrev = {x: e.touches[0].clientX, y: e.touches[0].clientY};
+        if (!_map) return;
+        var zoom = _map.getZoom();
+        var mpp = 156543.03392 * Math.cos(_airMapCtrLat * Math.PI / 180) / Math.pow(2, zoom);
+        _airMapCtrLat += -(dy * mpp) / 111000;
+        _airMapCtrLon += -(dx * mpp) / (111000 * Math.cos(_airMapCtrLat * Math.PI / 180));
+        midLat = _airMapCtrLat; midLon = _airMapCtrLon;
+        _map.setView([_airMapCtrLat, _airMapCtrLon], zoom, { animate: false });
+        _update3DZoneMarkers();
+        _3DBridgeBoundsCache = null;
+    } else if (e.touches.length === 2 && _touchDist) {
+        var dx = e.touches[0].clientX - e.touches[1].clientX;
+        var dy = e.touches[0].clientY - e.touches[1].clientY;
+        var d = Math.sqrt(dx*dx + dy*dy);
+        airRadius3 = Math.max(40, Math.min(700, airRadius3 + (_touchDist - d) * 0.5));
+        _touchDist = d;
+        _syncZoomAndScale3D();
+    }
+    e.preventDefault();
+}, { passive: false });
+_air3dCanvas.addEventListener('touchend', function() {
+    _isDrag3 = false; _touchPrev = null; _touchDist = null;
+});
+_air3dCanvas.style.cursor = 'grab';
+
+// ── Unified zoom+scale sync: adjusts XZ_SCALE + map zoom together ──
+function _syncZoomAndScale3D() {
+    if (!_map || !_airBridgePathCoords || _airBridgePathCoords.length < 2) {
+        _syncMapZoom3D();
+        return;
+    }
+    // Compute the map zoom from airRadius3
+    var r = (airRadius3 - 40) / (700 - 40);
+    var baseZoom = 18 - r * 9;
+    var scaleAdj = Math.log(XZ_SCALE / 800) / Math.LN2 * 0.6;
+    var z = Math.round(baseZoom - scaleAdj);
+    z = Math.max(8, Math.min(18, z));
+    if (z !== _map.getZoom()) {
+        _map.setZoom(z, { animate: false });
+    }
+    // Recompute XZ_SCALE so the 3D road matches the map's visible area
+    var ctrLat = midLat, ctrLon = midLon;
+    var maxAbs = 0;
+    for (var i = 0; i < _airBridgePathCoords.length; i++) {
+        var dLat = Math.abs(_airBridgePathCoords[i].lat - ctrLat);
+        var dLon = Math.abs(_airBridgePathCoords[i].lon - ctrLon);
+        if (dLat > maxAbs) maxAbs = dLat;
+        if (dLon > maxAbs) maxAbs = dLon;
+    }
+    if (maxAbs > 0.0001) {
+        XZ_SCALE = 900 / maxAbs;
+    }
+    // Rebuild road + reposition pins + invalidate bounds
+    _airBuildRoad3D();
+    _3DBridgeBoundsCache = null;
+    _update3DZoneMarkers();
+    // Reposition vehicles
+    airVehicleMeshes3.forEach(function(m) {
+        var vd = vehicleData.get(m.userData.vid);
+        if (vd) {
+            var p = norm(vd.lat, vd.lon);
+            var bp = _airGetBridgeBounds();
+            m.position.x = Math.max(bp.minX, Math.min(bp.maxX, p.x));
+            m.position.z = Math.max(bp.minZ, Math.min(bp.maxZ, p.z));
+        }
+    });
+    // Update road rotation to match bearing
+    airRoadGroup3.rotation.y = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
+    _updateLocationBadge();
+}
+
+
+// ── View toggle ───────────────────────────────────────────────────────
+function setViewport(view) {
+    airCurrentView = view;
+    var is2D = (view === 'top');
+    _air3dCanvas.style.display = is2D ? 'none' : '';
+    _air3dCanvas.style.opacity = is2D ? '1.0' : '0.72';
+    _air3dCanvas.style.pointerEvents = is2D ? 'none' : 'auto';
+    _oc.style.display = is2D ? '' : 'none';
+
+    if (!is2D && !_3dAnimRunning) {
+        _3dAnimRunning = true; _syncAirMeshes(); _animateAir3D();
+    } else if (is2D) {
+        _3dAnimRunning = false;
+        renderer.clear();
+    }
+
+    var mapEl = document.getElementById('airMiniMap');
+    mapEl.style.visibility = 'visible';
+    mapEl.style.opacity = is2D ? '1.0' : '0.55';
+
+    if (_map) {
+        if (is2D) {
+            _map.dragging.enable();
+            _map.getContainer().style.pointerEvents = 'auto';
+        } else {
+            _map.dragging.disable();
+            _map.getContainer().style.pointerEvents = 'none';
+            // ── Center map on highway midpoint + sync zoom ──
+            _centerMapOnHighway();
+            _syncMapZoom3D();
+        }
+    }
+
+    var locBadge = document.getElementById('airLocationBadge');
+    if (locBadge) {
+        locBadge.style.display = is2D ? 'none' : '';
+        _updateLocationBadge();
+    }
+
+    ['labelA','labelB','labelC'].forEach(function(id) {
+        document.getElementById(id).style.display = view === 'split' ? '' : 'none';
+    });
+    _bridgeDirty = true;
+    if (_map) _map.invalidateSize();
+    console.log('[T3D] Viewport set: ' + view + ' bridge dirty');
+}
+
+// ── Center the Leaflet map on the selected zone/server GPS ──
+// The 3D scene origin (0,0,0) represents the zone/server coordinate.
+// The bridge path extends in both directions from this center point.
+// XZ_SCALE is adjusted so the full bridge path fits within the 3D road
+// (±900 units), making the 3D animation align with the map highway.
+function _centerMapOnHighway() {
+    if (!_map) return;
+
+    // ── 1. Find the selected zone/server GPS as the center ──
+    var ctrLat = _airMapCtrLat, ctrLon = _airMapCtrLon;
+    if (selectedZoneId && AIR_ZONES && AIR_ZONES.length) {
+        var z = AIR_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+        if (z && z.lat && z.lon) { ctrLat = z.lat; ctrLon = z.lon; }
+    }
+
+    // ── 2. Compute bridge path span from center and set XZ_SCALE ──
+    // XZ_SCALE maps GPS degrees → 3D units. We want the furthest bridge
+    // path point from center to map to ±900 (the 3D road half-length).
+    if (_airBridgePathCoords && _airBridgePathCoords.length >= 2) {
+        var maxAbs = 0;
+        for (var i = 0; i < _airBridgePathCoords.length; i++) {
+            var dLat = Math.abs(_airBridgePathCoords[i].lat - ctrLat);
+            var dLon = Math.abs(_airBridgePathCoords[i].lon - ctrLon);
+            if (dLat > maxAbs) maxAbs = dLat;
+            if (dLon > maxAbs) maxAbs = dLon;
+        }
+        if (maxAbs > 0.0001) {
+            XZ_SCALE = 900 / maxAbs;
+        }
+    }
+
+    // ── 3. Update all coordinate globals ──
+    _airMapCtrLat = ctrLat; _airMapCtrLon = ctrLon;
+    midLat = ctrLat; midLon = ctrLon;
+
+    _map.setView([ctrLat, ctrLon], _map.getZoom(), { animate: false });
+    console.log('[T3D] Aligned: center=(' + ctrLat.toFixed(4) + ',' + ctrLon.toFixed(4) +
+                ') XZ_SCALE=' + XZ_SCALE.toFixed(1) + ' bridgePts=' + (_airBridgePathCoords||[]).length);
+
+    // ── 4. Rebuild road + draw highway polyline + update pins ──
+    if (typeof _airBuildRoad3D === 'function') _airBuildRoad3D();
+    if (typeof _drawHwyPolyline === 'function') _drawHwyPolyline();
+    _3DBridgeBoundsCache = null;
+    _update3DZoneMarkers();
+    // Update road rotation to match bearing
+    airRoadGroup3.rotation.y = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
+
+    // ── 5. Sync map zoom to current 3D camera distance ──
+    _syncMapZoom3D();
+}
+
+// ── 3D zone marker pins ──
+// Places a visible marker (pole + sphere) at each bridge path coordinate
+// projected onto the 3D road, showing where each highway zone is located.
+var _zoneMarkers3D = [];
+function _update3DZoneMarkers() {
+    // Remove old markers from airScene3 (NOT airRoadGroup3 — pins are in world coords)
+    _zoneMarkers3D.forEach(function(m) { airScene3.remove(m); });
+    _zoneMarkers3D = [];
+    if (!_airBridgePathCoords || _airBridgePathCoords.length < 2) return;
+
+    // Center pin: green pole+sphere at origin (zone/server GPS = 3D origin)
+    var ctrPole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.5, 0.5, 12, 8),
+        new THREE.MeshPhongMaterial({ color: 0x00ff88, emissive: 0x004422, emissiveIntensity: 0.4 }));
+    ctrPole.position.set(0, 6, 0);
+    airScene3.add(ctrPole); _zoneMarkers3D.push(ctrPole);
+    var ctrSph = new THREE.Mesh(
+        new THREE.SphereGeometry(2, 10, 8),
+        new THREE.MeshPhongMaterial({ color: 0x00ff88, emissive: 0x008844, emissiveIntensity: 0.5 }));
+    ctrSph.position.set(0, 13, 0);
+    airScene3.add(ctrSph); _zoneMarkers3D.push(ctrSph);
+
+    // Bridge path pins at world coords via norm() — added to airScene3
+    // so they stay at correct GPS positions regardless of road rotation
+    for (var i = 0; i < _airBridgePathCoords.length; i++) {
+        var bp = _airBridgePathCoords[i];
+        var p = norm(bp.lat, bp.lon);
+        if (i > 0 && i < _airBridgePathCoords.length - 1 && i % 5 !== 0) continue;
+        var pole = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.3, 0.3, 8, 6),
+            new THREE.MeshPhongMaterial({ color: 0xffd700 }));
+        pole.position.set(p.x, 4, p.z);
+        airScene3.add(pole); _zoneMarkers3D.push(pole);
+        var sph = new THREE.Mesh(
+            new THREE.SphereGeometry(1.2, 8, 6),
+            new THREE.MeshPhongMaterial({ color: 0xffd700, emissive: 0x442200, emissiveIntensity: 0.3 }));
+        sph.position.set(p.x, 9, p.z);
+        airScene3.add(sph); _zoneMarkers3D.push(sph);
+    }
+
+    // Endpoint pins: red=start, green=end of highway bridge
+    var p0 = norm(_airBridgePathCoords[0].lat, _airBridgePathCoords[0].lon);
+    var pN = norm(_airBridgePathCoords[_airBridgePathCoords.length-1].lat, _airBridgePathCoords[_airBridgePathCoords.length-1].lon);
+    [{p: p0, c: 0xff4444}, {p: pN, c: 0x44ff44}].forEach(function(ep) {
+        var eMesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.6, 0.6, 10, 8),
+            new THREE.MeshPhongMaterial({ color: ep.c, emissive: ep.c, emissiveIntensity: 0.2 }));
+        eMesh.position.set(ep.p.x, 5, ep.p.z);
+        airScene3.add(eMesh); _zoneMarkers3D.push(eMesh);
+    });
+    console.log('[T3D] Zone markers: ' + _zoneMarkers3D.length + ' placed (center+path+endpoints)');
+}
+
+// ── Sync Leaflet map zoom with 3D camera distance (airRadius3) ──
+// Maps airRadius3 range (40-700) to Leaflet zoom (18-11) so zooming
+// in/out the 3D scene also zooms the map proportionally.
+// _syncMapZoom3D is now handled by _syncZoomAndScale3D (unified zoom+scale)
+function _syncMapZoom3D() { _syncZoomAndScale3D(); }
+
+function _updateLocationBadge() {
+    var hwyEl = document.getElementById('airLocHwy');
+    var zoneEl = document.getElementById('airLocZone');
+    var coordsEl = document.getElementById('airLocCoords');
+    if (!hwyEl || !zoneEl || !coordsEl) return;
+    var hwSelect = document.getElementById('t3dHighway');
+    var hwName = '-';
+    if (hwSelect && hwSelect.selectedIndex >= 0) {
+        hwName = hwSelect.options[hwSelect.selectedIndex].text.trim();
+    }
+    if (HW) hwName = HW;
+    var zoneName = '-';
+    if (selectedZoneId && AIR_ZONES && AIR_ZONES.length) {
+        var z = AIR_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; });
+        if (z) zoneName = z.zoneName || z.zoneId || '-';
+    }
+    hwyEl.textContent = hwName;
+    zoneEl.textContent = zoneName !== '-' ? ('Zone: ' + zoneName) : '';
+    coordsEl.textContent = _airMapCtrLat.toFixed(4) + 'N, ' + _airMapCtrLon.toFixed(4) + 'W';
+}
+
+// View buttons
+document.querySelectorAll('#viewToggle button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        document.querySelectorAll('#viewToggle button').forEach(function(b) {
+            b.classList.remove('active','btn-primary'); b.classList.add('btn-outline-primary');
+        });
+        btn.classList.add('active','btn-primary'); btn.classList.remove('btn-outline-primary');
+        setViewport(btn.dataset.view);
+    });
+});
+
+// ── Zone / Server change handlers ─────────────────────────────────────
+// ── Highway dropdown change — AJAX refresh (no page reload) ──────────
+async function t3dHighwayChanged(newHighwayId) {
+    if (!newHighwayId || newHighwayId === HW) return;
+    // When sim is ON, do NOT change anything — the sim controls the highway.
+    // Changing the dropdown would clear zone/server and break the 3s sim poll.
+    if (simRunning) {
+        console.log('[T3D] t3dHighwayChanged: BLOCKED — sim is running (HW stays ' + (_simHwId || HW) + ')');
+        var hwSelEl = document.getElementById('hwSel');
+        if (hwSelEl) hwSelEl.value = _simHwId || HW;
+        return;
+    }
+    HW = newHighwayId;
+    localStorage.setItem('air_selectedHw', HW);
+    selectedZoneId = ''; selectedServerId = '';
+    localStorage.removeItem('air_selectedZone');
+    localStorage.removeItem('air_selectedServer');
+    var zsel = document.getElementById('airZoneSel');
+    var ssel = document.getElementById('airServerSel');
+    if (zsel) zsel.value = '';
+    if (ssel) { ssel.value = ''; ssel.querySelectorAll('option').forEach(function(o) { o.style.display = ''; }); }
+    // Fetch zones + servers — populate dropdowns ONLY. No map pan, no bridge redraw.
+    // The animation view only updates when the Refresh button is clicked.
+    try {
+        var r = await fetch('/AirScene/GetAnimationData?highwayId=' + encodeURIComponent(newHighwayId) + '&mode=ground');
+        if (!r.ok) return;
+        var data = await r.json();
+        if (data.highwayCoords && data.highwayCoords.length > 0) {
+            AIR_ZONES = data.highwayCoords.map(function(z) {
+                return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon, highwayId: z.highwayId, radius: z.radius };
+            });
+            if (zsel) {
+                zsel.innerHTML = '<option value="">(Select Zone)</option>';
+                AIR_ZONES.forEach(function(z) {
+                    var opt = document.createElement('option');
+                    opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
+                    opt.dataset.hw = z.highwayId || HW;
+                    opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                    opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                    zsel.appendChild(opt);
+                });
+            }
+            // Do NOT update _hwyIsEW, _airBridgePathCoords, _serverBounds,
+            // or _airHwBearingDeg here — those are view variables that affect
+            // bridge rendering. They are applied only when the Refresh
+            // button is clicked (refreshAirAnimation STEP 4).
+        } else {
+            AIR_ZONES = [];
+            if (zsel) zsel.innerHTML = '<option value="">(Select Zone)</option>';
+            if (ssel) ssel.innerHTML = '<option value="">(Select Server)</option>';
+            console.warn('[T3D] Highway ' + newHighwayId + ' has no zones');
+        }
+        if (data.servers && ssel) {
+            ssel.innerHTML = '<option value="">(Select Server)</option>';
+            data.servers.forEach(function(s) {
+                var opt = document.createElement('option');
+                opt.value = s.serverId;
+                var zn = '';
+                if (s.zoneId) {
+                    var zMatch = AIR_ZONES.find(function(zz){ return zz.zoneId === s.zoneId; });
+                    zn = zMatch ? (zMatch.zoneName || s.zoneId) : s.zoneId;
+                }
+                opt.textContent = (s.serverName || s.serverId) + (zn ? ' (' + zn + ')' : '');
+                opt.dataset.zone = s.zoneId || '';
+                ssel.appendChild(opt);
+            });
+        }
+        console.log('[T3D] t3dHighwayChanged: dropdowns updated — click Refresh to apply');
+    } catch(e) { console.warn('[T3D] Highway fetch failed:', e); }
+}
+
+async function t3dZoneChanged() {
+    selectedZoneId = document.getElementById('airZoneSel').value;
+    localStorage.setItem('air_selectedZone', selectedZoneId);
+    selectedServerId = '';
+    localStorage.removeItem('air_selectedServer');
+    document.getElementById('airServerSel').value = '';
+    var srvSel = document.getElementById('airServerSel');
+    srvSel.querySelectorAll('option').forEach(function(o) {
+        o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+    });
+    // Do NOT pan map, redraw bridge, or load animation.
+    // The animation view only updates when the Refresh button is clicked.
+    console.log('[T3D] t3dZoneChanged: zone=' + selectedZoneId + ' — click Refresh to apply');
+}
+
+async function t3dServerChanged() {
+    selectedServerId = document.getElementById('airServerSel').value;
+    localStorage.setItem('air_selectedServer', selectedServerId);
+    var opt = document.querySelector('#airServerSel option[value="' + selectedServerId + '"]');
+    if (opt && opt.dataset.zone) {
+        document.getElementById('airZoneSel').value = opt.dataset.zone;
+        selectedZoneId = opt.dataset.zone;
+        localStorage.setItem('air_selectedZone', selectedZoneId);
+        var srvSel = document.getElementById('airServerSel');
+        if (srvSel) {
+            srvSel.querySelectorAll('option').forEach(function(o) {
+                o.style.display = (!selectedZoneId || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+            });
+        }
+    }
+    // Do NOT pan map, redraw bridge, or call refreshAirScene.
+    // The animation view only updates when the Refresh button is clicked.
+    console.log('[T3D] t3dServerChanged: srv=' + selectedServerId + ' — click Refresh to apply');
+}
+
+
+// ── Vehicle data management ───────────────────────────────────────────
+function _clearVehicles() { vehicleData.clear(); }
+
+// ── Zone GPS lookup helper ────────────────────────────────────────
+// Returns a point snapped onto the highway corridor of the given zone:
+//   EW highways: tight lat spread (±0.002°/220m), wide lon spread (±0.015°/1.5km)
+//   NS highways: wide lat spread (±0.015°/1.5km), tight lon spread (±0.002°/220m)
+function _snapToZone(zoneId) {
+    var z = AIR_ZONES.find(function(zz) { return zz.zoneId === zoneId; });
+    if (!z || !z.lat || !z.lon) return null;
+    var hwId = z.highwayId || HW;
+    // Always use the server-provided bearing — _airHwBearing() now returns
+    // _airHwBearingDeg when it has been set from GetAnimationData response.
+    var bearing = _airHwBearing(hwId);
+    var bearRad = bearing * Math.PI / 180;
+    var cosLat = Math.cos(z.lat * Math.PI / 180);
+
+    // Scatter along the real road bearing vector
+    var along = (Math.random() - 0.5) * 0.020 * 2;   // ±1km along road
+    var cross = (Math.random() - 0.5) * 0.00015 * 2;  // ±17m cross-road (1 lane)
+
+    var dLatAlong = Math.cos(bearRad) * along;
+    var dLonAlong = Math.sin(bearRad) * along / cosLat;
+    var perpRad = bearRad + Math.PI / 2;
+    var dLatCross = Math.cos(perpRad) * cross;
+    var dLonCross = Math.sin(perpRad) * cross / cosLat;
+
+    return {
+        lat: z.lat + dLatAlong + dLatCross,
+        lon: z.lon + dLonAlong + dLonCross,
+        zone: z
+    };
+}
+
+// ── Distance in degrees between two GPS points ────────────────────
+function _gpsDist(lat1, lon1, lat2, lon2) {
+    return Math.sqrt((lat1 - lat2) * (lat1 - lat2) + (lon1 - lon2) * (lon1 - lon2));
+}
+
+// ── Selected bounds: geographic limits for bridge + vehicle validation ──
+// Returns {minLat, maxLat, minLon, maxLon, tight} or null if unconstrained.
+//   tight = true when a specific zone/server is selected (stricter vehicle check)
+function _getSelectedBounds() {
+    if (!AIR_ZONES || AIR_ZONES.length === 0) return null;
+
+    // If a specific zone is selected, compute bounds around just that zone
+    if (selectedZoneId) {
+        var z = AIR_ZONES.find(function(zz) { return zz.zoneId === selectedZoneId; });
+        if (z && z.lat && z.lon) {
+            // Buffer: ±0.06° (~6.6km) along the road, ±0.008° (~880m) across
+            var alongAxis = 0.06;
+            var crossAxis = 0.008;
+            var isNS = !_isEWHighway(z.highwayId);
+            if (isNS) {
+                return {
+                    minLat: z.lat - alongAxis, maxLat: z.lat + alongAxis,
+                    minLon: z.lon - crossAxis, maxLon: z.lon + crossAxis,
+                    tight: true, centerLat: z.lat, centerLon: z.lon
+                };
+            } else {
+                return {
+                    minLat: z.lat - crossAxis, maxLat: z.lat + crossAxis,
+                    minLon: z.lon - alongAxis, maxLon: z.lon + alongAxis,
+                    tight: true, centerLat: z.lat, centerLon: z.lon
+                };
+            }
+        }
+    }
+
+    // No specific zone — compute bounds from ALL zones on the highway
+    var lats = AIR_ZONES.filter(function(z) { return z.lat && z.lon; }).map(function(z) { return z.lat; });
+    var lons = AIR_ZONES.filter(function(z) { return z.lat && z.lon; }).map(function(z) { return z.lon; });
+    if (!lats.length) return null;
+
+    var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+    var minLon = Math.min.apply(null, lons), maxLon = Math.max.apply(null, lons);
+
+    // Expand by 15% padding so vehicles near the edge aren't clipped
+    var padLat = (maxLat - minLat) * 0.15 || 0.01;
+    var padLon = (maxLon - minLon) * 0.15 || 0.01;
+    return {
+        minLat: minLat - padLat, maxLat: maxLat + padLat,
+        minLon: minLon - padLon, maxLon: maxLon + padLon,
+        tight: false, centerLat: (minLat + maxLat) / 2, centerLon: (minLon + maxLon) / 2
+    };
+}
+
+// ── Check if a GPS coordinate is within the selected highway/zone bounds ──
+// Returns true if the point is valid, false if it should be rejected/snapped.
+
+// ── Highway-level bounds (wider than zone bounds) ─────────────────────
+// Used for clamping fallback vehicles that come from other zones on the
+// same highway. Prevents cramming all vehicles into the selected zone.
+function _getHighwayBounds() {
+    if (!AIR_ZONES || AIR_ZONES.length === 0) return null;
+    var lats = AIR_ZONES.filter(function(z) { return z.lat && z.lon; }).map(function(z) { return z.lat; });
+    var lons = AIR_ZONES.filter(function(z) { return z.lat && z.lon; }).map(function(z) { return z.lon; });
+    if (lats.length === 0) return null;
+    var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+    var minLon = Math.min.apply(null, lons), maxLon = Math.max.apply(null, lons);
+    // Add buffer: ±0.03° (~3.3km) beyond the outermost zones
+    return {
+        minLat: minLat - 0.03, maxLat: maxLat + 0.03,
+        minLon: minLon - 0.03, maxLon: maxLon + 0.03
+    };
+}
+
+function _isWithinHighwayBounds(lat, lon, hb) {
+    if (!hb) return true;
+    return lat >= hb.minLat && lat <= hb.maxLat && lon >= hb.minLon && lon <= hb.maxLon;
+}
+
+function _isWithinBounds(lat, lon) {
+    var b = _getSelectedBounds();
+    if (!b) return true;  // No zones loaded — accept everything
+    return lat >= b.minLat && lat <= b.maxLat && lon >= b.minLon && lon <= b.maxLon;
+}
+
+// ── Snap a coordinate into the selected bounds if it's outside ──
+function _clampToBounds(lat, lon) {
+    var b = _getSelectedBounds();
+    if (!b) return { lat: lat, lon: lon };
+    return {
+        lat: Math.max(b.minLat, Math.min(b.maxLat, lat)),
+        lon: Math.max(b.minLon, Math.min(b.maxLon, lon))
+    };
+}
+
+function loadEvents(events) {
+    if (!events || !events.length) { console.log('[T3D] loadEvents: none'); return; }
+    console.log('[T3D] loadEvents:', events.length, 'simRunning=' + simRunning);
+    var now = Date.now();
+    events.forEach(function(ev) {
+        // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
+        var vid = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '';
+        if (!vid) return;
+        // ── Sim-mode filter: reject non-simulation vehicles ──────────────
+        // When simRunning is true, only accept vehicles with IDs starting
+        // with "SIM-". This prevents historical/synthetic/test vehicles
+        // from polluting the sim animation scene.
+        if (simRunning && vid.indexOf('SIM-') !== 0) {
+            console.log('[T3D] loadEvents: REJECTED non-sim vehicle ' + vid + ' (sim is ON)');
+            return;
+        }
+        // ── Vehicle acceptance filter ──────────────────────────────────────
+        // The server (GetAnimationData) already filters by zone/server with
+        // a highway-level fallback when the zone has 0 events. Do NOT re-filter
+        // by zone on the client side — that rejects the fallback vehicles and
+        // clears the animation. Only filter by highway (never changes within a scene).
+        var evHwCheck = (ev.highway_id || ev.highwayId || ev.HighwayId || '').toUpperCase();
+        if (evHwCheck && HW && evHwCheck !== HW.toUpperCase() && !simRunning) return;
+        var lat = parseFloat(ev.latitude  || ev.Latitude  || 0);
+        var lon = parseFloat(ev.longitude || ev.Longitude || 0);
+        var spd  = parseFloat(ev.speed_mph || ev.speedMph || ev.SpeedMph || 0);
+        var make = ev.vehicle_make || ev.vehicleMake || ev.VehicleMake || ev.make ||
+                   (ev.classification && ev.classification.make) || '';
+        var vc   = classifyVehicle(ev);
+
+        // Resolve the zone this vehicle belongs to
+        var evZoneId = ev.zone_id || ev.zoneId || ev.ZoneId || '';
+        var zone = AIR_ZONES.find(function(zz) { return zz.zoneId === evZoneId; });
+
+        // Validate GPS — check against selected highway/zone/server bounds
+        var needsSnap = false;
+        var selB = _getSelectedBounds();
+        if (!lat || !lon || isNaN(lat) || isNaN(lon) || (lat === 0 && lon === 0)) {
+            needsSnap = true;
+        } else if (zone && zone.lat && zone.lon) {
+            // If the GPS is more than 0.08° (~8km) from zone centre it's bogus — snap it
+            var dist = _gpsDist(lat, lon, zone.lat, zone.lon);
+            if (dist > 0.08) needsSnap = true;
+        } else if (selB && !_isWithinBounds(lat, lon)) {
+            // Outside the selected highway bounds — snap it
+            needsSnap = true;
+        }
+
+        // If a specific zone is selected (tight bounds), only snap if the vehicle
+        // is truly far away (>0.15°/~16km). Fallback vehicles from other zones
+        // on the same highway should keep their GPS and animate naturally.
+        if (!needsSnap && selB && selB.tight) {
+            var zoneDist = _gpsDist(lat, lon, selB.centerLat, selB.centerLon);
+            if (zoneDist > 0.15) needsSnap = true;
+        }
+
+        if (needsSnap) {
+            // Try snapping to the bridge path first
+            var bpSnap = _nearestOnBridgePath(lat, lon);
+            if (bpSnap && bpSnap.perpDist > _bridgeRoadWidth) {
+                lat = bpSnap.clampedLat;
+                lon = bpSnap.clampedLon;
+            } else if (zone) {
+                var snapped = _snapToZone(evZoneId);
+                if (snapped) {
+                    lat = snapped.lat; lon = snapped.lon;
+                }
+            } else if (selB) {
+                // Snap to the center of the selected bounds with highway-aligned jitter
+                var snapped2 = _snapToZone(selectedZoneId || (AIR_ZONES[0] && AIR_ZONES[0].zoneId) || '');
+                if (snapped2) { lat = snapped2.lat; lon = snapped2.lon; }
+                else {
+                    var clamped = _clampToBounds(_airMapCtrLat, _airMapCtrLon);
+                    lat = clamped.lat + (Math.random() - 0.5) * 0.004;
+                    lon = clamped.lon + (Math.random() - 0.5) * 0.010;
+                }
+            } else {
+                // No zones loaded — use current map centre with tiny jitter
+                lat = _airMapCtrLat + (Math.random() - 0.5) * 0.008;
+                lon = _airMapCtrLon + (Math.random() - 0.5) * 0.020;
+            }
+        }
+
+        // ── Respect sim GPS coordinates when valid ──────────────────────────
+        // The InputPayloadService generates GPS from zone coordinates with
+        // proper lane offsets. Only project onto the bridge path when the
+        // GPS is clearly bogus (0,0 or already flagged for snap). Otherwise
+        // keep the original coordinates — the sim knows where the vehicle is.
+        if (needsSnap && _airBridgePathCoords.length >= 2) {
+            var bpClamp = _nearestOnBridgePath(lat, lon);
+            if (bpClamp) {
+                var laneSide = (Math.random() > 0.5) ? _bridgeRoadWidth : -_bridgeRoadWidth;
+                var perpRad  = bpClamp.bearing * Math.PI / 180 + Math.PI / 2;
+                var cosLat2  = Math.cos(bpClamp.lat * Math.PI / 180);
+                lat = bpClamp.lat + Math.cos(perpRad) * laneSide;
+                lon = bpClamp.lon + Math.sin(perpRad) * laneSide / cosLat2;
+            }
+        }
+        // If GPS was valid (not snapped), keep original lat/lon from sim.
+        // The bridge path projection was too aggressive — it moved vehicles
+        // to different coordinates, ignoring the sim's lane placement.
+
+        // Final safety: only clamp if vehicle is outside the HIGHWAY bounds
+        // (not the tight zone bounds — fallback vehicles from other zones
+        //  should be visible across the full highway, not crammed into one zone)
+        if (selB && selB.tight) {
+            // For tight (zone-selected) mode, use wider highway-level bounds for clamping
+            var hwBounds = _getHighwayBounds();
+            if (hwBounds && !_isWithinHighwayBounds(lat, lon, hwBounds)) {
+                lat = Math.max(hwBounds.minLat, Math.min(hwBounds.maxLat, lat));
+                lon = Math.max(hwBounds.minLon, Math.min(hwBounds.maxLon, lon));
+            }
+        } else if (selB && !_isWithinBounds(lat, lon)) {
+            var clamped2 = _clampToBounds(lat, lon);
+            lat = clamped2.lat; lon = clamped2.lon;
+        }
+
+        var dir = parseFloat(ev.direction || ev.Direction || ev.heading || ev.Heading || -1);
+        if (isNaN(dir) || dir < 0) dir = -1;
+        var hwId = (ev.highway_id || ev.highwayId || ev.HighwayId || '').toUpperCase();
+        var isNSHwy = hwId.indexOf('I35') >= 0 || hwId.indexOf('I-35') >= 0 ||
+                      hwId.indexOf('I45') >= 0 || hwId.indexOf('I-45') >= 0 ||
+                      hwId.indexOf('I25') >= 0 || hwId.indexOf('I-25') >= 0;
+        // ── Trust the sim's direction ──────────────────────────────────────
+        // The InputPayloadService already generates direction aligned with the
+        // real highway bearing (highwayBearing or reverse). Do NOT reassign it
+        // based on _airHwBearingDeg — that value may not be updated from the server
+        // yet (default 90°), which would reject valid directions for N-S highways.
+        // Only assign a fallback if direction is truly missing (< 0 or NaN).
+        if (dir < 0) {
+            var _brg = _airHwBearingDeg;
+            var _brgRev = (_brg + 180) % 360;
+            dir = (Math.random() > 0.5) ? Math.round(_brg) : Math.round(_brgRev);
+        }
+        var existing = vehicleData.get(vid);
+        if (existing && !isNaN(existing.lat) && !isNaN(existing.lon)
+                     && existing.lat !== 0 && existing.lon !== 0
+                     && existing.zoneLat === (zone ? zone.lat : null)) {
+            // Vehicle already animated — preserve current GPS position,
+            // only update speed/metadata. Keep the original direction to
+            // prevent flipping — the sim now generates deterministic direction
+            // per vehicle ID, but keep this guard for safety.
+            existing.ev       = ev;
+            existing.vc       = vc;
+            existing.speedMph = spd;
+            existing.make     = make;
+            // Only update direction if the sim provides one AND it's
+            // different from the current — don't flip just because
+            // a new event arrived.
+            if (dir >= 0 && Math.abs(dir - (existing.direction || 0)) > 1) {
+                existing.direction = dir;
+            }
+            existing.isNSHwy  = isNSHwy;
+            existing.lastSeen = now;
+        } else {
+            // New vehicle or zone changed — set full initial state
+            vehicleData.set(vid, { ev: ev, vc: vc, lat: lat, lon: lon, speedMph: spd, make: make,
+                                   direction: dir,
+                                   isNSHwy: isNSHwy,
+                                   laneSide: (Math.random() > 0.5) ? 1 : -1,
+                                   zoneLat: zone ? zone.lat : null,
+                                   zoneLon: zone ? zone.lon : null,
+                                   lastSeen: now });
+        }
+    });
+    // Prune stale vehicles — 30s during sim (fast turnover), 120s idle
+    var pruneMs = simRunning ? 30000 : 120000;
+    vehicleData.forEach(function(vd, vid) {
+        if (now - vd.lastSeen > pruneMs) vehicleData.delete(vid);
+    });
+    _updateStatsBar();
+    
+    // Auto-pan: only during active simulation and only if the vehicle is
+    // more than 50% outside the visible bounds (avoid map drift on DB events)
+    if (simRunning && _map && _mapReady && events.length > 0) {
+        var lastEv = events[events.length - 1];
+        var lastLat = parseFloat(lastEv.latitude || lastEv.Latitude || 0);
+        var lastLon = parseFloat(lastEv.longitude || lastEv.Longitude || 0);
+        if (lastLat && lastLon) {
+            var bounds = _map.getBounds();
+            if (!bounds.contains([lastLat, lastLon])) {
+                // Only pan slightly — don't chase every vehicle aggressively
+                var curCtr = _map.getCenter();
+                var newLat = curCtr.lat + (lastLat - curCtr.lat) * 0.1;
+                var newLon = curCtr.lng + (lastLon - curCtr.lng) * 0.1;
+                _map.panTo([newLat, newLon], { animate: false });
+                _airMapCtrLat = newLat; _airMapCtrLon = newLon;
+            }
+        }
+    }
+}
+
+function _updateStatsBar() {
+    var el = document.getElementById('statGround');
+    if (el) el.textContent = vehicleData.size;
+    var hw = document.getElementById('statHighway');
+    if (hw) hw.textContent = HW || '–';
+}
+
+// ── DB scene refresh ──────────────────────────────────────────────────
+// ── Server-side animation data fetch ────────────────────────────────
+// Polls the controller's GetAnimationData endpoint for pre-validated
+// vehicle coordinates + highway zone coordinates.
+var _serverBounds = null;
+
+
+// ── Refresh Animation Button ───────────────────────────────────────────
+// Syncs T3D dropdowns to simulation context (if sim is running) and
+// loads the animation. Requires all 3 values (highway + zone + server).
+async function refreshAirAnimation() {
+    console.log('[T3D] refreshAirAnimation: called — checking simulation status');
+
+    // ── STEP 1: CHECK SIMULATION STATUS (DB is authoritative) ──
+    var simActive = false;
+    var dbStatusOk = false;
+    var simCtx = null;
+    try { simCtx = JSON.parse(localStorage.getItem('airways_air_sim_context') || 'null'); } catch(e) {}
+
+    try {
+        var sr = await fetch('/DataInputFormats/SimulationStatus');
+        if (sr.ok) {
+            var dbStatus = await sr.json();
+            dbStatusOk = true;
+            simActive = dbStatus.isRunning && !dbStatus.stale;
+            console.log('[T3D] refreshAirAnimation: DB sim status = running=' + simActive +
+                ' stale=' + dbStatus.stale + ' total=' + (dbStatus.totalPosted || 0));
+        }
+    } catch(e) { console.warn('[T3D] refreshAirAnimation: sim status check failed', e); }
+
+    // ── If DB says sim is OFF, clear ALL stale sim localStorage ──
+    // This prevents the "sim is on even after app stops" issue. The DB
+    // is the source of truth — if it says NOT running, we clear all
+    // client-side sim state and treat the session as non-sim.
+    if (dbStatusOk && !simActive) {
+        localStorage.removeItem('airways_air_sim_state');
+        localStorage.removeItem('airways_air_sim_active');
+        localStorage.removeItem('airways_air_sim_heartbeat');
+        // Keep airways_air_sim_context for dropdown restoration, but don't
+        // use it to trigger sim mode.
+        if (simRunning) {
+            console.log('[T3D] refreshAirAnimation: DB says sim OFF — clearing stale sim state');
+            simRunning = false; feedHeld = false;
+            var badge = document.getElementById('airSimFeedBadge');
+            if (badge) badge.style.display = 'none';
+        }
+    }
+
+    // ── STEP 2: IF SIM IS ON — sync to sim context ──
+    // Only use localStorage fallback if the DB status check FAILED
+    // (network error, server down). If the DB said sim is OFF, we
+    // respect that — no localStorage override.
+    var useLocalFallback = !dbStatusOk;
+    if (useLocalFallback) {
+        var localSimActive = localStorage.getItem('airways_air_sim_active') === 'true';
+        var simHeartbeat = parseInt(localStorage.getItem('airways_air_sim_heartbeat') || '0');
+        var heartbeatAge = Date.now() - simHeartbeat;
+        var heartbeatFresh = simHeartbeat > 0 && heartbeatAge < 120000;
+        if (localSimActive && heartbeatFresh && simCtx && simCtx.hwId) {
+            simActive = true;
+            console.log('[T3D] refreshAirAnimation: DB check failed — using localStorage fallback (sim ON)');
+        }
+    }
+    if (simActive && simCtx && simCtx.hwId) {
+        console.log('[T3D] refreshAirAnimation: SIM IS ON — syncing to sim context', simCtx);
+
+        // 2a. Clear current animation
+        _clearVehicles();
+        simRunning = true; feedHeld = true;
+        var badge = document.getElementById('airSimFeedBadge');
+        if (badge) { badge.style.display = ''; badge.textContent = '● LIVE'; }
+
+        // 2b. Set highway dropdown to sim's highway
+        HW = simCtx.hwId;
+        localStorage.setItem('air_selectedHw', HW);
+        var hwSel = document.getElementById('hwSel');
+        if (hwSel) hwSel.value = HW;
+        console.log('[T3D] refreshAirAnimation: set HW=' + HW);
+
+        // 2c. Fetch zones + servers for this highway
+        try {
+            var r = await fetch('/AirScene/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground');
+            if (r.ok) {
+                var d = await r.json();
+                if (d.highwayCoords && d.highwayCoords.length > 0) {
+                    AIR_ZONES = d.highwayCoords.map(function(z) {
+                        return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                                 highwayId: z.highwayId, radius: z.radius };
+                    });
+                    var zsel = document.getElementById('airZoneSel');
+                    if (zsel) {
+                        zsel.innerHTML = '<option value="">(Select Zone)</option>';
+                        AIR_ZONES.forEach(function(z) {
+                            var opt = document.createElement('option');
+                            opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
+                            opt.dataset.hw = z.highwayId || HW;
+                            opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                            opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                            zsel.appendChild(opt);
+                        });
+                    }
+                    var ssel = document.getElementById('airServerSel');
+                    if (ssel && d.servers) {
+                        ssel.innerHTML = '<option value="">(Select Server)</option>';
+                        d.servers.forEach(function(s) {
+                            var opt = document.createElement('option');
+                            opt.value = s.serverId;
+                            opt.textContent = s.serverName || s.serverId;
+                            opt.dataset.zone = s.zoneId || '';
+                            ssel.appendChild(opt);
+                        });
+                    }
+                    _hwyIsEW = d.isEW;
+                    if (typeof d.hwBearing === 'number') _airHwBearingDeg = d.hwBearing;
+                    if (d.bridgePath && d.bridgePath.length > 0) {
+                        _airBridgePathCoords = d.bridgePath.map(function(p) {
+                            return { lat: p.lat, lon: p.lon };
+                        });
+                    }
+                    console.log('[T3D] refreshAirAnimation: ' + AIR_ZONES.length + ' zones bearing=' + _airHwBearingDeg.toFixed(1) + '° bridge=' + _airBridgePathCoords.length + 'pts isEW=' + _hwyIsEW);
+                }
+            }
+        } catch(e) { console.warn('[T3D] refreshAirAnimation: zone fetch failed:', e); }
+
+        // 2d. Set zone dropdown to sim's zone
+        if (simCtx.zoneId) {
+            selectedZoneId = simCtx.zoneId;
+            localStorage.setItem('air_selectedZone', selectedZoneId);
+            var zsel2 = document.getElementById('airZoneSel');
+            if (zsel2) zsel2.value = selectedZoneId;
+            var ssel2 = document.getElementById('airServerSel');
+            if (ssel2) {
+                ssel2.querySelectorAll('option').forEach(function(o) {
+                    o.style.display = (!o.value || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+                });
+            }
+            console.log('[T3D] refreshAirAnimation: set zone=' + selectedZoneId);
+        }
+
+        // 2e. Set server dropdown to sim's server
+        if (simCtx.serverId) {
+            selectedServerId = simCtx.serverId;
+            localStorage.setItem('air_selectedServer', selectedServerId);
+            var ssel3 = document.getElementById('airServerSel');
+            if (ssel3) ssel3.value = selectedServerId;
+            console.log('[T3D] refreshAirAnimation: set server=' + selectedServerId);
+        }
+
+        // 2f. Pan map to selected zone + build bridge
+        var z = selectedZoneId
+            ? AIR_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
+            : (AIR_ZONES[0] || null);
+        if (z && z.lat && z.lon) {
+            midLat = z.lat; midLon = z.lon;
+            _panMapTo(z.lat, z.lon);
+            _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
+            console.log('[T3D] refreshAirAnimation: panned map to (' + z.lat + ', ' + z.lon + ')');
+        } else if (AIR_ZONES.length > 0) {
+            var z0 = AIR_ZONES[0];
+            midLat = z0.lat; midLon = z0.lon;
+            _panMapTo(z0.lat, z0.lon);
+            _setHighwayCoords(z0.lat, z0.lon, HW);
+            console.log('[T3D] refreshAirAnimation: panned map to first zone');
+        }
+        _forceAirBridgeRedraw();
+
+        // 2g. Load vehicle animation data
+        if (HW && selectedZoneId && selectedServerId) {
+            console.log('[T3D] refreshAirAnimation: all 3 set — loading animation data');
+            await refreshAirScene();
+            console.log('[T3D] refreshAirAnimation: loaded ' + vehicleData.size + ' vehicles');
+        } else {
+            console.warn('[T3D] refreshAirAnimation: sim context incomplete — hw=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId);
+        }
+        _validateSelectionState();
+        return;
+    }
+
+    // ── STEP 3: Check if sim is ON but context is missing ──
+    // If the DB says sim is active but we don't have simCtx in localStorage,
+    // still treat this as sim mode using the DB status directly.
+    if (simActive && (!simCtx || !simCtx.hwId)) {
+        console.log('[T3D] refreshAirAnimation: SIM IS ON (DB) but no localStorage context — fetching from DB status');
+        try {
+            var sr2 = await fetch('/DataInputFormats/SimulationStatus');
+            if (sr2.ok) {
+                var dbCtx = await sr2.json();
+                if (dbCtx.highwayId) {
+                    simCtx = { hwId: dbCtx.highwayId, zoneId: dbCtx.zoneId, serverId: dbCtx.serverId };
+                    simActive = true;
+                    console.log('[T3D] refreshAirAnimation: using DB sim context', simCtx);
+                }
+            }
+        } catch(e) { console.warn('[T3D] refreshAirAnimation: DB context fetch failed', e); }
+    }
+
+    // If we now have a valid simCtx, go back to STEP 2
+    if (simActive && simCtx && simCtx.hwId) {
+        console.log('[T3D] refreshAirAnimation: retrying STEP 2 with recovered context');
+        // Re-run the sim sync path by setting state and calling refreshAirScene
+        _clearVehicles();
+        simRunning = true; feedHeld = true;
+        HW = simCtx.hwId;
+        selectedZoneId = simCtx.zoneId || selectedZoneId;
+        selectedServerId = simCtx.serverId || selectedServerId;
+        var hwSelR = document.getElementById('hwSel');
+        if (hwSelR) hwSelR.value = HW;
+        var zselR = document.getElementById('airZoneSel');
+        if (zselR) zselR.value = selectedZoneId;
+        var sselR = document.getElementById('airServerSel');
+        if (sselR) sselR.value = selectedServerId;
+        localStorage.setItem('air_selectedHw', HW);
+        localStorage.setItem('air_selectedZone', selectedZoneId);
+        localStorage.setItem('air_selectedServer', selectedServerId);
+        // Fetch zones + vehicles
+        await refreshAirScene();
+        _validateSelectionState();
+        return;
+    }
+
+    // ── STEP 4: SIM IS OFF — use current dropdown values ──
+    console.log('[T3D] refreshAirAnimation: sim is OFF — using current dropdown values');
+    simRunning = false; feedHeld = false;
+    // Clear stale sim localStorage so it doesn't interfere on next boot
+    if (dbStatusOk && !simActive) {
+        localStorage.removeItem('airways_air_sim_state');
+        localStorage.removeItem('airways_air_sim_active');
+        localStorage.removeItem('airways_air_sim_heartbeat');
+    }
+    var badgeOff = document.getElementById('airSimFeedBadge');
+    if (badgeOff) badgeOff.style.display = 'none';
+
+    // ── Apply dropdown selections to the map view ──
+    // Fetch highway data fresh (zones, bridge path, bearing, bounds) and
+    // apply ALL view variables here. Dropdown handlers only update state;
+    // the actual view changes happen only when Refresh is clicked.
+    try {
+        var r = await fetch('/AirScene/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground');
+        if (r.ok) {
+            var d = await r.json();
+            if (d.highwayCoords && d.highwayCoords.length > 0) {
+                AIR_ZONES = d.highwayCoords.map(function(z) {
+                    return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                             highwayId: z.highwayId, radius: z.radius };
+                });
+            }
+            if (typeof d.isEW === 'boolean') _hwyIsEW = d.isEW;
+            if (typeof d.hwBearing === 'number') _airHwBearingDeg = d.hwBearing;
+            if (d.bridgePath && d.bridgePath.length > 0) {
+                _airBridgePathCoords = d.bridgePath.map(function(p) { return { lat: p.lat, lon: p.lon }; });
+            }
+            if (d.bounds) _serverBounds = d.bounds;
+        }
+    } catch(e) { console.warn('[T3D] Refresh: highway data fetch failed:', e); }
+
+    if (HW && AIR_ZONES.length > 0) {
+        var rz = selectedZoneId
+            ? AIR_ZONES.find(function(zz){ return zz.zoneId === selectedZoneId; })
+            : AIR_ZONES[0];
+        if (rz && rz.lat && rz.lon) {
+            midLat = rz.lat; midLon = rz.lon;
+            _panMapTo(rz.lat, rz.lon);
+            _setHighwayCoords(rz.lat, rz.lon, rz.highwayId || HW);
+        }
+        if (typeof airRoadGroup3 !== 'undefined') {
+            airRoadGroup3.rotation.y = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
+        }
+        _bridgeDirty = true;
+        _forceAirBridgeRedraw();
+        if (_map) setTimeout(function() { if (_map) { _map.invalidateSize(true); _forceAirBridgeRedraw(); } }, 200);
+    }
+
+    var curHw = document.getElementById('hwSel') ? document.getElementById('hwSel').value : HW;
+    var curZone = document.getElementById('airZoneSel') ? document.getElementById('airZoneSel').value : selectedZoneId;
+    var curSrv = document.getElementById('airServerSel') ? document.getElementById('airServerSel').value : selectedServerId;
+    HW = curHw; selectedZoneId = curZone; selectedServerId = curSrv;
+
+    if (!HW || !selectedZoneId || !selectedServerId) {
+        var missing = [];
+        if (!HW) missing.push('Highway');
+        if (!selectedZoneId) missing.push('Zone');
+        if (!selectedServerId) missing.push('Server');
+        console.warn('[T3D] refreshAirAnimation: missing ' + missing.join(', '));
+        alert('Select all 3 values:\nMissing: ' + missing.join(', '));
+        _validateSelectionState();
+        return;
+    }
+
+    // If highway changed, fetch zones first
+    if (AIR_ZONES.length === 0 || (AIR_ZONES[0] && AIR_ZONES[0].highwayId !== HW)) {
+        console.log('[T3D] refreshAirAnimation: fetching zones for HW=' + HW);
+        try {
+            var rz = await fetch('/AirScene/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground');
+            if (rz.ok) {
+                var rd = await rz.json();
+                if (rd.highwayCoords && rd.highwayCoords.length > 0) {
+                    AIR_ZONES = rd.highwayCoords.map(function(z) {
+                        return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                                 highwayId: z.highwayId, radius: z.radius };
+                    });
+                    // Store bridge path + bearing from zone-only fetch
+                    if (typeof rd.hwBearing === 'number') _airHwBearingDeg = rd.hwBearing;
+                    if (rd.bridgePath && rd.bridgePath.length > 0) {
+                        _airBridgePathCoords = rd.bridgePath.map(function(p) {
+                            return { lat: p.lat, lon: p.lon };
+                        });
+                    }
+                    var zsel3 = document.getElementById('airZoneSel');
+                    if (zsel3) {
+                        zsel3.innerHTML = '<option value="">(Select Zone)</option>';
+                        AIR_ZONES.forEach(function(z) {
+                            var opt = document.createElement('option');
+                            opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
+                            opt.dataset.hw = z.highwayId || HW;
+                            opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                            opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                            zsel3.appendChild(opt);
+                        });
+                        if (selectedZoneId) zsel3.value = selectedZoneId;
+                    }
+                    var ssel4 = document.getElementById('airServerSel');
+                    if (ssel4 && rd.servers) {
+                        ssel4.innerHTML = '<option value="">(Select Server)</option>';
+                        rd.servers.forEach(function(s) {
+                            var opt = document.createElement('option');
+                            opt.value = s.serverId;
+                            opt.textContent = s.serverName || s.serverId;
+                            opt.dataset.zone = s.zoneId || '';
+                            ssel4.appendChild(opt);
+                        });
+                        if (selectedServerId) ssel4.value = selectedServerId;
+                    }
+                    _hwyIsEW = rd.isEW;
+                }
+            }
+        } catch(e) { console.warn('[T3D] refreshAirAnimation: zone fetch failed:', e); }
+    }
+
+    // Pan map to selected zone
+    var pz = selectedZoneId
+        ? AIR_ZONES.find(function(z){ return z.zoneId === selectedZoneId; })
+        : AIR_ZONES[0];
+    if (pz && pz.lat && pz.lon) {
+        midLat = pz.lat; midLon = pz.lon;
+        _panMapTo(pz.lat, pz.lon);
+        _setHighwayCoords(pz.lat, pz.lon, pz.highwayId || HW);
+    } else if (AIR_ZONES.length > 0) {
+        midLat = AIR_ZONES[0].lat; midLon = AIR_ZONES[0].lon;
+        _panMapTo(midLat, midLon);
+        _setHighwayCoords(midLat, midLon, HW);
+    }
+    _forceAirBridgeRedraw();
+
+    console.log('[T3D] refreshAirAnimation: all 3 set — loading animation data');
+    await refreshAirScene();
+    console.log('[T3D] refreshAirAnimation: loaded ' + vehicleData.size + ' vehicles');
+    _validateSelectionState();
+}
+
+async function refreshAirScene() {
+    // ── GUARD: animation requires all 3 values (highway + zone + server) ──
+    // If any is missing, do NOT fetch and do NOT clear existing animation.
+    if (!HW || !selectedZoneId || !selectedServerId) {
+        console.log('[T3D] refreshAirScene: SKIPPED — need all 3 (hw=' + HW + ' zone=' + selectedZoneId + ' srv=' + selectedServerId + ')');
+        return;
+    }
+    try {
+        var params = 'highwayId=' + encodeURIComponent(HW) +
+                     '&zoneId='   + encodeURIComponent(selectedZoneId) +
+                     '&serverId=' + encodeURIComponent(selectedServerId) +
+                     '&mode=ground' +
+                     (simRunning ? '&simOnly=true' : '');
+        console.log('[T3D] refreshAirScene:', params);
+        var r = await fetch('/AirScene/GetAnimationData?' + params);
+        if (!r.ok) { console.warn('[T3D] refreshAirScene HTTP', r.status); return; }
+        var data = await r.json();
+        console.log('[T3D] refreshAirScene: zones=' + ((data.highwayCoords||[]).length) + ' vehicles=' + ((data.vehicles||[]).length));
+        // Update highway path from server-provided zone coordinates
+        if (data.highwayCoords && data.highwayCoords.length > 0) {
+            // Update AIR_ZONES from server data
+            AIR_ZONES = data.highwayCoords.map(function(z) {
+                return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                         highwayId: z.highwayId, radius: z.radius };
+            });
+            // Store bearing + dense bridge path from server
+            if (typeof data.hwBearing === 'number') {
+                _airHwBearingDeg = data.hwBearing;
+            }
+            if (data.bridgePath && data.bridgePath.length > 0) {
+                _airBridgePathCoords = data.bridgePath.map(function(p) {
+                    return { lat: p.lat, lon: p.lon };
+                });
+                console.log('[T3D] Bridge path: ' + _airBridgePathCoords.length + ' pts bearing=' + _airHwBearingDeg.toFixed(1) + '°');
+                // Re-center map on zone/server GPS with updated bridge path
+                if (airCurrentView !== 'top') _centerMapOnHighway();
+            }
+            // ── DO NOT rebuild dropdowns when all 3 are already set ──
+            // The dropdowns were populated by t3dHighwayChanged. Rebuilding
+            // them here can clear the selection if zone ordering differs between
+            // the initial fetch (ordered by longitude) and this fetch (sorted by axis).
+            // Just update AIR_ZONES for the bridge path and keep dropdowns as-is.
+            if (!selectedZoneId || !selectedServerId) {
+                // Only rebuild if we're missing selections (e.g. boot or highway change)
+                var zsel = document.getElementById('airZoneSel');
+                if (zsel) {
+                    var currentIds = Array.from(zsel.querySelectorAll('option')).filter(function(o){ return o.value; }).map(function(o){ return o.value; });
+                    var newIds = AIR_ZONES.map(function(z){ return z.zoneId; });
+                    var changed = currentIds.length !== newIds.length || currentIds.some(function(id,i){ return id !== newIds[i]; });
+                    if (changed) {
+                        var prevZone = selectedZoneId;
+                        zsel.innerHTML = '<option value="">(Select Zone)</option>';
+                        AIR_ZONES.forEach(function(z) {
+                            var opt = document.createElement('option');
+                            opt.value = z.zoneId;
+                            opt.textContent = z.zoneName || z.zoneId;
+                            opt.dataset.hw = z.highwayId || HW;
+                            opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                            opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                            zsel.appendChild(opt);
+                        });
+                        if (prevZone && newIds.indexOf(prevZone) >= 0) {
+                            zsel.value = prevZone;
+                        } else {
+                            selectedZoneId = '';
+                            zsel.value = '';
+                        }
+                    }
+                }
+                // Rebuild server dropdown only if missing
+                if (data.servers) {
+                    var ssel = document.getElementById('airServerSel');
+                    if (ssel) {
+                        var prevSrv = selectedServerId;
+                        ssel.innerHTML = '<option value="">(Select Server)</option>';
+                        data.servers.forEach(function(s) {
+                            var opt = document.createElement('option');
+                            opt.value = s.serverId;
+                            var zn = '';
+                            if (s.zoneId) {
+                                var zMatch = AIR_ZONES.find(function(zz){ return zz.zoneId === s.zoneId; });
+                                zn = zMatch ? (zMatch.zoneName || s.zoneId) : s.zoneId;
+                            }
+                            opt.textContent = (s.serverName || s.serverId) + (zn ? ' (' + zn + ')' : '');
+                            opt.dataset.zone = s.zoneId || '';
+                            ssel.appendChild(opt);
+                        });
+                        if (prevSrv) {
+                            var stillExists = data.servers.some(function(s){ return s.serverId === prevSrv; });
+                            if (stillExists) ssel.value = prevSrv;
+                            else { selectedServerId = ''; ssel.value = ''; }
+                        }
+                        if (selectedZoneId) {
+                            ssel.querySelectorAll('option').forEach(function(o) {
+                                o.style.display = (!o.value || !o.dataset.zone || o.dataset.zone === selectedZoneId) ? '' : 'none';
+                            });
+                        }
+                    }
+                }
+            }
+            // ALWAYS update bridge path from server zones (sorted by axis)
+            _setHighwayCoords(AIR_ZONES[0].lat, AIR_ZONES[0].lon, HW);
+            _hwyIsEW = data.isEW;
+            if (typeof airRoadGroup3 !== 'undefined') {
+                airRoadGroup3.rotation.y = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
+            }
+            // ── PAN MAP to the selected zone (or first zone) ──
+            // Without this, the map stays at its previous location and the
+            // bridge is drawn off-screen — "unable to locate the highway."
+            var panZone = selectedZoneId
+                ? AIR_ZONES.find(function(z){ return z.zoneId === selectedZoneId; })
+                : AIR_ZONES[0];
+            if (panZone && panZone.lat && panZone.lon) {
+                midLat = panZone.lat; midLon = panZone.lon;
+                _panMapTo(panZone.lat, panZone.lon);
+            }
+        } else if (data.isEW !== undefined) {
+            _hwyIsEW = data.isEW;
+            if (typeof airRoadGroup3 !== 'undefined') airRoadGroup3.rotation.y = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
+        }
+        // Store bounds from server
+        if (data.bounds) {
+            _serverBounds = data.bounds;
+        }
+        // Load validated vehicles
+        // When sim is running, clear existing vehicles first so we only
+        // show simulation data — no stale DB or synthetic vehicles.
+        if (simRunning) {
+            // When sim is ON, MERGE DB vehicles with existing animation.
+            // DO NOT clear — loadEvents preserves existing vehicles' animated
+            // positions and only adds new ones. Clearing would wipe the
+            // continuous animation and re-create vehicles at the DB's latest
+            // GPS, causing them to jump to new positions.
+            if (data.vehicles && data.vehicles.length > 0) {
+                console.log('[T3D] refreshAirScene: sim ON — merging ' + data.vehicles.length + ' DB vehicles with ' + vehicleData.size + ' existing');
+                loadEvents(data.vehicles);
+            } else {
+                console.log('[T3D] refreshAirScene: sim ON, 0 DB sim events — keeping ' + vehicleData.size + ' BroadcastChannel vehicles');
+            }
+        } else {
+            // Sim OFF — normal mode: load whatever the server returns
+            if (data.vehicles && data.vehicles.length > 0) {
+                loadEvents(data.vehicles);
+            } else if (vehicleData.size === 0) {
+                console.log('[T3D] No vehicles from server, scene already empty');
+            }
+        }
+        _forceAirBridgeRedraw();
+    } catch(e) { console.warn('[T3D] Scene refresh error:', e); }
+}
+
+function _validateSelectionState() {
+    var issues = [];
+    var hwSel = document.getElementById('hwSel');
+    if (hwSel && hwSel.value && HW && hwSel.value !== HW) issues.push('HW mismatch');
+    if (!_serverBounds) issues.push('No server bounds');
+    if (!_hwyPath || _hwyPath.length === 0) issues.push('No highway path');
+    if (issues.length > 0) console.warn('[T3D Validation] ' + issues.join('; '));
+    return issues.length === 0;
+}
+
+// ── Validate that dropdown selection is reflected in animation state ──
+// Called after any dropdown change to verify the scene matches the selection.
+function _validateSelectionState() {
+    var issues = [];
+    // Check HW matches dropdown
+    var hwSel = document.getElementById('hwSel');
+    if (hwSel && hwSel.value && HW && hwSel.value !== HW) {
+        issues.push('HW mismatch: dropdown=' + hwSel.value + ' state=' + HW);
+    }
+    // Check zone matches dropdown
+    var zSel = document.getElementById('airZoneSel');
+    if (zSel && zSel.value !== selectedZoneId) {
+        issues.push('Zone mismatch: dropdown=' + zSel.value + ' state=' + selectedZoneId);
+    }
+    // Check server matches dropdown
+    var sSel = document.getElementById('airServerSel');
+    if (sSel && sSel.value !== selectedServerId) {
+        issues.push('Server mismatch: dropdown=' + sSel.value + ' state=' + selectedServerId);
+    }
+    // Check bounds exist
+    if (!_serverBounds) {
+        issues.push('No server bounds set');
+    }
+    // Check highway path exists
+    if (!_hwyPath || _hwyPath.length === 0) {
+        issues.push('No highway path for bridge');
+    }
+    if (issues.length > 0) {
+        console.warn('[T3D Validation] ' + issues.join('; '));
+    }
+    return issues.length === 0;
+}
+
+// Override _getSelectedBounds to use server-provided bounds
+var _getSelectedBoundsOrig = _getSelectedBounds;
+_getSelectedBounds = function() {
+    if (_serverBounds) {
+        return {
+            minLat: _serverBounds.minLat, maxLat: _serverBounds.maxLat,
+            minLon: _serverBounds.minLon, maxLon: _serverBounds.maxLon,
+            tight: _serverBounds.tight,
+            centerLat: (_serverBounds.minLat + _serverBounds.maxLat) / 2,
+            centerLon: (_serverBounds.minLon + _serverBounds.maxLon) / 2
+        };
+    }
+    return _getSelectedBoundsOrig();
+};
+
+// ── Feed hold toggle ──────────────────────────────────────────────────
+function toggleAirFeed() {
+    feedHeld = !feedHeld;
+    var btn = document.getElementById('btnAnimToggle');
+    if (btn) { btn.textContent = feedHeld ? '▶ Resume' : '⏸ Hold Feed';
+               btn.classList.toggle('btn-outline-warning', !feedHeld);
+               btn.classList.toggle('btn-warning', feedHeld); }
+}
+
+// ── Sim feed panel ────────────────────────────────────────────────────
+function toggleSimPanel() {
+    var body = document.getElementById('airSimFeedBody');
+    var tog  = document.getElementById('airSimFeedToggle');
+    if (!body) return;
+    var open = body.style.maxHeight !== '0px' && body.style.maxHeight !== '';
+    body.style.maxHeight = open ? '0px' : '200px';
+    if (tog) tog.textContent = open ? '▼' : '▲';
+}
+
+function _updateSimPanel(ev) {
+    var badge = document.getElementById('airSimFeedBadge');
+    var line  = document.getElementById('airSimFeedLine');
+    var ts    = new Date().toLocaleTimeString();
+    var vid   = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '?';
+    var cat   = (ev.vehicle_category || ev.vehicleCategory || ev.vehicle_mode || ev.vehicleMode || '?').toLowerCase();
+    var spd   = parseFloat(ev.speed_mph || ev.speedMph || ev.SpeedMph || 0).toFixed(1);
+    if (badge) badge.style.display = '';
+    if (line)  line.textContent = ts + ' · ' + vid + ' · ' + cat + ' · ' + spd + ' mph';
+
+    // Update detail fields
+    ['sfVehicleId','sfType','sfSpeed','sfZone','sfLatLon','sfDbStatus'].forEach(function(id) {
+        var el = document.getElementById(id); if (el) el.textContent = '–';
+    });
+    var sf = function(id, val) { var e = document.getElementById(id); if (e) e.textContent = val; };
+    sf('sfVehicleId', vid + (ev.dbId ? ' [db#' + ev.dbId + ']' : ''));
+    sf('sfType',  cat);
+    sf('sfSpeed', spd + ' mph');
+    sf('sfZone',  ev.zone_id || ev.zoneId || '–');
+    var lat = parseFloat(ev.latitude || ev.Latitude || 0);
+    var lon = parseFloat(ev.longitude || ev.Longitude || 0);
+    sf('sfLatLon', lat.toFixed(4) + ', ' + lon.toFixed(4));
+    sf('sfDbStatus', ev.dbId ? '✓ db#' + ev.dbId + ' · vid ' + vid :
+        (ev._dbSaved ? '✓ saved · vid ' + vid : 'pending...'));
+
+    // Flash live label
+    var lbl = document.getElementById('airSimLiveLabel');
+    if (lbl) { lbl.style.opacity = '1'; setTimeout(function() { lbl.style.opacity = '0'; }, 1800); }
+}
+
+// ── Simulation BroadcastChannel listener ─────────────────────────────
+var _bc = null;
+try { _bc = new BroadcastChannel('airways_air_sim'); } catch(e) {}
+
+function _onSimMsg(data) {
+    if (!data) return;
+    if (data.type === 'sim_started') {
+        // Sim started on another tab — switch to sim's highway/zone/server context
+        simRunning = true; feedHeld = true;
+        _clearVehicles();
+        var badge = document.getElementById('airSimFeedBadge');
+        if (badge) { badge.style.display = ''; badge.textContent = '● LIVE'; }
+
+        // ── Sync T3D dropdowns to the simulation's context ──
+        var ctx = data.context || {};
+        if (ctx.hwId) {
+            _simHwId = ctx.hwId;
+            // If the sim's highway differs from current, switch it
+            if (ctx.hwId !== HW) {
+                HW = ctx.hwId;
+                localStorage.setItem('air_selectedHw', HW);
+                var hwSel = document.getElementById('hwSel');
+                if (hwSel) hwSel.value = HW;
+                // Fetch zones for this highway from server
+                fetch('/AirScene/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground')
+                    .then(function(r){ return r.json(); })
+                    .then(function(d) {
+                        if (d.highwayCoords && d.highwayCoords.length > 0) {
+                            AIR_ZONES = d.highwayCoords.map(function(z) {
+                                return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                                         highwayId: z.highwayId, radius: z.radius };
+                            });
+                            // Store bridge path + bearing from zone-only fetch
+                            if (typeof d.hwBearing === 'number') _airHwBearingDeg = d.hwBearing;
+                            if (d.bridgePath && d.bridgePath.length > 0) {
+                                _airBridgePathCoords = d.bridgePath.map(function(p) {
+                                    return { lat: p.lat, lon: p.lon };
+                                });
+                            }
+                            // Rebuild zone dropdown
+                            var zsel = document.getElementById('airZoneSel');
+                            if (zsel) {
+                                zsel.innerHTML = '<option value="">(Select Zone)</option>';
+                                AIR_ZONES.forEach(function(z) {
+                                    var opt = document.createElement('option');
+                                    opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
+                                    opt.dataset.hw = z.highwayId || HW;
+                                    opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                                    opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                                    zsel.appendChild(opt);
+                                });
+                            }
+                            // Rebuild server dropdown
+                            var ssel = document.getElementById('airServerSel');
+                            if (ssel && d.servers) {
+                                ssel.innerHTML = '<option value="">(Select Server)</option>';
+                                d.servers.forEach(function(s) {
+                                    var opt = document.createElement('option');
+                                    opt.value = s.serverId;
+                                    opt.textContent = s.serverName || s.serverId;
+                                    opt.dataset.zone = s.zoneId || '';
+                                    ssel.appendChild(opt);
+                                });
+                            }
+                            // Center map on first zone
+                            var z0 = AIR_ZONES[0];
+                            if (z0 && z0.lat) {
+                                midLat = z0.lat; midLon = z0.lon;
+                                _panMapTo(z0.lat, z0.lon);
+                                _setHighwayCoords(z0.lat, z0.lon, HW);
+                                _hwyIsEW = d.isEW;
+                            }
+                        }
+                        // Now apply zone/server selection from sim context
+                        _applySimContext(ctx);
+                    })
+                    .catch(function(){});
+            } else {
+                // Same highway — just apply zone/server
+                _applySimContext(ctx);
+            }
+        }
+        return;
+    }
+
+    // Helper: apply sim's zone/server selection to T3D dropdowns
+    function _applySimContext(ctx) {
+        if (ctx.zoneId) {
+            _simZoneId = ctx.zoneId;
+            selectedZoneId = ctx.zoneId;
+            localStorage.setItem('air_selectedZone', ctx.zoneId);
+            var zsel = document.getElementById('airZoneSel');
+            if (zsel) zsel.value = ctx.zoneId;
+            // Pan map to the selected zone
+            var z = AIR_ZONES.find(function(zz){ return zz.zoneId === ctx.zoneId; });
+            if (z && z.lat && z.lon) {
+                midLat = z.lat; midLon = z.lon;
+                _panMapTo(z.lat, z.lon);
+                _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
+            }
+        }
+        if (ctx.serverId) {
+            _simSrvId = ctx.serverId;
+            selectedServerId = ctx.serverId;
+            localStorage.setItem('air_selectedServer', ctx.serverId);
+            var ssel = document.getElementById('airServerSel');
+            if (ssel) ssel.value = ctx.serverId;
+        }
+        _forceAirBridgeRedraw();
+    }
+    if (data.type === 'sim_vehicle' || data.type === 'sim_event') {
+        var ev = data.payload || data;
+        var _wasFirst = !simRunning;
+        simRunning = true; feedHeld = true;
+        // Clear the scene on the FIRST sim event to remove pre-existing live DB vehicles
+        if (_wasFirst) _clearVehicles();
+        // Accept both snake_case (sim payload) and camelCase
+        _simHwId   = ev.highway_id  || ev.highwayId  || _simHwId;
+        _simZoneId = ev.zone_id     || ev.zoneId     || _simZoneId;
+        _simSrvId  = ev.server_id   || ev.serverId    || _simSrvId;
+        // Auto-select the sim's zone so the map re-centres and highway aligns
+        if (_simZoneId && _simZoneId !== selectedZoneId) {
+            selectedZoneId = _simZoneId;
+            var z = AIR_ZONES.find(function(zz){ return zz.zoneId === _simZoneId; });
+            if (z && z.lat && z.lon) {
+                midLat = z.lat; midLon = z.lon;
+                _panMapTo(z.lat, z.lon);
+                _setHighwayCoords(z.lat, z.lon, z.highwayId);
+            }
+            var zsel = document.getElementById('airZoneSel');
+            if (zsel) zsel.value = _simZoneId;
+        }
+        _forceAirBridgeRedraw();
+        _updateSimPanel(ev);
+        // ── Merge classification data into the event so loadEvents has it ──
+        if (data.classification) {
+            var cls = data.classification;
+            if (cls.make)     ev.vehicle_make     = cls.make;
+            if (cls.category) ev.vehicle_category  = cls.category;
+            if (cls.domain)   ev.classification_domain = cls.domain;
+            if (cls.color)    ev.classification_color  = cls.color;
+        }
+        // Validate sim event coordinates against selected bounds before loading
+        var _simLat = parseFloat(ev.latitude || ev.Latitude || ev.lat || 0);
+        var _simLon = parseFloat(ev.longitude || ev.Longitude || ev.lon || 0);
+        if (_simLat && _simLon) {
+            var _sb = _getSelectedBounds();
+            if (_sb && !_isWithinBounds(_simLat, _simLon)) {
+                var _sc = _clampToBounds(_simLat, _simLon);
+                ev.latitude  = _sc.lat;
+                ev.longitude = _sc.lon;
+            }
+        }
+        loadEvents([ev]);
+        // Update badge count
+        if (!window._simEventCount) window._simEventCount = 0;
+        window._simEventCount++;
+        var badge = document.getElementById('airSimFeedBadge');
+        if (badge) badge.textContent = '● LIVE #' + window._simEventCount;
+    } else if (data.type === 'sim_stop' || data.type === 'sim_stopped') {
+        simRunning = false; feedHeld = false;
+        var badge = document.getElementById('airSimFeedBadge');
+        if (badge) badge.style.display = 'none';
+        // Only refresh if all 3 values are set
+        if (HW && selectedZoneId && selectedServerId) refreshAirScene();
+    }
+}
+
+if (_bc) _bc.onmessage = function(e) { _onSimMsg(e.data); };
+
+// Also listen via localStorage (cross-tab)
+window.addEventListener('storage', function(e) {
+    if (e.key === 'airways_sim_last_event') {
+        try { _onSimMsg(JSON.parse(e.newValue || '{}')); } catch(_) {}
+    } else if (e.key === 'airways_air_sim_state') {
+        // Sim state changed in another tab — check if sim started
+        try {
+            var st = JSON.parse(e.newValue || '{}');
+            if (st.running && !simRunning) {
+                // Sim just started — clear and switch to sim mode
+                simRunning = true; feedHeld = true;
+                _clearVehicles();
+                var badge = document.getElementById('airSimFeedBadge');
+                if (badge) { badge.style.display = ''; badge.textContent = '● LIVE'; }
+            } else if (!st.running && simRunning) {
+                // Sim just stopped — resume live DB feed
+                simRunning = false; feedHeld = false;
+                var badge2 = document.getElementById('airSimFeedBadge');
+                if (badge2) badge2.style.display = 'none';
+                _clearVehicles();
+                if (HW && selectedZoneId && selectedServerId) refreshAirScene();
+            }
+        } catch(_) {}
+    }
+});
+
+// ── Simulation state restore on page load ────────────────────────────
+async function _simRestoreState() {
+    var ls = localStorage.getItem('airways_air_sim_state');
+    if (!ls) return;
+    var st;
+    try { st = JSON.parse(ls); } catch(_) { return; }
+    if (!st.running) return;
+    // Verify DB still thinks sim is running — DB is the source of truth
+    try {
+        var r = await fetch('/DataInputFormats/SimulationStatus');
+        if (!r.ok) { console.warn('Sim status check failed'); return; }
+        var dbStatus = await r.json();
+        if (dbStatus.stale || !dbStatus.isRunning) {
+            // DB says sim is OFF — clear ALL stale sim localStorage
+            console.log('[T3D] _simRestoreState: DB says sim OFF — clearing all sim state');
+            localStorage.removeItem('airways_air_sim_state');
+            localStorage.removeItem('airways_air_sim_active');
+            localStorage.removeItem('airways_air_sim_heartbeat');
+            simRunning = false; feedHeld = false;
+            return;
+        }
+        simRunning = true; feedHeld = true;
+        // Clear pre-existing live DB vehicles — sim data takes priority
+        _clearVehicles();
+        var badge = document.getElementById('airSimFeedBadge');
+        if (badge) { badge.style.display = ''; badge.textContent = '● LIVE #' + (dbStatus.totalPosted || 0); }
+    } catch(e) { console.warn('Status check failed:', e); }
+}
+
+// ── Inspector (click vehicle) ─────────────────────────────────────────
+function showInspector(vd) {
+    var el = document.getElementById('inspector');
+    if (!el) return;
+    el.innerHTML = '<div style="font-size:.75rem;line-height:1.6;color:#94a3b8">' +
+        '<div><span style="color:#4ade80">ID:</span> ' + (vd.ev.vehicleId || '–') + '</div>' +
+        '<div><span style="color:#4ade80">Type:</span> ' + (vd.vc.category || '–') + '</div>' +
+        '<div><span style="color:#4ade80">Speed:</span> ' + (vd.speedMph || 0).toFixed(1) + ' mph</div>' +
+        '<div><span style="color:#4ade80">Lat/Lon:</span> ' + (vd.lat||0).toFixed(4) + ', ' + (vd.lon||0).toFixed(4) + '</div>' +
+        '</div>';
+}
+
+_oc.addEventListener('click', function(e) {
+    if (!_map || !_mapReady) return;
+    var rect = _oc.getBoundingClientRect();
+    var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    var origin = _map.getPixelOrigin();
+    var closestVid = null, closestDist = 30;
+    vehicleData.forEach(function(vd, vid) {
+        var mapPt = _map.project([vd.lat, vd.lon], _map.getZoom());
+        var sx = mapPt.x - origin.x, sy = mapPt.y - origin.y;
+        var d = Math.hypot(cx - sx, cy - sy);
+        if (d < closestDist) { closestDist = d; closestVid = vid; }
+    });
+    if (closestVid) showInspector(vehicleData.get(closestVid));
+});
+
+// ── Window resize ─────────────────────────────────────────────────────
+window.addEventListener('resize', function() {
+    _bridgeDirty = true;
+    if (_map) setTimeout(function() { if (_map) _map.invalidateSize(true); }, 50);
+});
+
+// ── Boot sequence ─────────────────────────────────────────────────────
+(async function boot() {
+    console.log('[T3D] Boot: HW=' + HW + ' zones=' + AIR_ZONES.length);
+    _initMap();
+    console.log('[T3D] Boot: map ready=' + _mapReady);
+    // Set highway coords from the initial selected zone (not just map centre)
+    var _bootZone = AIR_ZONES.find(function(z){ return z.lat && z.lon; });
+    if (_bootZone) {
+        _airMapCtrLat = _bootZone.lat; _airMapCtrLon = _bootZone.lon;
+        _panMapTo(_bootZone.lat, _bootZone.lon);
+        _setHighwayCoords(_bootZone.lat, _bootZone.lon, _bootZone.highwayId || HW);
+    } else {
+        _setHighwayCoords(_airMapCtrLat, _airMapCtrLon, HW);
+    }
+
+    // 2. Start 2D canvas render loop
+    _renderLoop();
+
+    // 3. Default to Top view (2D overlay + Leaflet map)
+    setViewport('top');
+    var topBtn = document.querySelector('#viewToggle [data-view="top"]');
+    if (topBtn) {
+        document.querySelectorAll('#viewToggle button').forEach(function(b) {
+            b.classList.remove('active','btn-primary'); b.classList.add('btn-outline-primary');
+        });
+        topBtn.classList.add('active','btn-primary'); topBtn.classList.remove('btn-outline-primary');
+    }
+
+    // 4. Check if sim was running (cross-tab restore) — BEFORE loading DB events
+    await _simRestoreState();
+
+    // 5. Restore selection from localStorage (survives page refresh)
+    //    Priority: simulation context (airways_air_sim_context) > T3D's own saved state
+    var simCtx = null;
+    try { simCtx = JSON.parse(localStorage.getItem('airways_air_sim_context') || 'null'); } catch(e) {}
+    var savedHw   = (simCtx && simCtx.hwId)    ? simCtx.hwId    : localStorage.getItem('air_selectedHw');
+    var savedZone = (simCtx && simCtx.zoneId)  ? simCtx.zoneId  : localStorage.getItem('air_selectedZone');
+    var savedSrv  = (simCtx && simCtx.serverId) ? simCtx.serverId : localStorage.getItem('air_selectedServer');
+    if (simCtx) console.log('[T3D] Boot: sim context = hw=' + simCtx.hwId + ' zone=' + simCtx.zoneId + ' srv=' + simCtx.serverId);
+    if (savedHw && savedHw !== HW) {
+        HW = savedHw;
+        var hwSel = document.getElementById('hwSel');
+        if (hwSel) hwSel.value = HW;
+        console.log('[T3D] Boot: restored HW=' + HW + ' from sim context/localStorage');
+        // Always fetch zones for this highway at boot — sim or not.
+        // Without this, the map stays at the Razor default center (first
+        // highway in DB) and the bridge for the restored highway is
+        // drawn off-screen.
+        {
+            try {
+                var r = await fetch('/AirScene/GetAnimationData?highwayId=' + encodeURIComponent(HW) + '&mode=ground');
+                if (r.ok) {
+                    var d = await r.json();
+                    if (d.highwayCoords && d.highwayCoords.length > 0) {
+                        AIR_ZONES = d.highwayCoords.map(function(z) {
+                            return { zoneId: z.zoneId, zoneName: z.zoneName, lat: z.lat, lon: z.lon,
+                                     highwayId: z.highwayId, radius: z.radius };
+                        });
+                        var zsel = document.getElementById('airZoneSel');
+                        if (zsel) {
+                            zsel.innerHTML = '<option value="">(Select Zone)</option>';
+                            AIR_ZONES.forEach(function(z) {
+                                var opt = document.createElement('option');
+                                opt.value = z.zoneId; opt.textContent = z.zoneName || z.zoneId;
+                                opt.dataset.hw = z.highwayId || HW;
+                                opt.dataset.lat = z.lat ? z.lat.toFixed(4) : '';
+                                opt.dataset.lon = z.lon ? z.lon.toFixed(4) : '';
+                                zsel.appendChild(opt);
+                            });
+                        }
+                        var ssel = document.getElementById('airServerSel');
+                        if (ssel && d.servers) {
+                            ssel.innerHTML = '<option value="">(Select Server)</option>';
+                            d.servers.forEach(function(s) {
+                                var opt = document.createElement('option');
+                                opt.value = s.serverId;
+                                opt.textContent = s.serverName || s.serverId;
+                                opt.dataset.zone = s.zoneId || '';
+                                ssel.appendChild(opt);
+                            });
+                        }
+                        _hwyIsEW = d.isEW;
+                        if (typeof d.hwBearing === 'number') _airHwBearingDeg = d.hwBearing;
+                        if (d.bridgePath && d.bridgePath.length > 0) {
+                            _airBridgePathCoords = d.bridgePath.map(function(p) {
+                                return { lat: p.lat, lon: p.lon };
+                            });
+                            console.log('[T3D] Boot: bridge=' + _airBridgePathCoords.length + 'pts bearing=' + _airHwBearingDeg.toFixed(1) + '°');
+                        }
+                        var z0 = AIR_ZONES[0];
+                        if (z0 && z0.lat) {
+                            midLat = z0.lat; midLon = z0.lon;
+                            _panMapTo(z0.lat, z0.lon);
+                            _setHighwayCoords(z0.lat, z0.lon, HW);
+                        }
+                        _forceAirBridgeRedraw();
+                    }
+                }
+            } catch(e) { console.warn('[T3D] Boot zone fetch failed:', e); }
+        }
+    }
+    if (savedZone) {
+        var validZone = AIR_ZONES.some(function(z){ return z.zoneId === savedZone; });
+        if (validZone) {
+            selectedZoneId = savedZone;
+            var zSelEl = document.getElementById('airZoneSel');
+            if (zSelEl) zSelEl.value = savedZone;
+            // Pan map to this zone so the bridge is visible
+            var bz = AIR_ZONES.find(function(z){ return z.zoneId === savedZone; });
+            if (bz && bz.lat && bz.lon) {
+                midLat = bz.lat; midLon = bz.lon;
+                _panMapTo(bz.lat, bz.lon);
+                _setHighwayCoords(bz.lat, bz.lon, bz.highwayId || HW);
+            }
+            console.log('[T3D] Boot: restored zone=' + savedZone + ' (map panned)');
+        }
+    }
+    if (savedSrv) {
+        selectedServerId = savedSrv;
+        var sSelEl = document.getElementById('airServerSel');
+        if (sSelEl) sSelEl.value = savedSrv;
+        console.log('[T3D] Boot: restored server=' + savedSrv);
+    }
+
+    // 6. Use refreshAirAnimation to check sim status and load appropriately.
+    //    This ensures boot uses the same flow as the Refresh button:
+    //    - If sim is running → sync to sim context, load animation
+    //    - If sim is off → use restored dropdown values, load animation
+    await refreshAirAnimation();
+    console.log('[T3D] Boot complete: vehicles=' + vehicleData.size + ' simRunning=' + simRunning);
+})();
+
+// ── Slow poll: 30s, live mode only ───────────────────────────────────
+setInterval(function() { if (!simRunning && !feedHeld && HW && selectedZoneId && selectedServerId) refreshAirScene(); }, 30000);
+
+// ── Sim poll: 3s, sim mode only ────────────────────────────────────────
+// During simulation, poll the DB for sim events (SIM-* vehicles) so the
+// scene stays current even if BroadcastChannel isn't delivering (e.g.,
+// DIF page was closed). This ensures the Refresh button + auto-poll
+// always show ONLY simulation data.
+setInterval(function() {
+    if (simRunning && feedHeld && HW && selectedZoneId && selectedServerId) refreshAirScene();
+}, 3000);
+
+</script>
