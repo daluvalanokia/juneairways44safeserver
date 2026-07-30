@@ -2026,7 +2026,11 @@ function _syncAirMeshes() {
             var px = Math.max(bp3.minX, Math.min(bp3.maxX, p3.x + laneX));
             var pz = Math.max(bp3.minZ, Math.min(bp3.maxZ, p3.z + laneZ));
 
-            mesh.position.set(px, 0, pz);
+            // ── Initial Y: bridge height + altitude from data record ──────────
+            var _initAltY = (vd.isAirFlyCar && vd.altitudeMeters > 0)
+                ? 3 + (vd.altitudeMeters * (XZ_SCALE / 111000) * 4)
+                : 0;
+            mesh.position.set(px, _initAltY, pz);
             mesh.rotation.y = -(dir3v - 90) * Math.PI / 180;
             // ── Altitude: bridge height + altitude from data record ──────────
             // Bridge surface is at Y=0. FlyCar altitude_meters from the sim
