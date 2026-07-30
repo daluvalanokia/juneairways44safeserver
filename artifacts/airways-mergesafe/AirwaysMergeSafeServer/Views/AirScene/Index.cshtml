@@ -1573,35 +1573,94 @@ var _airVehicleMeshes = [];
 var _airMapCtrLat = _airMidLat, _airMapCtrLon = _airMidLon;
 var _airViewMode = 'split';  // '3d' or 'split'
 
+var _airViewMode = 'perspective'; // perspective | side | top | split
+
 function airSetView(mode) {
     _airViewMode = mode;
-    document.getElementById('btnView3D').classList.toggle('active', mode === '3d');
-    document.getElementById('btnViewSplit').classList.toggle('active', mode === 'split');
-    var is3D = (mode === '3d');
-    _air3dCanvas.style.display = is3D ? '' : 'none';
-    document.getElementById('airCanvas').style.display = is3D ? 'none' : '';
-    document.getElementById('airMiniMap').style.opacity = is3D ? '0.55' : '0';
-    document.getElementById('airMiniMap').style.visibility = is3D ? 'visible' : 'hidden';
-    document.getElementById('airLocBadge').style.display = is3D ? '' : 'none';
-    document.getElementById('altAxis').style.display = is3D ? 'none' : '';
-    // Panel labels hidden in 3D
-    document.querySelectorAll('.air-panel-label').forEach(function(el) {
-        el.style.display = is3D ? 'none' : '';
-    });
-    document.querySelectorAll('.air-divider').forEach(function(el) {
-        el.style.display = is3D ? 'none' : '';
+
+    // Update toggle button states
+    document.querySelectorAll('#airViewToggle button').forEach(function(b) {
+        b.classList.toggle('btn-primary', b.dataset.airview === mode);
+        b.classList.toggle('btn-outline-primary', b.dataset.airview !== mode);
     });
 
-    if (is3D) {
+    var c3d  = document.getElementById('air3dCanvas');
+    var c2d  = document.getElementById('airCanvas');
+    var map  = document.getElementById('airMiniMap');
+    var lblA = document.getElementById('airLabelA');
+    var lblB = document.getElementById('airLabelB');
+    var lblC = document.getElementById('airLabelC');
+    var dAB  = document.getElementById('divAB');
+    var dBC  = document.getElementById('divBC');
+    var altAxis = document.getElementById('altAxis');
+    var locBadge = document.getElementById('airLocBadge');
+
+    // Hide all labels and dividers first
+    if (lblA) lblA.style.display = 'none';
+    if (lblB) lblB.style.display = 'none';
+    if (lblC) lblC.style.display = 'none';
+    if (dAB) dAB.style.display = 'none';
+    if (dBC) dBC.style.display = 'none';
+    if (altAxis) altAxis.style.display = 'none';
+
+    if (mode === 'perspective') {
+        if (c3d) c3d.style.display = 'block';
+        if (c2d) c2d.style.display = 'none';
+        if (map) { map.style.opacity = '0.55'; map.style.visibility = 'visible'; }
+        if (lblA) lblA.style.display = '';
+        if (locBadge) locBadge.style.display = '';
         _airInit3D();
         _airInitMap();
         _airCenterMapOnZone();
         _airSyncZoom();
         if (!_air3dAnimRunning) { _air3dAnimRunning = true; _airAnimate3D(); }
-    } else {
+    } else if (mode === 'side') {
+        if (c3d) c3d.style.display = 'none';
+        if (c2d) c2d.style.display = 'block';
+        if (map) { map.style.opacity = '0.3'; map.style.visibility = 'visible'; }
+        if (lblB) lblB.style.display = '';
+        if (altAxis) altAxis.style.display = '';
+        _air3dAnimRunning = false;
+    } else if (mode === 'top') {
+        if (c3d) c3d.style.display = 'none';
+        if (c2d) c2d.style.display = 'block';
+        if (map) { map.style.opacity = '0.9'; map.style.visibility = 'visible'; }
+        if (lblC) lblC.style.display = '';
+        _air3dAnimRunning = false;
+    } else if (mode === 'split') {
+        if (c3d) c3d.style.display = 'none';
+        if (c2d) c2d.style.display = 'block';
+        if (map) { map.style.opacity = '0.7'; map.style.visibility = 'visible'; }
+        if (lblA) lblA.style.display = '';
+        if (lblB) lblB.style.display = '';
+        if (lblC) lblC.style.display = '';
+        if (dAB) dAB.style.display = '';
+        if (dBC) dBC.style.display = '';
+        if (altAxis) altAxis.style.display = '';
         _air3dAnimRunning = false;
     }
+
+    // Resize canvases
+    if (c3d) { c3d.width = c3d.clientWidth; c3d.height = c3d.clientHeight; }
+    if (c2d) { c2d.width = c2d.clientWidth; c2d.height = c2d.clientHeight; }
+
+    console.log('[AirScene] View mode:', mode);
 }
+
+function airZoomIn() {
+    if (typeof _airMap !== 'undefined' && _airMap) _airMap.zoomIn();
+    console.log('[AirScene] Zoom in');
+}
+
+function airZoomOut() {
+    if (typeof _airMap !== 'undefined' && _airMap) _airMap.zoomOut();
+    console.log('[AirScene] Zoom out');
+}
+
+// Wire up view toggle buttons
+document.querySelectorAll('#airViewToggle button').forEach(function(b) {
+    b.addEventListener('click', function() { airSetView(this.dataset.airview); });
+});
 
 function _airInit3D() {
     if (_airRenderer) return;  // already initialized
