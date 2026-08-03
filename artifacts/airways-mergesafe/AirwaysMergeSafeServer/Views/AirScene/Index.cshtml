@@ -3020,6 +3020,11 @@ function loadEvents(events) {
             }
             existing.isNSHwy  = isNSHwy;
             existing.lastSeen = now;
+        } else if (existing && existing.exited) {
+            // Vehicle was exited and didn't qualify for re-entry (same coords).
+            // Don't overwrite — keep exited flag so _syncAirMeshes skips it.
+            // Update lastSeen so pruning doesn't remove it prematurely.
+            existing.lastSeen = now;
         } else {
             // New vehicle or zone changed — set full initial state
             vehicleData.set(vid, { ev: ev, vc: vc, lat: lat, lon: lon, speedMph: spd, make: make,
