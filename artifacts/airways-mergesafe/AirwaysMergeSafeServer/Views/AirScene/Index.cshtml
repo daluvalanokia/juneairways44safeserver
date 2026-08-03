@@ -1979,6 +1979,38 @@ function _airGetBridgeBounds() {
     return r;
 }
 
+// ── Map-derived bounds: reads the Leaflet map's CURRENT visible start/end
+// coordinates (NW/SE corners) and converts them into 3D scene coordinates.
+// NOT cached — must reflect live pan/zoom on every call.
+function _airGetMapBounds3D() {
+    if (!_map || !_mapReady) return null;
+    try {
+        var b = _map.getBounds();
+        var ne = b.getNorthEast(), sw = b.getSouthWest();
+        var p1 = norm(ne.lat, ne.lng);
+        var p2 = norm(sw.lat, sw.lng);
+        return {
+            minX: Math.min(p1.x, p2.x), maxX: Math.max(p1.x, p2.x),
+            minZ: Math.min(p1.z, p2.z), maxZ: Math.max(p1.z, p2.z)
+        };
+    } catch (e) { return null; }
+}
+
+// ── Effective animation bounds: UNION of the server bridge path extent
+// and the map's current visible start/end coordinates. This ensures the
+// aircar's animation always spans at least the full visible map area —
+// vehicles travel until/beyond the map's edge, not just the shorter
+// bridgePath extension, and re-adapts live as the user pans/zooms.
+function _airGetEffectiveBounds3D() {
+    var bp = _airGetBridgeBounds();
+    var mb = _airGetMapBounds3D();
+    if (!mb) return bp;
+    return {
+        minX: Math.min(bp.minX, mb.minX), maxX: Math.max(bp.maxX, mb.maxX),
+        minZ: Math.min(bp.minZ, mb.minZ), maxZ: Math.max(bp.maxZ, mb.maxZ)
+    };
+}
+
 function _syncAirMeshes() {
     // Remove stale meshes (vehicle no longer in vehicleData)
     airVehicleMeshes3 = airVehicleMeshes3.filter(function(m) {
@@ -2026,14 +2058,16 @@ function _syncAirMeshes() {
             var laneX = Math.cos(perpRad) * laneOff;
             var laneZ = -Math.sin(perpRad) * laneOff;
 
-            // Clamp initial position to bridge path bounds
-            var bp3 = _airGetBridgeBounds();
+            // Clamp initial position to the effective bounds (bridge path
+            // UNION current visible map extent) — spawns across full map
+            var bp3 = _airGetEffectiveBounds3D();
             var px = Math.max(bp3.minX, Math.min(bp3.maxX, p3.x + laneX));
             var pz = Math.max(bp3.minZ, Math.min(bp3.maxZ, p3.z + laneZ));
 
-            // ── Initial Y: bridge height + altitude from data record ──────────
+            // ── Initial Y: bridge height + capped/bounded altitude ─────────────
+            var _zoomA0 = (airRadius3 || 280) / 280;
             var _initAltY = (vd.isAirFlyCar && vd.altitudeMeters > 0)
-                ? 3 + (vd.altitudeMeters * (XZ_SCALE / 111000) * 4)
+                ? 3 + Math.min(140, vd.altitudeMeters * 0.17) * _zoomA0
                 : 0;
             mesh.position.set(px, _initAltY, pz);
             mesh.rotation.y = -(dir3v - 90) * Math.PI / 180;
@@ -2044,8 +2078,14 @@ function _syncAirMeshes() {
             var _isFC = vd.isAirFlyCar || false;
             var _altM = vd.altitudeMeters || 0;
             var _bridgeH = 3;  // bridge surface thickness in 3D units
+            // Bounded altitude scale: real altitude range is 0-800m (urban
+            // 30-150m, express corridor 151-800m). Map to a capped 3D range
+            // (0-140 units) that stays well within the camera frustum at any
+            // zoom, scaled proportionally with zoom (airRadius3/280) so it
+            // shrinks/grows in sync with the rest of the scene.
+            var _zoomA = (airRadius3 || 280) / 280;
             var _altUnits = _isFC && _altM > 0
-                ? _bridgeH + (_altM * (XZ_SCALE / 111000) * 4)
+                ? _bridgeH + Math.min(140, _altM * 0.17) * _zoomA
                 : 0;
 
             // Save label data from _makeAir3DVehicle before userData overwrite
@@ -2119,8 +2159,9 @@ function _animateAir3D() {
         // Gentle bob for visual life
         // FlyCar: maintain altitude-based Y + gentle hover oscillation
         // Ground vehicle: Y=0 + slight bob
+        var _zoomAF = (airRadius3 || 280) / 280;
         var baseY = (ud.isFlyCar && ud.altitudeMeters > 0)
-            ? 3 + (ud.altitudeMeters * (XZ_SCALE / 111000) * 4)
+            ? 3 + Math.min(140, ud.altitudeMeters * 0.17) * _zoomAF
             : (ud.baseY || 0);
         var bob = Math.sin(_tick3 * 0.15 + ud.phase) * (ud.isFlyCar ? 0.8 : 0.15);
         m.position.y = baseY + bob;
@@ -2134,10 +2175,13 @@ function _animateAir3D() {
             });
         }
 
-        // ── Remove vehicles that exit bridge path coordinate bounds ──
-        // Uses actual bridge path extent in 3D coordinates, not hardcoded ±880
-        var bp = _airGetBridgeBounds();
-        var margin = 30;  // small margin beyond path endpoints
+        // ── Remove vehicles that exit the EFFECTIVE bounds (bridge path
+        // UNION current visible map extent) — the vehicle travels until it
+        // is beyond the map's actual edge, not just a short server extension.
+        // Larger margin (80) so it visibly continues past the edge before
+        // disappearing, instead of vanishing right at the boundary.
+        var bp = _airGetEffectiveBounds3D();
+        var margin = 80;
         if (m.position.x > bp.maxX + margin || m.position.x < bp.minX - margin ||
             m.position.z > bp.maxZ + margin || m.position.z < bp.minZ - margin) {
             if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
@@ -2380,12 +2424,13 @@ function _syncZoomAndScale3D() {
         var vd = vehicleData.get(m.userData.vid);
         if (vd) {
             var p = norm(vd.lat, vd.lon);
-            var bp = _airGetBridgeBounds();
+            var bp = _airGetEffectiveBounds3D();
             m.position.x = Math.max(bp.minX, Math.min(bp.maxX, p.x));
             m.position.z = Math.max(bp.minZ, Math.min(bp.maxZ, p.z));
-            // Recompute altitude Y from updated XZ_SCALE
+            // Recompute altitude Y with bounded/capped scale
             if (vd.isAirFlyCar && vd.altitudeMeters > 0) {
-                var newBaseY = 3 + (vd.altitudeMeters * (XZ_SCALE / 111000) * 4);
+                var _zoomAR = (airRadius3 || 280) / 280;
+                var newBaseY = 3 + Math.min(140, vd.altitudeMeters * 0.17) * _zoomAR;
                 m.userData.baseY = newBaseY;
                 m.position.y = newBaseY;
             }
