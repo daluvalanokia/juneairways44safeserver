@@ -1306,7 +1306,19 @@ airScene3.add(airRoadGroup3);
 // Road width is fixed at a visually appropriate size (20 units) — it
 // represents the visual lane structure, not real-world meters.
 // Ground planes removed: they were enormous cream strips obscuring the map.
-var _airRoadWidth3D = 20;   // fixed visual width, NOT scaled with XZ_SCALE
+// Highway lane counts (for proportional road width). Default 4 lanes.
+var _airHwLanes = { 'I20': 6, 'I35': 6, 'I10': 8, 'I45': 6, 'I30': 4, 'I25': 4 };
+// Dynamic road width — scales with XZ_SCALE so the road is proportional
+// to the highway's geographic span. Base: lanes × 3.7m → scaled to scene.
+var _airRoadWidth3D = 20;
+function _airComputeRoadWidth() {
+    var hw = (HW || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    var lanes = _airHwLanes[hw] || 4;
+    var realWidthM = lanes * 3.7;
+    var mpu = XZ_SCALE / 111000;
+    _airRoadWidth3D = Math.max(12, Math.min(60, realWidthM * mpu * 1.5));
+    return _airRoadWidth3D;
+}
 var _airRoadMeshes3D = [];  // rebuildable road elements
 
 function _airBuildRoad3D() {
@@ -1314,6 +1326,7 @@ function _airBuildRoad3D() {
     _airRoadMeshes3D.forEach(function(m) { airRoadGroup3.remove(m); });
     _airRoadMeshes3D = [];
 
+    _airComputeRoadWidth();
     var rw = _airRoadWidth3D;
 
     // Road surface
@@ -1484,7 +1497,8 @@ function _airRenderOSMStructures(elements) {
         // Convert to road-local space (inverse rotation of airRoadGroup3)
         var roadX = pw.x * cosR - pw.z * sinR;
         var roadZ = pw.x * sinR + pw.z * cosR;
-        if (roadZ > -40) roadZ = -40 - Math.abs(roadZ) * 0.5;
+        var _rw2 = _airRoadWidth3D;
+        if (roadZ > -_rw2 * 2) roadZ = -_rw2 * 2 - Math.abs(roadZ) * 0.5;
 
         // Footprint dimensions in metres
         var widthM = Math.abs(maxLon - minLon) * 111000 * Math.cos(cLat * Math.PI / 180);
@@ -1511,29 +1525,31 @@ function _airRenderOSMStructures(elements) {
 // Fallback: synthetic buildings distributed ALONG the bridge path via norm()
 function _airBuildFallbackStructures() {
     _airClearStructures3D();
-    // Road runs from X=-900 to X=+900 in road-local space (airRoadGroup3).
-    // Buildings are placed at perpendicular offsets (Z-axis in road-local space).
-    // Negative Z = one side of highway, Positive Z = other side.
-    // Both sides are "behind" the road relative to the side-view camera.
+    _airComputeRoadWidth();
+    var rw = _airRoadWidth3D;
+    // Buildings placed behind the bridge (negative Z = far side from camera).
+    // Offsets proportional to road width — wider highway → buildings further back.
+    // Camera-facing side stays clear so aircars at altitude are visible.
     var idx = 0;
     var roadLen = 1800;
-    var cols = 10;     // clusters along the road
+    var cols = 10;
     var step = roadLen / cols;
+    // Proportional Z offsets: rw*4.5, rw*7, rw*9.5, rw*12
+    var zOffsets = [-rw * 4.5, -rw * 7, -rw * 9.5, -rw * 12];
 
     for (var c = 0; c < cols; c++) {
         var roadX = -900 + step * c + step * 0.5 + (Math.random() - 0.5) * 40;
 
-        // ALL buildings behind the bridge (negative Z = far side from camera)
-        // Camera-facing side stays clear so airflycars at altitude are visible
-        [ -90, -140, -190, -240 ].forEach(function(rz) {
-            var hM = 15 + Math.random() * 40;
-            var wM = 25 + Math.random() * 45;
-            var dM = 20 + Math.random() * 35;
+        zOffsets.forEach(function(rz) {
+            // Building size also scales with road width
+            var hM = 15 + Math.random() * (30 + rw * 0.8);
+            var wM = 20 + Math.random() * (25 + rw * 0.5);
+            var dM = 18 + Math.random() * (20 + rw * 0.5);
             _airRenderBuilding(roadX + (Math.random()-0.5)*30, rz + (Math.random()-0.5)*15, wM, dM, hM, null, idx++);
         });
     }
     _airAddGroundGrid();
-    console.log('[AirScene] Fallback: ' + idx + ' road-local buildings');
+    console.log('[AirScene] Fallback: ' + idx + ' buildings, rw=' + rw.toFixed(1));
 }
 
 function _airAddGroundGrid() {
@@ -3275,7 +3291,9 @@ async function refreshAirAnimation() {
             midLat = z.lat; midLon = z.lon;
             _panMapTo(z.lat, z.lon);
             _setHighwayCoords(z.lat, z.lon, z.highwayId || HW);
-            console.log('[T3D] refreshAirAnimation: panned map to (' + z.lat + ', ' + z.lon + ')');
+            _airComputeRoadWidth();
+            _airBuildRoad3D();
+            console.log('[T3D] refreshAirAnimation: center=(' + z.lat + ', ' + z.lon + ') rw=' + _airRoadWidth3D.toFixed(1));
         } else if (AIR_ZONES.length > 0) {
             var z0 = AIR_ZONES[0];
             midLat = z0.lat; midLon = z0.lon;
