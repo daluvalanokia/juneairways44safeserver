@@ -2191,15 +2191,20 @@ function _animateAir3D() {
             });
         }
 
-        // ── Remove vehicles that exit the EFFECTIVE bounds (bridge path
-        // UNION current visible map extent) — the vehicle travels until it
-        // is beyond the map's actual edge, not just a short server extension.
-        // Larger margin (80) so it visibly continues past the edge before
-        // disappearing, instead of vanishing right at the boundary.
+        // ── Remove vehicles that exit the full road extent ──
+        // The road spans ±900 units. Use the EFFECTIVE bounds (bridge path
+        // UNION map extent) but ensure we always cover at least the road's
+        // full length. Large margin (150) so vehicles visibly fly past the
+        // edge before disappearing — they reach the end of the animation
+        // coordinate, not disappear short of it.
         var bp = _airGetEffectiveBounds3D();
-        var margin = 80;
-        if (m.position.x > bp.maxX + margin || m.position.x < bp.minX - margin ||
-            m.position.z > bp.maxZ + margin || m.position.z < bp.minZ - margin) {
+        // Guarantee minimum extent of ±900 (full road length)
+        var exitMinX = Math.min(bp.minX, -900) - 150;
+        var exitMaxX = Math.max(bp.maxX,  900) + 150;
+        var exitMinZ = Math.min(bp.minZ, -900) - 150;
+        var exitMaxZ = Math.max(bp.maxZ,  900) + 150;
+        if (m.position.x > exitMaxX || m.position.x < exitMinX ||
+            m.position.z > exitMaxZ || m.position.z < exitMinZ) {
             if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
             airScene3.remove(m);
             // Mark as exited in vehicleData so it doesn't respawn at origin
@@ -2929,11 +2934,11 @@ function loadEvents(events) {
         // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
         var vid = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '';
         if (!vid) return;
-        // ── Sim-mode filter: reject non-simulation vehicles ──────────────
-        // When simRunning is true, only accept vehicles with IDs starting
-        // with "SIM-". This prevents historical/synthetic/test vehicles
-        // from polluting the sim animation scene.
-        if (simRunning && vid.indexOf('SIM-') !== 0) {
+        // ── Sim-mode filter: accept simulation vehicles only ──────────────
+        // When simRunning is true, accept vehicles with IDs starting with
+        // "SIM-" (ground sim) OR "AFC-" (AirFlyCar sim). All other IDs are
+        // historical/synthetic/test vehicles and are rejected.
+        if (simRunning && vid.indexOf('SIM-') !== 0 && vid.indexOf('AFC-') !== 0) {
             console.log('[T3D] loadEvents: REJECTED non-sim vehicle ' + vid + ' (sim is ON)');
             return;
         }
@@ -3059,8 +3064,17 @@ function loadEvents(events) {
         // If vehicle was exited but sim now provides new coordinates far
         // from where it exited, allow it to re-enter the scene
         if (existing && existing.exited && existing.lat && lat &&
-            Math.abs(existing.lat - lat) > 0.0001 && Math.abs(existing.lon - lon) > 0.0001) {
-            existing.exited = false;  // new coords = re-enter
+            (Math.abs(existing.lat - lat) > 0.0001 || Math.abs(existing.lon - lon) > 0.0001)) {
+            // New coords from sim — update GPS so the vehicle respawns at its
+            // new position, not the original start point
+            existing.exited = false;
+            existing.lat = lat;
+            existing.lon = lon;
+            existing.direction = dir;
+            existing.speedMph = spd;
+            existing.isAirFlyCar = (ev.is_air_fly_car === 'Y');
+            existing.altitudeMeters = ev.altitude_meters || 0;
+            existing.lastSeen = now;
         }
         if (existing && !existing.exited && !isNaN(existing.lat) && !isNaN(existing.lon)
                      && existing.lat !== 0 && existing.lon !== 0
