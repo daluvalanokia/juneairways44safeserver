@@ -1646,7 +1646,7 @@ function _makeAir3DVehicle(ev, vc, vd) {
 
     if (isFlyCar) {
         // ═══ FlyCar aircraft mesh: fuselage + wings + tail + rotors ══════
-        var fL = 6, fW = 1.5, fH = 1.2;
+        var fL = 8, fW = 2.0, fH = 1.6;   // larger for better visibility
         var bodyColor = vc.color || '#60a5fa';
         var mat = new THREE.MeshPhongMaterial({ color: new THREE.Color(bodyColor), shininess: 80 });
 
@@ -1729,48 +1729,48 @@ function _makeAir3DVehicle(ev, vc, vd) {
         var logoImg = AIR_BRAND_LOGO_IMAGES[makeName];
 
         var labelCanvas = document.createElement('canvas');
-        labelCanvas.width = 512; labelCanvas.height = 128;
+        labelCanvas.width = 512; labelCanvas.height = 160;
         var lx = labelCanvas.getContext('2d');
-        lx.fillStyle = 'rgba(10, 30, 60, 0.92)';  // blue tint for flycars
-        lx.beginPath(); lx.roundRect(6, 12, 500, 104, 16); lx.fill();
-        lx.strokeStyle = 'rgba(96, 165, 250, 0.6)'; lx.lineWidth = 2.5; lx.stroke();
+        lx.fillStyle = 'rgba(10, 25, 50, 0.94)';  // dark blue for flycars
+        lx.beginPath(); lx.roundRect(6, 8, 500, 144, 18); lx.fill();
+        lx.strokeStyle = 'rgba(96, 165, 250, 0.7)'; lx.lineWidth = 3; lx.stroke();
 
         // Brand logo from VehicleRegistry
         if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
             lx.save();
-            lx.beginPath(); lx.arc(56, 64, 38, 0, Math.PI * 2); lx.clip();
-            lx.drawImage(logoImg, 18, 26, 76, 76); lx.restore();
-            lx.beginPath(); lx.arc(56, 64, 40, 0, Math.PI * 2);
+            lx.beginPath(); lx.arc(56, 80, 44, 0, Math.PI * 2); lx.clip();
+            lx.drawImage(logoImg, 12, 36, 88, 88); lx.restore();
+            lx.beginPath(); lx.arc(56, 80, 46, 0, Math.PI * 2);
             lx.strokeStyle = 'rgba(96, 165, 250, 0.5)'; lx.lineWidth = 2; lx.stroke();
         } else if (badge) {
-            lx.beginPath(); lx.arc(56, 64, 35, 0, Math.PI * 2);
+            lx.beginPath(); lx.arc(56, 80, 40, 0, Math.PI * 2);
             lx.fillStyle = badge.color; lx.fill();
             lx.strokeStyle = 'rgba(255,255,255,0.6)'; lx.lineWidth = 2.5; lx.stroke();
-            lx.fillStyle = '#fff'; lx.font = 'bold 28px Arial';
+            lx.fillStyle = '#fff'; lx.font = 'bold 32px Arial';
             lx.textAlign = 'center'; lx.textBaseline = 'middle';
-            lx.fillText(badge.initials.slice(0, 3), 56, 66);
+            lx.fillText(badge.initials.slice(0, 3), 56, 82);
         }
 
-        lx.fillStyle = '#93c5fd';  // light blue for flycar IDs
-        lx.font = 'bold 30px monospace';
+        lx.fillStyle = '#bfdbfe';  // bright blue for flycar IDs
+        lx.font = 'bold 34px monospace';
         lx.textAlign = 'left'; lx.textBaseline = 'middle';
-        lx.fillText(vidShort, 110, 42);
+        lx.fillText(vidShort, 112, 48);
 
         var catName = vc ? vc.category : '';
         var subText = makeName + (makeName && catName ? ' · ' : '') + catName;
-        lx.fillStyle = 'rgba(180, 210, 235, 0.95)';
-        lx.font = '22px Arial';
-        lx.fillText(subText.slice(0, 26), 110, 84);
+        lx.fillStyle = 'rgba(190, 220, 240, 0.95)';
+        lx.font = '24px Arial';
+        lx.fillText(subText.slice(0, 28), 112, 92);
 
         if (vd && vd.speedMph) {
             lx.fillStyle = 'rgba(253, 224, 71, 1.0)';
-            lx.font = 'bold 22px monospace'; lx.textAlign = 'right';
-            lx.fillText(Math.round(vd.speedMph) + ' mph', 494, 42);
+            lx.font = 'bold 26px monospace'; lx.textAlign = 'right';
+            lx.fillText(Math.round(vd.speedMph) + ' mph', 498, 48);
         }
         if (vd && vd.altitudeMeters) {
             lx.fillStyle = 'rgba(34, 211, 238, 1.0)';
-            lx.font = 'bold 20px monospace'; lx.textAlign = 'right';
-            lx.fillText(Math.round(vd.altitudeMeters) + 'm alt', 494, 84);
+            lx.font = 'bold 24px monospace'; lx.textAlign = 'right';
+            lx.fillText(Math.round(vd.altitudeMeters) + 'm alt', 498, 92);
         }
 
         var labelTex = new THREE.CanvasTexture(labelCanvas);
@@ -1780,7 +1780,7 @@ function _makeAir3DVehicle(ev, vc, vd) {
             map: labelTex, transparent: true, depthTest: false,
             depthWrite: false, sizeAttenuation: true
         }));
-        labelSprite.scale.set(55, 13.75, 1);
+        labelSprite.scale.set(60, 18.75, 1);  // 512:160 aspect ratio
         labelSprite.renderOrder = 999;
         group.userData.labelSprite = labelSprite;
         group.userData.labelHeight = 10;
@@ -2014,8 +2014,9 @@ function _syncAirMeshes() {
 
             // ── Bearing-based velocity decomposition (matches 2D overlay) ──
             // bearing 0°=N → +Z, 90°=E → +X, 180°=S → -Z, 270°=W → -X
-            var vx3 = spd3 * 0.012 * Math.sin(rad3);
-            var vz3 = spd3 * 0.012 * Math.cos(rad3);
+            var _zoomFactor = (airRadius3 || 280) / 280;
+            var vx3 = spd3 * 0.012 * _zoomFactor * Math.sin(rad3);
+            var vz3 = spd3 * 0.012 * _zoomFactor * Math.cos(rad3);
 
             // Perpendicular lane offset (perpendicular to bearing)
             var perpRad = rad3 + Math.PI / 2;
@@ -2102,8 +2103,9 @@ function _animateAir3D() {
             ud.dir = dir;
             // Bearing 0°=N→+Z, 90°=E→+X, 180°=S→-Z, 270°=W→-X
             var rad = dir * Math.PI / 180;
-            ud.vx = spd * 0.012 * Math.sin(rad);
-            ud.vz = spd * 0.012 * Math.cos(rad);
+            var _zf = (airRadius3 || 280) / 280;
+            ud.vx = spd * 0.012 * _zf * Math.sin(rad);
+            ud.vz = spd * 0.012 * _zf * Math.cos(rad);
             // Update rotation to match direction from input data
             m.rotation.y = -(dir - 90) * Math.PI / 180;
         }
@@ -2163,9 +2165,10 @@ function _animateAir3D() {
             // Position above the vehicle in world coords
             var lblH = m.userData.isFlyCar ? (m.userData.labelHeight || 10) : (m.userData.labelHeight || 6);
             spr.position.set(m.position.x, m.position.y + lblH, m.position.z);
-            // Scale based on camera distance for consistent readability
-            var dist = airCamP.position.distanceTo(m.position);
-            var w = Math.max(30, Math.min(80, dist * 0.22));
+            // Scale based on ACTIVE camera distance for readability
+            var _actCam = airCurrentView === 'side' ? airCamS : airCamP;
+            var dist = _actCam.position.distanceTo(m.position);
+            var w = Math.max(35, Math.min(90, dist * 0.24));
             spr.scale.set(w, w * 0.25, 1);
         }
     });
@@ -2192,7 +2195,7 @@ function _animateAir3D() {
 var _isDrag3 = false, _prevM3 = {x:0,y:0};
 
 // Camera angle is fixed: airTheta3 aligned to highway bearing, airPhi3 = gentle tilt
-var _camPhiFixed = 0.35;   // ~20° tilt from top-down — enough 3D depth, stable alignment
+var _camPhiFixed = 0.55;   // ~31° tilt — shows altitude of aircars above bridge
 
 function _updateCamera3D() {
     var brg = (_airHwBearingDeg || 90) * Math.PI / 180;
@@ -2226,7 +2229,7 @@ function _setSideCameraForView() {
     var camAz  = brg + Math.PI / 2;    // 90° offset = perpendicular to highway, camera side
 
     var dist   = Math.max(220, airRadius3 * 1.0);
-    var height = Math.max(55, airRadius3 * 0.28);
+    var height = Math.max(40, airRadius3 * 0.20);  // lower for better altitude view
 
     // Camera world position: perpendicular to highway, at height
     airCamS.position.x = dist * Math.sin(camAz);
