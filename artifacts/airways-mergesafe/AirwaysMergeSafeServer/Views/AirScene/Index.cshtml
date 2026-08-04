@@ -1087,27 +1087,27 @@ function _drawVehicles() {
         _octx.stroke();
         _octx.setLineDash([]);
 
-        // Vehicle ID — bold black text with light shadow for legibility
+        // Vehicle ID — light color text with dark shadow for legibility
         _octx.save();
-        _octx.shadowColor = 'rgba(255,255,255,0.85)';
+        _octx.shadowColor = 'rgba(0,0,0,0.8)';
         _octx.shadowBlur = 3;
-        _octx.fillStyle = '#000';
-        _octx.font = 'bold 10px monospace';
+        _octx.fillStyle = 'rgba(220, 235, 255, 0.9)';
+        _octx.font = '10px monospace';
         _octx.textAlign = 'left';
         _octx.textBaseline = 'top';
         _octx.fillText((vid || '–').slice(0, 14), tipX + 4, tipY + 3);
 
-        // Make + category — smaller, dark grey
-        _octx.fillStyle = 'rgba(0,0,0,0.8)';
+        // Make + category — smaller, light grey
+        _octx.fillStyle = 'rgba(200, 215, 235, 0.7)';
         _octx.font = '9px Arial';
         _octx.textBaseline = 'bottom';
         var makeCat = (make ? make.slice(0, 12) : '') + (make && cat ? ' · ' : '') + cat;
         _octx.fillText(makeCat, tipX + 4, tipY + tipH - 3);
 
-        // Speed — right-aligned, dark with amber tint
+        // Speed — right-aligned, light amber
         if (spd > 0) {
-            _octx.fillStyle = 'rgba(120,53,15,0.95)';
-            _octx.font = 'bold 9px monospace';
+            _octx.fillStyle = 'rgba(253, 224, 71, 0.85)';
+            _octx.font = '9px monospace';
             _octx.textAlign = 'right';
             _octx.textBaseline = 'top';
             _octx.fillText(spd + 'mph', tipX + tipW - 4, tipY + 3);
@@ -1738,57 +1738,59 @@ function _makeAir3DVehicle(ev, vc, vd) {
 
         group.userData.isFlyCar = true;
 
-        // ── FlyCar label (inline — same style as ground vehicle label) ──
-        var vidShort = (vd && vd.vid) ? vd.vid.slice(0, 14)
-                     : (ev && ev.vehicle_id) ? ev.vehicle_id.slice(0, 14)
+        // ── FlyCar label — compact, light, semi-transparent ──
+        var vidShort = (vd && vd.vid) ? vd.vid.slice(0, 12)
+                     : (ev && ev.vehicle_id) ? ev.vehicle_id.slice(0, 12)
                      : (ev && ev.id) ? String(ev.id) : '';
         var makeName = make || '';
         var badge = AIR_BRAND_BADGES[makeName];
         var logoImg = AIR_BRAND_LOGO_IMAGES[makeName];
 
         var labelCanvas = document.createElement('canvas');
-        labelCanvas.width = 512; labelCanvas.height = 160;
+        labelCanvas.width = 360; labelCanvas.height = 80;
         var lx = labelCanvas.getContext('2d');
-        lx.fillStyle = 'rgba(10, 25, 50, 0.94)';  // dark blue for flycars
-        lx.beginPath(); lx.roundRect(6, 8, 500, 144, 18); lx.fill();
-        lx.strokeStyle = 'rgba(96, 165, 250, 0.7)'; lx.lineWidth = 3; lx.stroke();
+        // Light, semi-transparent background — not a heavy dark panel
+        lx.fillStyle = 'rgba(15, 25, 45, 0.45)';
+        lx.beginPath(); lx.roundRect(4, 4, 352, 72, 12); lx.fill();
+        lx.strokeStyle = 'rgba(96, 165, 250, 0.35)'; lx.lineWidth = 1.5; lx.stroke();
 
-        // Brand logo from VehicleRegistry
+        // Brand logo from VehicleRegistry — small, left side
         if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
             lx.save();
-            lx.beginPath(); lx.arc(56, 80, 44, 0, Math.PI * 2); lx.clip();
-            lx.drawImage(logoImg, 12, 36, 88, 88); lx.restore();
-            lx.beginPath(); lx.arc(56, 80, 46, 0, Math.PI * 2);
-            lx.strokeStyle = 'rgba(96, 165, 250, 0.5)'; lx.lineWidth = 2; lx.stroke();
+            lx.beginPath(); lx.arc(32, 40, 22, 0, Math.PI * 2); lx.clip();
+            lx.drawImage(logoImg, 10, 18, 44, 44); lx.restore();
         } else if (badge) {
-            lx.beginPath(); lx.arc(56, 80, 40, 0, Math.PI * 2);
+            lx.beginPath(); lx.arc(32, 40, 20, 0, Math.PI * 2);
             lx.fillStyle = badge.color; lx.fill();
-            lx.strokeStyle = 'rgba(255,255,255,0.6)'; lx.lineWidth = 2.5; lx.stroke();
-            lx.fillStyle = '#fff'; lx.font = 'bold 32px Arial';
+            lx.strokeStyle = 'rgba(255,255,255,0.4)'; lx.lineWidth = 1.5; lx.stroke();
+            lx.fillStyle = '#fff'; lx.font = 'bold 16px Arial';
             lx.textAlign = 'center'; lx.textBaseline = 'middle';
-            lx.fillText(badge.initials.slice(0, 3), 56, 82);
+            lx.fillText(badge.initials.slice(0, 3), 32, 41);
         }
 
-        lx.fillStyle = '#bfdbfe';  // bright blue for flycar IDs
-        lx.font = 'bold 34px monospace';
+        // Vehicle ID — light, thin, not bold-heavy
+        lx.fillStyle = 'rgba(191, 219, 254, 0.85)';
+        lx.font = '20px monospace';
         lx.textAlign = 'left'; lx.textBaseline = 'middle';
-        lx.fillText(vidShort, 112, 48);
+        lx.fillText(vidShort, 64, 28);
 
+        // Make + category — smaller, faded
         var catName = vc ? vc.category : '';
         var subText = makeName + (makeName && catName ? ' · ' : '') + catName;
-        lx.fillStyle = 'rgba(190, 220, 240, 0.95)';
-        lx.font = '24px Arial';
-        lx.fillText(subText.slice(0, 28), 112, 92);
+        lx.fillStyle = 'rgba(180, 210, 235, 0.6)';
+        lx.font = '14px Arial';
+        lx.fillText(subText.slice(0, 24), 64, 52);
 
+        // Speed + altitude — right-aligned, light tints
         if (vd && vd.speedMph) {
-            lx.fillStyle = 'rgba(253, 224, 71, 1.0)';
-            lx.font = 'bold 26px monospace'; lx.textAlign = 'right';
-            lx.fillText(Math.round(vd.speedMph) + ' mph', 498, 48);
+            lx.fillStyle = 'rgba(253, 224, 71, 0.75)';
+            lx.font = '16px monospace'; lx.textAlign = 'right';
+            lx.fillText(Math.round(vd.speedMph) + ' mph', 348, 28);
         }
         if (vd && vd.altitudeMeters) {
-            lx.fillStyle = 'rgba(34, 211, 238, 1.0)';
-            lx.font = 'bold 24px monospace'; lx.textAlign = 'right';
-            lx.fillText(Math.round(vd.altitudeMeters) + 'm alt', 498, 92);
+            lx.fillStyle = 'rgba(34, 211, 238, 0.75)';
+            lx.font = '14px monospace'; lx.textAlign = 'right';
+            lx.fillText(Math.round(vd.altitudeMeters) + 'm', 348, 52);
         }
 
         var labelTex = new THREE.CanvasTexture(labelCanvas);
@@ -1796,12 +1798,12 @@ function _makeAir3DVehicle(ev, vc, vd) {
         labelTex.minFilter = THREE.LinearFilter;
         var labelSprite = new THREE.Sprite(new THREE.SpriteMaterial({
             map: labelTex, transparent: true, depthTest: false,
-            depthWrite: false, sizeAttenuation: true
+            depthWrite: false, sizeAttenuation: true, opacity: 0.85
         }));
-        labelSprite.scale.set(60, 18.75, 1);  // 512:160 aspect ratio
+        labelSprite.scale.set(40, 8.9, 1);  // 360:80 aspect ratio — smaller
         labelSprite.renderOrder = 999;
         group.userData.labelSprite = labelSprite;
-        group.userData.labelHeight = 10;
+        group.userData.labelHeight = 6;
         group.userData.phase = Math.random() * Math.PI * 2;
         return group;
     }
