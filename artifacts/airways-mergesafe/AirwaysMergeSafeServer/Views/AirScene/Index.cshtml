@@ -1392,8 +1392,11 @@ var _airBldColors = [0x6b7280, 0x78716c, 0x64748b, 0x7c7766, 0x8b8178,
                      0x5f7a8a, 0x71797e, 0x918476, 0x688089, 0x83766b];
 
 function _airHeightScale() {
-    var unitsPerMeter = XZ_SCALE / 111000;
-    return Math.max(0.08, unitsPerMeter * 6);
+    var hw = (HW || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    var lanes = _airHwLanes[hw] || 4;
+    var realRoadM = lanes * 3.7;
+    var visualUPM = _airRoadWidth3D / realRoadM;
+    return Math.max(0.3, visualUPM);
 }
 
 function _airMakeLabel3D(text, x, topY, z) {
@@ -1559,7 +1562,7 @@ function _airRenderOSMStructures(elements) {
             if (!heightM && el.tags['building:levels'])
                 heightM = (parseInt(el.tags['building:levels']) || 1) * 3.5;
         }
-        if (!heightM || heightM < 3) heightM = 8 + Math.random() * 18;
+        if (!heightM || heightM < 3) heightM = 10 + Math.random() * 40;
 
         var name = (el.tags && el.tags.name) ? el.tags.name : null;
         _airRenderBuilding(roadX, roadZ, widthM, depthM, heightM, name, idx);
@@ -1587,8 +1590,10 @@ function _airBuildFallbackStructures() {
         var roadX = -900 + step * c + step * 0.5 + (Math.random() - 0.5) * 60;
         zOffsets.forEach(function(rz) {
             // Varied heights: mix of low (8-15m) and tall (25-50m)
-            var isTall = Math.random() > 0.5;
-            var hM = isTall ? 25 + Math.random() * 30 : 8 + Math.random() * 12;
+            var hRoll = Math.random();
+            var hM = hRoll < 0.5 ? 10 + Math.random() * 15
+                   : hRoll < 0.85 ? 30 + Math.random() * 30
+                   : 70 + Math.random() * 50;
             var wM = 15 + Math.random() * 20;
             var dM = 14 + Math.random() * 16;
             _airRenderBuilding(roadX + (Math.random()-0.5)*40, rz + (Math.random()-0.5)*25,
@@ -1675,7 +1680,7 @@ const airCamP = new THREE.PerspectiveCamera(50, _air3dCanvas.clientWidth / _air3
 airCamP.position.set(-180, 45, 90); airCamP.lookAt(60, 0, 0);
 // Side camera — 3D navigation map style: low angle, road in bottom-front, structures behind
 const airCamS = new THREE.PerspectiveCamera(45, _air3dCanvas.clientWidth / _air3dCanvas.clientHeight, 0.1, 5000);
-airCamS.position.set(0, 35, 320); airCamS.lookAt(0, 10, -80);
+airCamS.position.set(0, 55, 380); airCamS.lookAt(0, 15, -80);
 
 var airCurrentView = 'top';
 var airRadius3 = 280, airTheta3 = 0.6, airPhi3 = 0.5;
@@ -2130,15 +2135,16 @@ function _syncAirMeshes() {
             var _isFC = vd.isAirFlyCar || false;
             var _altM = vd.altitudeMeters || 0;
             var _zoomA0 = (airRadius3 || 280) / 280;
+            var _hScale = _airHeightScale();
             var _initAltY = (_isFC && _altM > 0)
-                ? 3 + Math.min(140, _altM * 0.17) * _zoomA0
+                ? 3 + Math.min(80, _altM * _hScale) * _zoomA0
                 : 0;
             mesh.position.set(px, _initAltY, pz);
             mesh.rotation.y = -(dir3v - 90) * Math.PI / 180;
 
             var _zoomA = (airRadius3 || 280) / 280;
             var _altUnits = _isFC && _altM > 0
-                ? 3 + Math.min(140, _altM * 0.17) * _zoomA
+                ? 3 + Math.min(80, _altM * _hScale) * _zoomA
                 : 0;
 
             var _savedLabel = mesh.userData.labelSprite || null;
@@ -2164,6 +2170,7 @@ function _syncAirMeshes() {
                               isFlyCar: _isFC,
                               altitudeMeters: _altM,
                               baseY: _altUnits,
+                              hScale: _hScale,
                               phase: Math.random() * Math.PI * 2,
                               spd: spd3,
                               labelSprite: _savedLabel,
@@ -2213,8 +2220,9 @@ function _animateAir3D() {
 
         // Altitude Y with gentle bob
         var _zoomAF = (airRadius3 || 280) / 280;
+        var _hScaleA = _airHeightScale();
         var baseY = (ud.isFlyCar && ud.altitudeMeters > 0)
-            ? 3 + Math.min(140, ud.altitudeMeters * 0.17) * _zoomAF
+            ? 3 + Math.min(80, ud.altitudeMeters * _hScaleA) * _zoomAF
             : (ud.baseY || 0);
         var bob = Math.sin(_tick3 * 0.15 + ud.phase) * (ud.isFlyCar ? 0.8 : 0.15);
         m.position.y = baseY + bob;
@@ -2331,7 +2339,7 @@ function _setSideCameraForView() {
     var camAz  = brg + Math.PI / 2;    // 90° offset = perpendicular to highway, camera side
 
     var dist   = Math.max(220, airRadius3 * 1.0);
-    var height = Math.max(40, airRadius3 * 0.20);  // lower for better altitude view
+    var height = Math.max(60, airRadius3 * 0.28);  // raised for taller buildings
 
     // Camera world position: perpendicular to highway, at height
     airCamS.position.x = dist * Math.sin(camAz);
