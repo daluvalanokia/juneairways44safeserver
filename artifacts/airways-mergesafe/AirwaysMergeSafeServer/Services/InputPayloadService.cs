@@ -43,7 +43,7 @@ public class InputPayloadService
     // Called by SimulationStop to reset all vehicle positions when sim ends
     public static void ResetVehicleState()
     {
-        lock (_stateLock) { _vehicleState.Clear(); _airFlyCarIdx = 0; }
+        lock (_stateLock) { _vehicleState.Clear(); }
     }
 
     public InputPayloadService(AppDbContext db)
@@ -370,16 +370,6 @@ public class InputPayloadService
     /// Produces realistic UAM telemetry with correlated fields
     /// (flight_phase drives altitude range, battery_soc drives range_remaining_km, etc.)
     /// </summary>
-    // Persistent pool of 8 AirFlyCar vehicle IDs — stable across sim ticks
-    // so the animation sees the SAME vehicles with ADVANCED positions each
-    // poll, not random new vehicles every 3 seconds.
-    private static readonly string[] _airFlyCarIds = new[]
-    {
-        "AFC-1001", "AFC-1002", "AFC-1003", "AFC-1004",
-        "AFC-1005", "AFC-1006", "AFC-1007", "AFC-1008"
-    };
-    private static int _airFlyCarIdx = 0;
-
     private static string GenerateAirFlyCar(Random rng, IEnumerable<string> fields,
         string? highwayId = null, double? zoneLat = null, double? zoneLon = null,
         double highwayBearing = 90.0)
@@ -390,76 +380,19 @@ public class InputPayloadService
         double baseLat = zoneLat ?? HighwayDefaultLat(highwayId);
         double baseLon = zoneLon ?? HighwayDefaultLon(highwayId);
 
-        // ── Persistent vehicle identity: rotate through the pool ──────────
-        // Each call returns the NEXT vehicle in the pool. Over 8 sim ticks,
-        // all 8 vehicles get updated. This ensures the animation sees the
-        // same vehicles with advancing positions, not random new ones.
-        string vehicleId = _airFlyCarIds[_airFlyCarIdx % _airFlyCarIds.Length];
-        _airFlyCarIdx++;
+        // ── Fresh vehicle each tick: new ID, spawn at zone coords, ─────────
+        // ── data-driven direction. No stateful tracking. The client ──────
+        // ── handles all movement and exit. Vehicle starts at coords in ───
+        // ── this data record, moves in direction in this data record ─────
+        // ── until end of bridge then removed. No back-and-forth, no repeat.
+        string vehicleId = $"AFC-{rng.Next(1000, 9999)}";
+        int direction = HighwayDirectionDeg(highwayId, rng);
 
-        // ── Stateful position tracking: advance existing vehicles ──────────
-        // Uses _vehicleState (same dictionary as ground vehicles) to track
-        // each AirFlyCar's position, speed, and direction over time. This
-        // creates continuous movement along the highway — the same vehicle
-        // appears at a slightly advanced position each tick, matching the
-        // simulation data to the animation.
-        double lat, lon;
-        int direction;
-        double speedMph;
+        var spawn = GenerateLanePosition(baseLat, baseLon, highwayId, rng, highwayBearing);
+        double lat = spawn.lat;
+        double lon = spawn.lon;
 
-        lock (_stateLock)
-        {
-            if (_vehicleState.TryGetValue(vehicleId, out var st))
-            {
-                // ── Advance existing vehicle position ──────────────────────
-                var dt = (DateTime.UtcNow - st.lastUpdate).TotalSeconds;
-                if (dt > 300) dt = 300;
-                if (dt < 0.1) dt = 0.1;
-                var ms = st.speed * 0.44704; // mph → m/s
-                var rad = st.dir * Math.PI / 180;
-                var cosLat = Math.Cos(st.lat * Math.PI / 180);
-                var dLat = ms * Math.Cos(rad) * dt / 111000.0;
-                var dLon = ms * Math.Sin(rad) * dt / (111000.0 * cosLat);
-                lat = Math.Round(st.lat + dLat, 6);
-                lon = Math.Round(st.lon + dLon, 6);
-                direction = st.dir;
-                speedMph = st.speed;
-
-                // If vehicle has traveled far from base (> 0.08° ~9km),
-                // reverse direction — fly back the other way. Do NOT
-                // teleport back to zone center (causes visible "restart
-                // from starting coordinates" in the animation). The vehicle
-                // stays at its current position and turns around, creating
-                // continuous back-and-forth flight along the corridor.
-                var distFromBase = Math.Sqrt(Math.Pow(lat - baseLat, 2) + Math.Pow(lon - baseLon, 2));
-                if (distFromBase > 0.08)
-                {
-                    direction = (direction + 180) % 360;
-                    // Nudge 1 step in the new direction to prevent
-                    // immediately re-triggering the boundary check
-                    var ms2 = speedMph * 0.44704;
-                    var rad2 = direction * Math.PI / 180;
-                    var cosLat2 = Math.Cos(lat * Math.PI / 180);
-                    lat = Math.Round(lat + ms2 * Math.Cos(rad2) * 0.5 / 111000.0, 6);
-                    lon = Math.Round(lon + ms2 * Math.Sin(rad2) * 0.5 / (111000.0 * cosLat2), 6);
-                }
-
-                _vehicleState[vehicleId] = (lat, lon, speedMph, direction, DateTime.UtcNow);
-            }
-            else
-            {
-                // ── New vehicle: spawn near zone center with random direction ─
-                direction = HighwayDirectionDeg(highwayId, rng);
-                speedMph = rng.Next(40, 90); // flycar cruise speed — moderate pace
-                var spawn = GenerateLanePosition(baseLat, baseLon, highwayId, rng, highwayBearing);
-                lat = spawn.lat;
-                lon = spawn.lon;
-                _vehicleState[vehicleId] = (lat, lon, speedMph, direction, DateTime.UtcNow);
-            }
-        }
-
-        // ── Determine flight state for telemetry fields ───────────────────
-        bool isGrounded   = speedMph < 5;
+        bool isGrounded   = rng.NextDouble() < 0.10;
         string flightPhase = isGrounded
             ? GroundPhases[rng.Next(GroundPhases.Length)]
             : FlightPhases[rng.Next(FlightPhases.Length)];
@@ -482,25 +415,15 @@ public class InputPayloadService
             ? makes[rng.Next(makes.Length)]
             : "Unknown";
 
-        speedMph = isGrounded ? 0 : flightPhase switch
+        double speedMph = isGrounded ? 0 : flightPhase switch
         {
-            "climb"    => rng.Next(40, 120),
-            "cruise"   => rng.Next(100, 180),
-            "descent"  => rng.Next(30, 100),
-            "hover"    => rng.Next(0,  15),
-            "approach" => rng.Next(20, 70),
-            _          => rng.Next(60, 150)
+            "climb"    => rng.Next(40, 80),
+            "cruise"   => rng.Next(60, 100),
+            "descent"  => rng.Next(30, 70),
+            "hover"    => rng.Next(0,  10),
+            "approach" => rng.Next(20, 50),
+            _          => rng.Next(40, 80)
         };
-
-        // Update speed in state if not grounded
-        if (!isGrounded)
-        {
-            lock (_stateLock)
-            {
-                if (_vehicleState.TryGetValue(vehicleId, out var st2))
-                    _vehicleState[vehicleId] = (st2.lat, st2.lon, speedMph, st2.dir, st2.lastUpdate);
-            }
-        }
 
         double vertRateFpm = isGrounded ? 0 : flightPhase switch
         {
@@ -512,7 +435,6 @@ public class InputPayloadService
             _          =>  0
         };
 
-        // Battery — lower SOC on longer express corridors
         double battSoc      = vehicleType == "air_express"
             ? Math.Round(30 + rng.NextDouble() * 50, 1)
             : Math.Round(50 + rng.NextDouble() * 48, 1);
@@ -532,13 +454,10 @@ public class InputPayloadService
         string destPad      = DestPads[rng.Next(DestPads.Length)];
         string rotorHealth  = RotorHealthStates[rng.Next(RotorHealthStates.Length)];
 
-        // lat/lon already computed above via stateful tracking
-
         string eventType = conflictFlag ? "conflict"
             : flightPhase == "approach" ? "merge"
             : "detection";
 
-        // ── Map requested fields to generated values ──────────────────────
         foreach (var f in fields)
         {
             obj[f] = f switch
@@ -570,12 +489,12 @@ public class InputPayloadService
                 "pilot_id"             => pilotId,
                 "icao_address"         => icao,
                 "squawk"               => squawk,
-                "nic"                  => rng.Next(8, 12),       // ADS-B navigation integrity
-                "nac_p"                => rng.Next(8, 11),       // navigation accuracy
+                "nic"                  => rng.Next(8, 12),
+                "nac_p"                => rng.Next(8, 11),
                 "zone_id"              => $"ZONE-{rng.Next(1, 10):D3}",
-                "highway_id"           => "I20-TX",
+                "highway_id"           => highwayId ?? "I20-TX",
                 "event_type"           => eventType,
-                "isAirFlyCar"          => "Y",   // always "Y" — this IS an AirFlyCar source
+                "isAirFlyCar"          => "Y",
                 _                      => $"val_{rng.Next(100, 999)}"
             };
         }
