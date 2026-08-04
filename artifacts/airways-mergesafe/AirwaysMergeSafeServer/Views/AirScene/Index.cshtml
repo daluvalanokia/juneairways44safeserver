@@ -1629,6 +1629,7 @@ async function _airFetchOSMStructures() {
         var data = await r.json();
         if (data.elements && data.elements.length > 0) {
             _airOSMLoaded = true;
+            _airOSMStructuresData = data.elements;  // cache for zoom re-render
             _airRenderOSMStructures(data.elements);
         } else {
             console.warn('[AirScene] 0 OSM buildings — fallback');
@@ -2486,6 +2487,17 @@ function _syncZoomAndScale3D() {
     // Do NOT touch vehicles on zoom change. Position is time-based
     // and computed from immutable start data in the animation loop.
     // The animation loop handles altitude Y each frame from stored data.
+    // ── Rebuild structures to match new scale (zoom/drag) ──
+    // Buildings use road-local coordinates and road width for height,
+    // so they need rebuilding when XZ_SCALE or road width changes.
+    // Only rebuild if structures already exist — don't trigger OSM fetch.
+    if (_airStructures3D.length > 0) {
+        if (_airOSMLoaded && _airOSMStructuresData) {
+            _airRenderOSMStructures(_airOSMStructuresData);
+        } else {
+            _airBuildFallbackStructures();
+        }
+    }
     // Update road rotation to match bearing
     airRoadGroup3.rotation.y = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
     _updateLocationBadge();
@@ -3431,7 +3443,8 @@ async function refreshAirAnimation() {
             if (typeof d.hwBearing === 'number') _airHwBearingDeg = d.hwBearing;
             if (d.bridgePath && d.bridgePath.length > 0) {
                 _airBridgePathCoords = d.bridgePath.map(function(p) { return { lat: p.lat, lon: p.lon }; });
-                    _airRebuildStructures(); // Re-fetch OSM structures for new bridge alignment
+                    window._lastStructCtxKey = (HW || '') + '_' + (selectedZoneId || '') + '_' + (selectedServerId || '');
+                    _airRebuildStructures();
             }
             if (d.bounds) _serverBounds = d.bounds;
         }
@@ -3575,7 +3588,15 @@ async function refreshAirScene() {
                     return { lat: p.lat, lon: p.lon };
                 });
                 console.log('[T3D] Bridge path: ' + _airBridgePathCoords.length + ' pts bearing=' + _airHwBearingDeg.toFixed(1) + '°');
-                    _airRebuildStructures(); // Fetch real OSM buildings aligned to bridge
+                // ── Only rebuild structures when the highway/zone context ──
+                // ── actually changes — NOT on every 3s sim poll. ────────────
+                // Rebuilding every 3s floods the scene with building rendering
+                // and disrupts flycar animation.
+                var _ctxKey = (HW || '') + '_' + (selectedZoneId || '') + '_' + (selectedServerId || '');
+                if (_ctxKey !== window._lastStructCtxKey) {
+                    window._lastStructCtxKey = _ctxKey;
+                    _airRebuildStructures();
+                }
                 // Re-center map on zone/server GPS with updated bridge path
                 if (airCurrentView !== 'top') _centerMapOnHighway();
             }
