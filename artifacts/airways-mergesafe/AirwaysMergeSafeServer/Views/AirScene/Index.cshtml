@@ -2111,6 +2111,14 @@ function _syncAirMeshes() {
             var _savedLabel = mesh.userData.labelSprite || null;
             var _savedLabelH = mesh.userData.labelHeight || 0;
 
+            // Compute bridge end coordinates for this vehicle's direction
+            // The bridge path gives us the actual end-to-end GPS extent.
+            // The vehicle should travel from its start position until it
+            // reaches the bridge end in its direction of travel.
+            var _bpEnds = _airGetEffectiveBounds3D();
+            var _endX = (Math.sin(rad3) > 0) ? _bpEnds.maxX + 150 : _bpEnds.minX - 150;
+            var _endZ = (Math.cos(rad3) > 0) ? _bpEnds.maxZ + 150 : _bpEnds.minZ - 150;
+
             mesh.userData = { vid: vid, vx: vx3, vz: vz3,
                               laneX: laneX, laneZ: laneZ,
                               isFlyCar: _isFC,
@@ -2118,8 +2126,11 @@ function _syncAirMeshes() {
                               baseY: _altUnits,
                               phase: Math.random() * Math.PI * 2,
                               spd: spd3, dir: dir3v,
+                              initX: px, initZ: pz,
+                              endX: _endX, endZ: _endZ,
                               labelSprite: _savedLabel,
-                              labelHeight: _savedLabelH };
+                              labelHeight: _savedLabelH,
+                              animating: true };
             airScene3.add(mesh);
             // Add label sprite to scene immediately
             if (_savedLabel) airScene3.add(_savedLabel);
@@ -2203,26 +2214,36 @@ function _animateAir3D() {
             });
         }
 
-        // ── Remove vehicles that exit the full road extent ──
-        // The road spans ±900 units. Use the EFFECTIVE bounds (bridge path
-        // UNION map extent) but ensure we always cover at least the road's
-        // full length. Large margin (150) so vehicles visibly fly past the
-        // edge before disappearing — they reach the end of the animation
-        // coordinate, not disappear short of it.
-        var bp = _airGetEffectiveBounds3D();
-        // Guarantee minimum extent of ±900 (full road length)
-        var exitMinX = Math.min(bp.minX, -900) - 150;
-        var exitMaxX = Math.max(bp.maxX,  900) + 150;
-        var exitMinZ = Math.min(bp.minZ, -900) - 150;
-        var exitMaxZ = Math.max(bp.maxZ,  900) + 150;
-        if (m.position.x > exitMaxX || m.position.x < exitMinX ||
-            m.position.z > exitMaxZ || m.position.z < exitMinZ) {
-            if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
-            airScene3.remove(m);
-            // Mark as exited in vehicleData so it doesn't respawn at origin
-            var _vd = vehicleData.get(ud.vid);
-            if (_vd) _vd.exited = true;
-            airVehicleMeshes3 = airVehicleMeshes3.filter(function(x){ return x !== m; });
+        // ── Remove vehicle when it reaches the bridge end in its
+        // direction of travel. The vehicle starts at its data-record
+        // GPS, moves in the data-record direction at the data-record
+        // speed, and is removed when it passes the bridge endpoint.
+        // Uses the bridge end coordinates stored in userData at creation
+        // time — not a global ±900 clamp. This ensures the vehicle
+        // travels the full bridge length before disappearing.
+        if (ud.endX !== undefined && ud.endZ !== undefined) {
+            // Direction-specific exit: check if vehicle passed the end
+            var _rad = (ud.dir || 90) * Math.PI / 180;
+            var _sinR = Math.sin(_rad), _cosR = Math.cos(_rad);
+            var _pastEnd = false;
+            // For E-W travel (sin dominant): check X against endX
+            if (Math.abs(_sinR) > Math.abs(_cosR)) {
+                if (_sinR > 0 && m.position.x > ud.endX) _pastEnd = true;
+                if (_sinR < 0 && m.position.x < ud.endX) _pastEnd = true;
+            } else {
+                // For N-S travel (cos dominant): check Z against endZ
+                if (_cosR > 0 && m.position.z > ud.endZ) _pastEnd = true;
+                if (_cosR < 0 && m.position.z < ud.endZ) _pastEnd = true;
+            }
+            // Also exit if beyond absolute ±1050 (safety net)
+            if (Math.abs(m.position.x) > 1050 || Math.abs(m.position.z) > 1050) _pastEnd = true;
+            if (_pastEnd) {
+                if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
+                airScene3.remove(m);
+                var _vd = vehicleData.get(ud.vid);
+                if (_vd) _vd.exited = true;
+                airVehicleMeshes3 = airVehicleMeshes3.filter(function(x){ return x !== m; });
+            }
         }
     });
 
@@ -2452,21 +2473,16 @@ function _syncZoomAndScale3D() {
     _airBuildRoad3D();
     _3DBridgeBoundsCache = null;
     _update3DZoneMarkers();
-    // Reposition vehicles
+    // Do NOT reposition vehicles on zoom change — the animation loop
+    // is the ONLY thing that moves vehicles. Snapping them back to
+    // their original GPS coordinates would undo all animation progress
+    // and cause the "restart from origin" bug.
+    // Only update altitude Y to match the new zoom scale.
     airVehicleMeshes3.forEach(function(m) {
         var vd = vehicleData.get(m.userData.vid);
-        if (vd) {
-            var p = norm(vd.lat, vd.lon);
-            var bp = _airGetEffectiveBounds3D();
-            m.position.x = Math.max(bp.minX, Math.min(bp.maxX, p.x));
-            m.position.z = Math.max(bp.minZ, Math.min(bp.maxZ, p.z));
-            // Recompute altitude Y with bounded/capped scale
-            if (vd.isAirFlyCar && vd.altitudeMeters > 0) {
-                var _zoomAR = (airRadius3 || 280) / 280;
-                var newBaseY = 3 + Math.min(140, vd.altitudeMeters * 0.17) * _zoomAR;
-                m.userData.baseY = newBaseY;
-                m.position.y = newBaseY;
-            }
+        if (vd && vd.isAirFlyCar && vd.altitudeMeters > 0) {
+            var _zoomAR = (airRadius3 || 280) / 280;
+            m.userData.baseY = 3 + Math.min(140, vd.altitudeMeters * 0.17) * _zoomAR;
         }
     });
     // Update road rotation to match bearing
