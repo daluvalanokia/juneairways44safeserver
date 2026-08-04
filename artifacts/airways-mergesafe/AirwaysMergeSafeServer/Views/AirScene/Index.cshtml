@@ -2076,11 +2076,12 @@ function _syncAirMeshes() {
             var laneX = Math.cos(perpRad) * laneOff;
             var laneZ = -Math.sin(perpRad) * laneOff;
 
-            // Clamp initial position to the effective bounds (bridge path
-            // UNION current visible map extent) — spawns across full map
-            var bp3 = _airGetEffectiveBounds3D();
-            var px = Math.max(bp3.minX, Math.min(bp3.maxX, p3.x + laneX));
-            var pz = Math.max(bp3.minZ, Math.min(bp3.maxZ, p3.z + laneZ));
+            // Start at the vehicle's ACTUAL data-record GPS coordinates —
+            // do NOT clamp to bridge bounds. The vehicle should start
+            // where the sim says it starts, move in the sim's direction,
+            // and be removed when it exits the map bounds.
+            var px = p3.x + laneX;
+            var pz = p3.z + laneZ;
 
             // ── Initial Y: bridge height + capped/bounded altitude ─────────────
             var _zoomA0 = (airRadius3 || 280) / 280;
@@ -3077,17 +3078,9 @@ function loadEvents(events) {
         var existing = vehicleData.get(vid);
         // If vehicle was exited but sim now provides new coordinates far
         // from where it exited, allow it to re-enter the scene
-        if (existing && existing.exited && existing.lat && lat &&
-            (Math.abs(existing.lat - lat) > 0.0001 || Math.abs(existing.lon - lon) > 0.0001)) {
-            // New coords from sim — update GPS so the vehicle respawns at its
-            // new position, not the original start point
-            existing.exited = false;
-            existing.lat = lat;
-            existing.lon = lon;
-            existing.direction = dir;
-            existing.speedMph = spd;
-            existing.isAirFlyCar = (ev.is_air_fly_car === 'Y');
-            existing.altitudeMeters = ev.altitude_meters || 0;
+        // Exited vehicles never re-enter — each vehicle appears once,
+        // travels to the end of the map, and is permanently removed.
+        if (existing && existing.exited) {
             existing.lastSeen = now;
         }
         if (existing && !existing.exited && !isNaN(existing.lat) && !isNaN(existing.lon)
@@ -3103,12 +3096,11 @@ function loadEvents(events) {
             existing.make           = make;
             existing.isAirFlyCar     = (ev.is_air_fly_car === 'Y');
             existing.altitudeMeters  = ev.altitude_meters || 0;
-            // Only update direction if the sim provides one AND it's
-            // different from the current — don't flip just because
-            // a new event arrived.
-            if (dir >= 0 && Math.abs(dir - (existing.direction || 0)) > 1) {
-                existing.direction = dir;
-            }
+            // Do NOT update direction for existing vehicles — each sim
+            // tick generates a UNIQUE ID, so an existing vehicle should
+            // never receive a new event. If it somehow does, keep the
+            // original direction to prevent flipping/back-and-forth.
+            // Direction is set once at spawn from the data record.
             existing.isNSHwy  = isNSHwy;
             existing.lastSeen = now;
         } else if (existing && existing.exited) {
@@ -3130,7 +3122,7 @@ function loadEvents(events) {
         }
     });
     // Prune stale vehicles — 30s during sim (fast turnover), 120s idle
-    var pruneMs = simRunning ? 30000 : 120000;
+    var pruneMs = simRunning ? 90000 : 120000;
     vehicleData.forEach(function(vd, vid) {
         if (now - vd.lastSeen > pruneMs) vehicleData.delete(vid);
     });
