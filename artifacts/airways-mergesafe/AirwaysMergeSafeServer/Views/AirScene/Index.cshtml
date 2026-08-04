@@ -4030,9 +4030,9 @@ if (_bc) _bc.onmessage = function(e) { _onSimMsg(e.data); };
 
 // Also listen via localStorage (cross-tab)
 window.addEventListener('storage', function(e) {
-    if (e.key === 'airways_sim_last_event') {
+    if (e.key === 'airways_sim_last_event' || e.key === 'airways_air_sim_last_event') {
         try { _onSimMsg(JSON.parse(e.newValue || '{}')); } catch(_) {}
-    } else if (e.key === 'airways_air_sim_state') {
+    } else if (e.key === 'airways_air_sim_state' || e.key === 'airways_sim_state') {
         // Sim state changed in another tab — check if sim started
         try {
             var st = JSON.parse(e.newValue || '{}');
