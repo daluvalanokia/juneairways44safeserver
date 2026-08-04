@@ -388,6 +388,8 @@ var simDelayTmr = null;
 var simTotal    = 0;
 var simLogItems = [];
 var airwaysBroadcast = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('airways_sim') : null;
+// Also broadcast on the AirScene channel so AirFlyCar sim events reach AirScene
+var airSceneBroadcast = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('airways_air_sim') : null;
 
 // ── Persistence: sim state survives navigation ─────────────────────────────
 // State is written to localStorage on every tick and on start/stop.
@@ -396,7 +398,8 @@ var airwaysBroadcast = (typeof BroadcastChannel !== 'undefined') ? new Broadcast
 // the user can switch to 3D Traffic / 3D Air and return; the sim will still
 // be running and the log + counters will be restored exactly.
 var _SIM_SK = 'airways_sim_state';    // full config blob
-var _SIM_CK = 'airways_sim_context'; // highway/zone/server for 3D auto-select
+var _SIM_CK = 'airways_sim_context';
+var _SIM_CK_AIR = 'airways_air_sim_context'; // highway/zone/server for 3D auto-select
 
 function _simPersist(running) {
     try {
@@ -414,9 +417,16 @@ function _simPersist(running) {
         localStorage.setItem(_SIM_SK, JSON.stringify(st));
         localStorage.setItem(_SIM_CK, JSON.stringify({ hwId: st.hwId, zoneId: st.zoneId, serverId: st.serverId }));
         localStorage.setItem('airways_sim_active', running ? 'true' : 'false');
+        localStorage.setItem('airways_air_sim_active', running ? 'true' : 'false');
         // Heartbeat: write current time so other pages can verify the sim is alive
-        if (running) localStorage.setItem('airways_sim_heartbeat', String(Date.now()));
-        else localStorage.removeItem('airways_sim_heartbeat');
+        if (running) {
+            localStorage.setItem('airways_sim_heartbeat', String(Date.now()));
+            localStorage.setItem('airways_air_sim_heartbeat', String(Date.now()));
+        }
+        else {
+            localStorage.removeItem('airways_sim_heartbeat');
+            localStorage.removeItem('airways_air_sim_heartbeat');
+        }
     } catch(e) {}
 }
 
@@ -496,6 +506,9 @@ function simBroadcast(type) {
         serverId: (document.getElementById('simServer') ||{}).value||''
     };
     if (airwaysBroadcast) airwaysBroadcast.postMessage({
+        type: type, intervalSec: _ivSec, context: _ctx
+    });
+    if (airSceneBroadcast) airSceneBroadcast.postMessage({
         type: type, intervalSec: _ivSec, context: _ctx
     });
     _simPersist(type === 'sim_started');
@@ -589,6 +602,7 @@ function startSim() {
                                     classification: d.classification || null,
                                     srcType: srcType, intervalSec: _ivSecV };
                     if (airwaysBroadcast) airwaysBroadcast.postMessage(_simMsg);
+                    if (airSceneBroadcast) airSceneBroadcast.postMessage(_simMsg);
                     // localStorage fallback: received by 3D scenes via 'storage' event
                     // (works even when DataInputFormats is navigated away from)
                     localStorage.setItem('airways_sim_last_event', JSON.stringify(_simMsg));
