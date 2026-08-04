@@ -425,14 +425,23 @@ public class InputPayloadService
                 direction = st.dir;
                 speedMph = st.speed;
 
-                // If vehicle has traveled too far from base (> 0.1° ~11km),
-                // wrap it back to the zone center with opposite direction
+                // If vehicle has traveled far from base (> 0.08° ~9km),
+                // reverse direction — fly back the other way. Do NOT
+                // teleport back to zone center (causes visible "restart
+                // from starting coordinates" in the animation). The vehicle
+                // stays at its current position and turns around, creating
+                // continuous back-and-forth flight along the corridor.
                 var distFromBase = Math.Sqrt(Math.Pow(lat - baseLat, 2) + Math.Pow(lon - baseLon, 2));
-                if (distFromBase > 0.1)
+                if (distFromBase > 0.08)
                 {
-                    lat = baseLat;
-                    lon = baseLon;
                     direction = (direction + 180) % 360;
+                    // Nudge 1 step in the new direction to prevent
+                    // immediately re-triggering the boundary check
+                    var ms2 = speedMph * 0.44704;
+                    var rad2 = direction * Math.PI / 180;
+                    var cosLat2 = Math.Cos(lat * Math.PI / 180);
+                    lat = Math.Round(lat + ms2 * Math.Cos(rad2) * 0.5 / 111000.0, 6);
+                    lon = Math.Round(lon + ms2 * Math.Sin(rad2) * 0.5 / (111000.0 * cosLat2), 6);
                 }
 
                 _vehicleState[vehicleId] = (lat, lon, speedMph, direction, DateTime.UtcNow);
@@ -441,7 +450,7 @@ public class InputPayloadService
             {
                 // ── New vehicle: spawn near zone center with random direction ─
                 direction = HighwayDirectionDeg(highwayId, rng);
-                speedMph = rng.Next(80, 160); // flycar cruise speed
+                speedMph = rng.Next(40, 90); // flycar cruise speed — moderate pace
                 var spawn = GenerateLanePosition(baseLat, baseLon, highwayId, rng, highwayBearing);
                 lat = spawn.lat;
                 lon = spawn.lon;
