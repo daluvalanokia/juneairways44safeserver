@@ -44,6 +44,7 @@ public class InputPayloadService
     public static void ResetVehicleState()
     {
         lock (_stateLock) { _vehicleState.Clear(); }
+        _airFlyCarSeq = 0;
     }
 
     public InputPayloadService(AppDbContext db)
@@ -370,6 +371,11 @@ public class InputPayloadService
     /// Produces realistic UAM telemetry with correlated fields
     /// (flight_phase drives altitude range, battery_soc drives range_remaining_km, etc.)
     /// </summary>
+    // Monotonic counter for AirFlyCar IDs — guarantees every vehicle ID
+    // is unique. Prevents ID collisions that caused direction flipping
+    // (same ID appearing twice with different random directions).
+    private static int _airFlyCarSeq = 0;
+
     private static string GenerateAirFlyCar(Random rng, IEnumerable<string> fields,
         string? highwayId = null, double? zoneLat = null, double? zoneLon = null,
         double highwayBearing = 90.0)
@@ -385,7 +391,7 @@ public class InputPayloadService
         // ── handles all movement and exit. Vehicle starts at coords in ───
         // ── this data record, moves in direction in this data record ─────
         // ── until end of bridge then removed. No back-and-forth, no repeat.
-        string vehicleId = $"AFC-{rng.Next(1000, 9999)}";
+        string vehicleId = $"AFC-{Interlocked.Increment(ref _airFlyCarSeq):D4}";
         int direction = HighwayDirectionDeg(highwayId, rng);
 
         var spawn = GenerateLanePosition(baseLat, baseLon, highwayId, rng, highwayBearing);
