@@ -2195,7 +2195,7 @@ function _animateAir3D() {
     // ── Periodically sync new vehicles from vehicleData into 3D meshes ──
     // This picks up simulation vehicles that arrived via loadEvents after
     // the 3D view was activated. Throttled to every ~0.5s (30 frames).
-    if (_tick3 % 30 === 0) {
+    if (_tick3 % 15 === 0) {
         _syncAirMeshes();
     }
 
@@ -2532,6 +2532,8 @@ function setViewport(view) {
 
     // ── THREE.js render loop ──────────────────────────────────────────────
     if (!is2D && !_3dAnimRunning) {
+        // Sync vehicles FIRST so flycars appear immediately on view switch
+        _syncAirMeshes();
         // Resize canvas to container size (clientWidth reliable even at opacity:0)
         var _sw = document.getElementById('sceneWrap');
         var _rw = _sw ? _sw.clientWidth  : 900;
@@ -2567,8 +2569,15 @@ function setViewport(view) {
     // ── Side-view specific: set camera for nav-map look ───────────────────
     if (view === 'side') {
         _setSideCameraForView();
-        // Fetch/refresh OSM structures when entering side view
-        if (!_airOSMLoaded || view !== window._prevAirView) _airRebuildStructures();
+        // Rebuild structures only if not yet loaded. Use cached OSM
+        // data for instant re-render — no network fetch needed.
+        if (!_airOSMLoaded) {
+            _airRebuildStructures();
+        } else if (_airOSMStructuresData) {
+            _airRenderOSMStructures(_airOSMStructuresData);
+        } else if (_airStructures3D.length === 0) {
+            _airBuildFallbackStructures();
+        }
     }
     window._prevAirView = view;   // module-level tracking for OSM reload guard
 
@@ -2840,7 +2849,14 @@ async function t3dServerChanged() {
 
 
 // ── Vehicle data management ───────────────────────────────────────────
-function _clearVehicles() { vehicleData.clear(); }
+function _clearVehicles() {
+    vehicleData.clear();
+    airVehicleMeshes3.forEach(function(m) {
+        if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
+        airScene3.remove(m);
+    });
+    airVehicleMeshes3 = [];
+}
 
 // ── Zone GPS lookup helper ────────────────────────────────────────
 // Returns a point snapped onto the highway corridor of the given zone:
@@ -3831,6 +3847,12 @@ function _onSimMsg(data) {
         // Sim started on another tab — switch to sim's highway/zone/server context
         simRunning = true; feedHeld = true;
         _clearVehicles();
+        // Start 3D animation loop if not already running (even in top view)
+        // so _syncAirMeshes picks up sim vehicles immediately on view switch
+        if (!_3dAnimRunning) {
+            _3dAnimRunning = true;
+            _animateAir3D();
+        }
         var badge = document.getElementById('airSimFeedBadge');
         if (badge) { badge.style.display = ''; badge.textContent = '● LIVE'; }
 
@@ -3937,6 +3959,12 @@ function _onSimMsg(data) {
         simRunning = true; feedHeld = true;
         // Clear the scene on the FIRST sim event to remove pre-existing live DB vehicles
         if (_wasFirst) _clearVehicles();
+        // Start 3D animation loop if not running — ensures _syncAirMeshes
+        // picks up vehicles even before user switches to 3D view
+        if (!_3dAnimRunning) {
+            _3dAnimRunning = true;
+            _animateAir3D();
+        }
         // Accept both snake_case (sim payload) and camelCase
         _simHwId   = ev.highway_id  || ev.highwayId  || _simHwId;
         _simZoneId = ev.zone_id     || ev.zoneId     || _simZoneId;
@@ -3975,6 +4003,9 @@ function _onSimMsg(data) {
             }
         }
         loadEvents([ev]);
+        // Immediately sync meshes so the new vehicle appears without
+        // waiting for the next 15-frame cycle — critical for sim responsiveness
+        if (!airCurrentView || airCurrentView !== 'top') _syncAirMeshes();
         // Update badge count
         if (!window._simEventCount) window._simEventCount = 0;
         window._simEventCount++;
