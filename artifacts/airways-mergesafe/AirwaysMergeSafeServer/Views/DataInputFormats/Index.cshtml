@@ -415,7 +415,9 @@ function _simPersist(running) {
             at:       Date.now()
         };
         localStorage.setItem(_SIM_SK, JSON.stringify(st));
-        localStorage.setItem(_SIM_CK, JSON.stringify({ hwId: st.hwId, zoneId: st.zoneId, serverId: st.serverId }));
+        var _ctxJson = JSON.stringify({ hwId: st.hwId, zoneId: st.zoneId, serverId: st.serverId });
+        localStorage.setItem(_SIM_CK, _ctxJson);
+        localStorage.setItem(_SIM_CK_AIR, _ctxJson);
         localStorage.setItem('airways_sim_active', running ? 'true' : 'false');
         localStorage.setItem('airways_air_sim_active', running ? 'true' : 'false');
         // Heartbeat: write current time so other pages can verify the sim is alive
