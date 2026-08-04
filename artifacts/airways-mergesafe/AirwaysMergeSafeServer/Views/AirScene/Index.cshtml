@@ -2051,83 +2051,72 @@ function _syncAirMeshes() {
             // position to a fraction (0..1) along the bridge path, then
             // scale to the 3D road range.
             // ── Position vehicle using norm() — maps GPS to 3D coords ──
-            // norm() uses midLat/midLon (zone/server GPS) as origin and
-            // XZ_SCALE (fits bridge path to ±900). This places the vehicle
-            // at the correct 3D coordinate matching its GPS on the map.
             var p3 = norm(vd.lat, vd.lon);
 
-            // Lane offset: perpendicular to road direction
-            var spd3 = vd.speedMph || (vd.isAirFlyCar ? 25 : 30);
-            if (vd.isAirFlyCar && spd3 < 15) spd3 = 25;
-            var dir3v = vd.direction || _airHwBearingDeg || 0;
+            // Read speed, altitude, and direction from the SIM DATA RECORD
+            var spd3 = vd.speedMph || (vd.isAirFlyCar ? 60 : 30);
+            if (vd.isAirFlyCar && spd3 < 20) spd3 = 40;
+            var dir3v = vd.direction || _airHwBearingDeg || 90;
             if (dir3v < 0 || isNaN(dir3v)) dir3v = _airHwBearingDeg || 90;
             var rad3 = dir3v * Math.PI / 180;
 
-            // ── Bearing-based velocity decomposition (matches 2D overlay) ──
-            // bearing 0°=N → +Z, 90°=E → +X, 180°=S → -Z, 270°=W → -X
-            var _zoomFactor = (airRadius3 || 280) / 280;
-            var _flyMult = vd.isAirFlyCar ? 0.018 : 0.012;
-            var vx3 = spd3 * _flyMult * _zoomFactor * Math.sin(rad3);
-            var vz3 = spd3 * _flyMult * _zoomFactor * Math.cos(rad3);
+            // ── CONSTANT velocity (no zoom factor) ──
+            // The vehicle must travel the full bridge (1800 units)
+            // in a consistent time regardless of zoom.
+            var _flyMult = vd.isAirFlyCar ? 0.025 : 0.015;
+            var vx3 = spd3 * _flyMult * Math.sin(rad3);
+            var vz3 = spd3 * _flyMult * Math.cos(rad3);
 
-            // Perpendicular lane offset (perpendicular to bearing)
+            // Perpendicular lane offset
             var perpRad = rad3 + Math.PI / 2;
             var laneOff = (Math.random() - 0.5) * _airRoadWidth3D * 0.7;
             var laneX = Math.cos(perpRad) * laneOff;
             var laneZ = -Math.sin(perpRad) * laneOff;
 
-            // Start at the vehicle's ACTUAL data-record GPS coordinates —
-            // do NOT clamp to bridge bounds. The vehicle should start
-            // where the sim says it starts, move in the sim's direction,
-            // and be removed when it exits the map bounds.
+            // Start at the vehicle's ACTUAL data-record GPS coordinates
             var px = p3.x + laneX;
             var pz = p3.z + laneZ;
 
-            // ── Initial Y: bridge height + capped/bounded altitude ─────────────
+            // ── Altitude from data record ──
+            var _isFC = vd.isAirFlyCar || false;
+            var _altM = vd.altitudeMeters || 0;
             var _zoomA0 = (airRadius3 || 280) / 280;
-            var _initAltY = (vd.isAirFlyCar && vd.altitudeMeters > 0)
-                ? 3 + Math.min(140, vd.altitudeMeters * 0.17) * _zoomA0
+            var _initAltY = (_isFC && _altM > 0)
+                ? 3 + Math.min(140, _altM * 0.17) * _zoomA0
                 : 0;
             mesh.position.set(px, _initAltY, pz);
             mesh.rotation.y = -(dir3v - 90) * Math.PI / 180;
-            // ── Altitude: bridge height + altitude from data record ──────────
-            // Bridge surface is at Y=0. FlyCar altitude_meters from the sim
-            // data record is scaled to 3D scene units and used as baseY so
-            // the vehicle flies at the correct elevation above the bridge.
-            var _isFC = vd.isAirFlyCar || false;
-            var _altM = vd.altitudeMeters || 0;
-            var _bridgeH = 3;  // bridge surface thickness in 3D units
-            // Bounded altitude scale: real altitude range is 0-800m (urban
-            // 30-150m, express corridor 151-800m). Map to a capped 3D range
-            // (0-140 units) that stays well within the camera frustum at any
-            // zoom, scaled proportionally with zoom (airRadius3/280) so it
-            // shrinks/grows in sync with the rest of the scene.
+
             var _zoomA = (airRadius3 || 280) / 280;
             var _altUnits = _isFC && _altM > 0
-                ? _bridgeH + Math.min(140, _altM * 0.17) * _zoomA
+                ? 3 + Math.min(140, _altM * 0.17) * _zoomA
                 : 0;
 
-            // Save label data from _makeAir3DVehicle before userData overwrite
             var _savedLabel = mesh.userData.labelSprite || null;
             var _savedLabelH = mesh.userData.labelHeight || 0;
 
-            // Compute bridge end coordinates for this vehicle's direction
-            // The bridge path gives us the actual end-to-end GPS extent.
-            // The vehicle should travel from its start position until it
-            // reaches the bridge end in its direction of travel.
+            // ── Bridge end coordinates for this vehicle's direction ──
             var _bpEnds = _airGetEffectiveBounds3D();
-            var _endX = (Math.sin(rad3) > 0) ? _bpEnds.maxX + 150 : _bpEnds.minX - 150;
-            var _endZ = (Math.cos(rad3) > 0) ? _bpEnds.maxZ + 150 : _bpEnds.minZ - 150;
+            var _exitMargin = 100;
+            var _endX = (Math.sin(rad3) > 0) ? _bpEnds.maxX + _exitMargin : _bpEnds.minX - _exitMargin;
+            var _endZ = (Math.cos(rad3) > 0) ? _bpEnds.maxZ + _exitMargin : _bpEnds.minZ - _exitMargin;
 
-            mesh.userData = { vid: vid, vx: vx3, vz: vz3,
-                              laneX: laneX, laneZ: laneZ,
+            // ── TIME-BASED animation data (self-contained in userData) ──
+            // Position is computed each frame as:
+            //   pos = start + velocity * elapsedSeconds
+            // Immune to zoom changes, map pans, prune timeouts,
+            // and any external position resets.
+            mesh.userData = { vid: vid,
+                              startX: px, startZ: pz,
+                              startTime: Date.now(),
+                              vx: vx3, vz: vz3,
+                              endX: _endX, endZ: _endZ,
+                              dir: dir3v,
                               isFlyCar: _isFC,
                               altitudeMeters: _altM,
                               baseY: _altUnits,
                               phase: Math.random() * Math.PI * 2,
-                              spd: spd3, dir: dir3v,
-                              initX: px, initZ: pz,
-                              endX: _endX, endZ: _endZ,
+                              spd: spd3,
                               labelSprite: _savedLabel,
                               labelHeight: _savedLabelH,
                               animating: true };
@@ -2164,40 +2153,16 @@ function _animateAir3D() {
     // Live speed/direction from sim data is read back each frame.
     airVehicleMeshes3.forEach(function(m) {
         var ud = m.userData;
-        var vd = vehicleData.get(ud.vid);
 
-        // ── Update velocity from live sim data using bearing decomposition ──
-        if (vd) {
-            // Carry forward last known speed instead of collapsing to 0 —
-            // prevents a good initial velocity from being zeroed out on the
-            // next frame when speedMph is missing/0 (stale data, hover phase,
-            // or a DIF payload format that omits speed_mph). Flycars get a
-            // sane minimum floor so they always show forward flight motion
-            // rather than hovering in place indefinitely.
-            var _rawSpd = vd.speedMph || 0;
-            var spd = _rawSpd > 0 ? _rawSpd : (ud.spd || (vd.isAirFlyCar ? 45 : 30));
-            if (vd.isAirFlyCar && spd < 20) spd = 25;
-            var dir = vd.direction || _airHwBearingDeg || 0;
-            if (dir < 0 || isNaN(dir)) dir = _airHwBearingDeg || 90;
-            ud.spd = spd;
-            ud.dir = dir;
-            // Bearing 0°=N→+Z, 90°=E→+X, 180°=S→-Z, 270°=W→-X
-            var rad = dir * Math.PI / 180;
-            var _zf = (airRadius3 || 280) / 280;
-            var _flyMultF = vd.isAirFlyCar ? 0.018 : 0.012;
-            ud.vx = spd * _flyMultF * _zf * Math.sin(rad);
-            ud.vz = spd * _flyMultF * _zf * Math.cos(rad);
-            // Update rotation to match direction from input data
-            m.rotation.y = -(dir - 90) * Math.PI / 180;
-        }
+        // ── TIME-BASED position computation ──
+        // pos = start + velocity * elapsedSeconds
+        // Immune to zoom changes, map pans, prune timeouts,
+        // and any external position resets.
+        var _elapsed = (Date.now() - ud.startTime) / 1000;
+        m.position.x = ud.startX + ud.vx * _elapsed * 60;
+        m.position.z = ud.startZ + ud.vz * _elapsed * 60;
 
-        // Move vehicle in 3D scene coordinates — velocity only, no pull-back
-        m.position.x += ud.vx;
-        m.position.z += ud.vz;
-
-        // Gentle bob for visual life
-        // FlyCar: maintain altitude-based Y + gentle hover oscillation
-        // Ground vehicle: Y=0 + slight bob
+        // Altitude Y with gentle bob
         var _zoomAF = (airRadius3 || 280) / 280;
         var baseY = (ud.isFlyCar && ud.altitudeMeters > 0)
             ? 3 + Math.min(140, ud.altitudeMeters * 0.17) * _zoomAF
@@ -2214,36 +2179,24 @@ function _animateAir3D() {
             });
         }
 
-        // ── Remove vehicle when it reaches the bridge end in its
-        // direction of travel. The vehicle starts at its data-record
-        // GPS, moves in the data-record direction at the data-record
-        // speed, and is removed when it passes the bridge endpoint.
-        // Uses the bridge end coordinates stored in userData at creation
-        // time — not a global ±900 clamp. This ensures the vehicle
-        // travels the full bridge length before disappearing.
-        if (ud.endX !== undefined && ud.endZ !== undefined) {
-            // Direction-specific exit: check if vehicle passed the end
-            var _rad = (ud.dir || 90) * Math.PI / 180;
-            var _sinR = Math.sin(_rad), _cosR = Math.cos(_rad);
-            var _pastEnd = false;
-            // For E-W travel (sin dominant): check X against endX
-            if (Math.abs(_sinR) > Math.abs(_cosR)) {
-                if (_sinR > 0 && m.position.x > ud.endX) _pastEnd = true;
-                if (_sinR < 0 && m.position.x < ud.endX) _pastEnd = true;
-            } else {
-                // For N-S travel (cos dominant): check Z against endZ
-                if (_cosR > 0 && m.position.z > ud.endZ) _pastEnd = true;
-                if (_cosR < 0 && m.position.z < ud.endZ) _pastEnd = true;
-            }
-            // Also exit if beyond absolute ±1050 (safety net)
-            if (Math.abs(m.position.x) > 1050 || Math.abs(m.position.z) > 1050) _pastEnd = true;
-            if (_pastEnd) {
-                if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
-                airScene3.remove(m);
-                var _vd = vehicleData.get(ud.vid);
-                if (_vd) _vd.exited = true;
-                airVehicleMeshes3 = airVehicleMeshes3.filter(function(x){ return x !== m; });
-            }
+        // ── Remove vehicle when it reaches the bridge end ──
+        var _rad = (ud.dir || 90) * Math.PI / 180;
+        var _sinR = Math.sin(_rad), _cosR = Math.cos(_rad);
+        var _pastEnd = false;
+        if (Math.abs(_sinR) > Math.abs(_cosR)) {
+            if (_sinR > 0 && m.position.x > ud.endX) _pastEnd = true;
+            if (_sinR < 0 && m.position.x < ud.endX) _pastEnd = true;
+        } else {
+            if (_cosR > 0 && m.position.z > ud.endZ) _pastEnd = true;
+            if (_cosR < 0 && m.position.z < ud.endZ) _pastEnd = true;
+        }
+        if (Math.abs(m.position.x) > 1200 || Math.abs(m.position.z) > 1200) _pastEnd = true;
+        if (_pastEnd) {
+            if (m.userData.labelSprite) airScene3.remove(m.userData.labelSprite);
+            airScene3.remove(m);
+            var _vd = vehicleData.get(ud.vid);
+            if (_vd) _vd.exited = true;
+            airVehicleMeshes3 = airVehicleMeshes3.filter(function(x){ return x !== m; });
         }
     });
 
@@ -2473,18 +2426,9 @@ function _syncZoomAndScale3D() {
     _airBuildRoad3D();
     _3DBridgeBoundsCache = null;
     _update3DZoneMarkers();
-    // Do NOT reposition vehicles on zoom change — the animation loop
-    // is the ONLY thing that moves vehicles. Snapping them back to
-    // their original GPS coordinates would undo all animation progress
-    // and cause the "restart from origin" bug.
-    // Only update altitude Y to match the new zoom scale.
-    airVehicleMeshes3.forEach(function(m) {
-        var vd = vehicleData.get(m.userData.vid);
-        if (vd && vd.isAirFlyCar && vd.altitudeMeters > 0) {
-            var _zoomAR = (airRadius3 || 280) / 280;
-            m.userData.baseY = 3 + Math.min(140, vd.altitudeMeters * 0.17) * _zoomAR;
-        }
-    });
+    // Do NOT touch vehicles on zoom change. Position is time-based
+    // and computed from immutable start data in the animation loop.
+    // The animation loop handles altitude Y each frame from stored data.
     // Update road rotation to match bearing
     airRoadGroup3.rotation.y = ((_airHwBearingDeg || 90) - 90) * Math.PI / 180;
     _updateLocationBadge();
@@ -3137,10 +3081,17 @@ function loadEvents(events) {
                                    lastSeen: now });
         }
     });
-    // Prune stale vehicles — 30s during sim (fast turnover), 120s idle
+    // Prune stale vehicles — but DON'T remove vehicles that still have
+    // an active 3D mesh. Those are mid-flight and should only be removed
+    // when they reach the bridge end (handled in the animation loop).
     var pruneMs = simRunning ? 90000 : 120000;
     vehicleData.forEach(function(vd, vid) {
-        if (now - vd.lastSeen > pruneMs) vehicleData.delete(vid);
+        if (now - vd.lastSeen > pruneMs) {
+            var hasMesh = airVehicleMeshes3.some(function(m) {
+                return m.userData.vid === vid && m.userData.animating;
+            });
+            if (!hasMesh) vehicleData.delete(vid);
+        }
     });
     _updateStatsBar();
     
