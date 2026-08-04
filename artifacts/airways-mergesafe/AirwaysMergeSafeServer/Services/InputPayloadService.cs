@@ -43,7 +43,7 @@ public class InputPayloadService
     // Called by SimulationStop to reset all vehicle positions when sim ends
     public static void ResetVehicleState()
     {
-        lock (_stateLock) { _vehicleState.Clear(); }
+        lock (_stateLock) { _vehicleState.Clear(); _airFlyCarIdx = 0; }
     }
 
     public InputPayloadService(AppDbContext db)
@@ -259,7 +259,7 @@ public class InputPayloadService
 
         if (string.Equals(sourceType, "airflycar", StringComparison.OrdinalIgnoreCase))
         {
-            var _afc = GenerateAirFlyCar(rng, fields, highwayId);
+            var _afc = GenerateAirFlyCar(rng, fields, highwayId, zoneLat, zoneLon, highwayBearing);
             TraceLogger.Exit("InputPayloadService", nameof(Generate), "airflycar");
             return _afc;
         }
@@ -370,27 +370,101 @@ public class InputPayloadService
     /// Produces realistic UAM telemetry with correlated fields
     /// (flight_phase drives altitude range, battery_soc drives range_remaining_km, etc.)
     /// </summary>
-    private static string GenerateAirFlyCar(Random rng, IEnumerable<string> fields, string? highwayId = null)
+    // Persistent pool of 8 AirFlyCar vehicle IDs — stable across sim ticks
+    // so the animation sees the SAME vehicles with ADVANCED positions each
+    // poll, not random new vehicles every 3 seconds.
+    private static readonly string[] _airFlyCarIds = new[]
+    {
+        "AFC-1001", "AFC-1002", "AFC-1003", "AFC-1004",
+        "AFC-1005", "AFC-1006", "AFC-1007", "AFC-1008"
+    };
+    private static int _airFlyCarIdx = 0;
+
+    private static string GenerateAirFlyCar(Random rng, IEnumerable<string> fields,
+        string? highwayId = null, double? zoneLat = null, double? zoneLon = null,
+        double highwayBearing = 90.0)
     {
         var obj = new Dictionary<string, object?>();
 
-        // ── Determine flight state first — all other fields follow ────────
-        bool isGrounded   = rng.NextDouble() < 0.15;          // 15% on vertiport pad
+        // ── Use zone coordinates (not highway defaults) for GPS base ───────
+        double baseLat = zoneLat ?? HighwayDefaultLat(highwayId);
+        double baseLon = zoneLon ?? HighwayDefaultLon(highwayId);
+
+        // ── Persistent vehicle identity: rotate through the pool ──────────
+        // Each call returns the NEXT vehicle in the pool. Over 8 sim ticks,
+        // all 8 vehicles get updated. This ensures the animation sees the
+        // same vehicles with advancing positions, not random new ones.
+        string vehicleId = _airFlyCarIds[_airFlyCarIdx % _airFlyCarIds.Length];
+        _airFlyCarIdx++;
+
+        // ── Stateful position tracking: advance existing vehicles ──────────
+        // Uses _vehicleState (same dictionary as ground vehicles) to track
+        // each AirFlyCar's position, speed, and direction over time. This
+        // creates continuous movement along the highway — the same vehicle
+        // appears at a slightly advanced position each tick, matching the
+        // simulation data to the animation.
+        double lat, lon;
+        int direction;
+        double speedMph;
+
+        lock (_stateLock)
+        {
+            if (_vehicleState.TryGetValue(vehicleId, out var st))
+            {
+                // ── Advance existing vehicle position ──────────────────────
+                var dt = (DateTime.UtcNow - st.lastUpdate).TotalSeconds;
+                if (dt > 300) dt = 300;
+                if (dt < 0.1) dt = 0.1;
+                var ms = st.speed * 0.44704; // mph → m/s
+                var rad = st.dir * Math.PI / 180;
+                var cosLat = Math.Cos(st.lat * Math.PI / 180);
+                var dLat = ms * Math.Cos(rad) * dt / 111000.0;
+                var dLon = ms * Math.Sin(rad) * dt / (111000.0 * cosLat);
+                lat = Math.Round(st.lat + dLat, 6);
+                lon = Math.Round(st.lon + dLon, 6);
+                direction = st.dir;
+                speedMph = st.speed;
+
+                // If vehicle has traveled too far from base (> 0.1° ~11km),
+                // wrap it back to the zone center with opposite direction
+                var distFromBase = Math.Sqrt(Math.Pow(lat - baseLat, 2) + Math.Pow(lon - baseLon, 2));
+                if (distFromBase > 0.1)
+                {
+                    lat = baseLat;
+                    lon = baseLon;
+                    direction = (direction + 180) % 360;
+                }
+
+                _vehicleState[vehicleId] = (lat, lon, speedMph, direction, DateTime.UtcNow);
+            }
+            else
+            {
+                // ── New vehicle: spawn near zone center with random direction ─
+                direction = HighwayDirectionDeg(highwayId, rng);
+                speedMph = rng.Next(80, 160); // flycar cruise speed
+                var spawn = GenerateLanePosition(baseLat, baseLon, highwayId, rng, highwayBearing);
+                lat = spawn.lat;
+                lon = spawn.lon;
+                _vehicleState[vehicleId] = (lat, lon, speedMph, direction, DateTime.UtcNow);
+            }
+        }
+
+        // ── Determine flight state for telemetry fields ───────────────────
+        bool isGrounded   = speedMph < 5;
         string flightPhase = isGrounded
             ? GroundPhases[rng.Next(GroundPhases.Length)]
             : FlightPhases[rng.Next(FlightPhases.Length)];
 
-        // Altitude band
         double altM;
         string vehicleType;
         if (isGrounded)
         {
-            altM        = Math.Round(rng.NextDouble() * 3, 1); // 0–3 m on pad
-            vehicleType = "air_urban";  // on-pad craft are urban-class
+            altM        = Math.Round(rng.NextDouble() * 3, 1);
+            vehicleType = "air_urban";
         }
         else
         {
-            bool isExpress = rng.NextDouble() < 0.35; // 35% express corridor
+            bool isExpress = rng.NextDouble() < 0.35;
             altM        = isExpress ? rng.Next(151, 801) : rng.Next(30, 150);
             vehicleType = isExpress ? "air_express" : "air_urban";
         }
@@ -399,8 +473,7 @@ public class InputPayloadService
             ? makes[rng.Next(makes.Length)]
             : "Unknown";
 
-        // Correlated kinematics
-        double speedMph = isGrounded ? 0 : flightPhase switch
+        speedMph = isGrounded ? 0 : flightPhase switch
         {
             "climb"    => rng.Next(40, 120),
             "cruise"   => rng.Next(100, 180),
@@ -409,6 +482,16 @@ public class InputPayloadService
             "approach" => rng.Next(20, 70),
             _          => rng.Next(60, 150)
         };
+
+        // Update speed in state if not grounded
+        if (!isGrounded)
+        {
+            lock (_stateLock)
+            {
+                if (_vehicleState.TryGetValue(vehicleId, out var st2))
+                    _vehicleState[vehicleId] = (st2.lat, st2.lon, speedMph, st2.dir, st2.lastUpdate);
+            }
+        }
 
         double vertRateFpm = isGrounded ? 0 : flightPhase switch
         {
@@ -422,15 +505,15 @@ public class InputPayloadService
 
         // Battery — lower SOC on longer express corridors
         double battSoc      = vehicleType == "air_express"
-            ? Math.Round(30 + rng.NextDouble() * 50, 1)   // 30–80%
-            : Math.Round(50 + rng.NextDouble() * 48, 1);  // 50–98%
+            ? Math.Round(30 + rng.NextDouble() * 50, 1)
+            : Math.Round(50 + rng.NextDouble() * 48, 1);
 
         double rangeKm      = Math.Round(battSoc * 0.8 + rng.NextDouble() * 20, 1);
         double rotorRpm     = isGrounded ? rng.Next(0, 200) : rng.Next(1800, 3200);
         double motorTempC   = isGrounded ? rng.Next(20, 40) : rng.Next(55, 110);
         double battTempC    = isGrounded ? rng.Next(20, 35) : rng.Next(30, 55);
         double noiseDb      = isGrounded ? rng.Next(40, 65) : rng.Next(60, 85);
-        bool   conflictFlag = !isGrounded && rng.NextDouble() < 0.08; // 8% conflict chance
+        bool   conflictFlag = !isGrounded && rng.NextDouble() < 0.08;
         double separationM  = conflictFlag ? rng.Next(50, 300) : rng.Next(400, 2000);
         double corrDevM     = isGrounded   ? 0 : Math.Round(rng.NextDouble() * 80, 1);
         string corridorId   = Corridors[rng.Next(Corridors.Length)];
@@ -440,11 +523,7 @@ public class InputPayloadService
         string destPad      = DestPads[rng.Next(DestPads.Length)];
         string rotorHealth  = RotorHealthStates[rng.Next(RotorHealthStates.Length)];
 
-        // Lat/lon: use zone coords if provided (so air vehicles stay near selected highway)
-        double baseLat = HighwayDefaultLat(highwayId), baseLon = HighwayDefaultLon(highwayId);
-        // highwayId passed in from the outer Generate() call via the overload
-        double lat = Math.Round(GenerateLaneLat(baseLat, baseLon, highwayId, rng), 6);
-        double lon = Math.Round(GenerateLaneLon(baseLat, baseLon, highwayId, rng), 6);
+        // lat/lon already computed above via stateful tracking
 
         string eventType = conflictFlag ? "conflict"
             : flightPhase == "approach" ? "merge"
@@ -455,13 +534,13 @@ public class InputPayloadService
         {
             obj[f] = f switch
             {
-                "vehicle_id"           => $"AFC-{rng.Next(1000, 9999)}",
+                "vehicle_id"           => vehicleId,
                 "timestamp"            => DateTime.UtcNow.ToString("o"),
                 "latitude"             => lat,
                 "longitude"            => lon,
                 "altitude_m"           => altM,
                 "speed_mph"            => Math.Round(speedMph, 1),
-                "heading"              => HighwayDirectionDeg(highwayId, rng),
+                "heading"              => direction,
                 "vehicle_type"         => vehicleType,
                 "vehicle_make"         => vehicleMake,
                 "flight_phase"         => flightPhase,
