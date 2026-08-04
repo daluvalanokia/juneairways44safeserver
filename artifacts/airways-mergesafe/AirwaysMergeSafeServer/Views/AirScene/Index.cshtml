@@ -2057,8 +2057,8 @@ function _syncAirMeshes() {
             var p3 = norm(vd.lat, vd.lon);
 
             // Lane offset: perpendicular to road direction
-            var spd3 = vd.speedMph || (vd.isAirFlyCar ? 45 : 30);
-            if (vd.isAirFlyCar && spd3 < 20) spd3 = 45;
+            var spd3 = vd.speedMph || (vd.isAirFlyCar ? 25 : 30);
+            if (vd.isAirFlyCar && spd3 < 15) spd3 = 25;
             var dir3v = vd.direction || _airHwBearingDeg || 0;
             if (dir3v < 0 || isNaN(dir3v)) dir3v = _airHwBearingDeg || 90;
             var rad3 = dir3v * Math.PI / 180;
@@ -2066,7 +2066,7 @@ function _syncAirMeshes() {
             // ── Bearing-based velocity decomposition (matches 2D overlay) ──
             // bearing 0°=N → +Z, 90°=E → +X, 180°=S → -Z, 270°=W → -X
             var _zoomFactor = (airRadius3 || 280) / 280;
-            var _flyMult = vd.isAirFlyCar ? 0.035 : 0.012;
+            var _flyMult = vd.isAirFlyCar ? 0.018 : 0.012;
             var vx3 = spd3 * _flyMult * _zoomFactor * Math.sin(rad3);
             var vz3 = spd3 * _flyMult * _zoomFactor * Math.cos(rad3);
 
@@ -2164,7 +2164,7 @@ function _animateAir3D() {
             // rather than hovering in place indefinitely.
             var _rawSpd = vd.speedMph || 0;
             var spd = _rawSpd > 0 ? _rawSpd : (ud.spd || (vd.isAirFlyCar ? 45 : 30));
-            if (vd.isAirFlyCar && spd < 20) spd = 45;
+            if (vd.isAirFlyCar && spd < 20) spd = 25;
             var dir = vd.direction || _airHwBearingDeg || 0;
             if (dir < 0 || isNaN(dir)) dir = _airHwBearingDeg || 90;
             ud.spd = spd;
@@ -2172,7 +2172,7 @@ function _animateAir3D() {
             // Bearing 0°=N→+Z, 90°=E→+X, 180°=S→-Z, 270°=W→-X
             var rad = dir * Math.PI / 180;
             var _zf = (airRadius3 || 280) / 280;
-            var _flyMultF = vd.isAirFlyCar ? 0.035 : 0.012;
+            var _flyMultF = vd.isAirFlyCar ? 0.018 : 0.012;
             ud.vx = spd * _flyMultF * _zf * Math.sin(rad);
             ud.vz = spd * _flyMultF * _zf * Math.cos(rad);
             // Update rotation to match direction from input data
