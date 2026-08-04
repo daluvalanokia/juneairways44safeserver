@@ -1387,7 +1387,9 @@ function _airClearStructures3D() {
     _airStructureLabels = [];
 }
 
-var _airBldColors = [0x4a7a9b, 0x5b8fa8, 0x3d6b8a, 0x6a9ab0, 0x476d84, 0x527d94, 0x3f6070, 0x648ba0];
+// Soft, natural building palette — muted earth tones + glass blues
+var _airBldColors = [0x6b7280, 0x78716c, 0x64748b, 0x7c7766, 0x8b8178,
+                     0x5f7a8a, 0x71797e, 0x918476, 0x688089, 0x83766b];
 
 function _airHeightScale() {
     var unitsPerMeter = XZ_SCALE / 111000;
@@ -1427,6 +1429,41 @@ function _airMakeLabel3D(text, x, topY, z) {
 // roadX: position along highway (-900..+900)
 // roadZ: perpendicular offset from road centre (negative = one side, positive = other)
 // widthM, depthM: real-world metres → scaled to 3D units via (XZ_SCALE/111000)
+
+// ── Building window texture cache ──
+var _airWindowTexCache = {};
+function _airGetWindowTexture(colorHex, hasLights) {
+    var key = colorHex + '_' + (hasLights ? 'lit' : 'dark');
+    if (_airWindowTexCache[key]) return _airWindowTexCache[key];
+    var c = document.createElement('canvas');
+    c.width = 64; c.height = 128;
+    var cx = c.getContext('2d');
+    // Base wall color
+    cx.fillStyle = '#' + colorHex.toString(16).padStart(6, '0');
+    cx.fillRect(0, 0, 64, 128);
+    // Window grid — 3 columns, 8 rows
+    var wW = 14, wH = 12, gapX = 6, gapY = 4;
+    for (var row = 0; row < 8; row++) {
+        for (var col = 0; col < 3; col++) {
+            var wx = gapX + col * (wW + gapX);
+            var wy = gapY + row * (wH + gapY);
+            // Some windows lit, some dark
+            var lit = hasLights && Math.random() > 0.6;
+            if (lit) {
+                cx.fillStyle = 'rgba(255, 220, 120, 0.7)';
+            } else {
+                cx.fillStyle = 'rgba(20, 30, 50, 0.55)';
+            }
+            cx.fillRect(wx, wy, wW, wH);
+        }
+    }
+    var tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    _airWindowTexCache[key] = tex;
+    return tex;
+}
+
 function _airRenderBuilding(roadX, roadZ, widthM, depthM, heightM, name, idx) {
     var hScale = _airHeightScale();
     var hUnits = Math.max(4, heightM * hScale);
@@ -1434,29 +1471,38 @@ function _airRenderBuilding(roadX, roadZ, widthM, depthM, heightM, name, idx) {
     var wUnits = Math.max(6, widthM  * mpu);
     var dUnits = Math.max(6, depthM  * mpu);
     var col    = _airBldColors[idx % _airBldColors.length];
+    var hasLights = Math.random() > 0.4;
 
-    // Main building body
+    // Window texture for the front + back faces
+    var winTex = _airGetWindowTexture(col, hasLights);
+    winTex.repeat.set(Math.max(1, Math.round(wUnits / 12)), Math.max(1, Math.round(hUnits / 14)));
+
+    // Main building body — textured with windows
     var geo  = new THREE.BoxGeometry(wUnits, hUnits, dUnits);
+    var sideTex = winTex.clone();
+    sideTex.needsUpdate = true;
+    sideTex.repeat.set(Math.max(1, Math.round(dUnits / 12)), Math.max(1, Math.round(hUnits / 14)));
     var mat  = new THREE.MeshPhongMaterial({
-        color: col, transparent: true, opacity: 0.75, shininess: 60, flatShading: false
+        color: col, transparent: true, opacity: 0.55, shininess: 30,
+        flatShading: false, map: winTex
     });
     var mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(roadX, hUnits / 2, roadZ);
     airRoadGroup3.add(mesh); _airStructures3D.push(mesh);
 
-    // Blue nav-map edge outline
+    // Subtle edge outline — very faint, not harsh
     var edges = new THREE.LineSegments(
         new THREE.EdgesGeometry(geo),
-        new THREE.LineBasicMaterial({ color: 0x93c5fd, opacity: 0.55, transparent: true })
+        new THREE.LineBasicMaterial({ color: 0xc0c8d0, opacity: 0.15, transparent: true })
     );
     edges.position.copy(mesh.position);
     airRoadGroup3.add(edges); _airStructures3D.push(edges);
 
-    // Flat roof cap (slightly lighter, full opacity)
-    var roofGeo = new THREE.BoxGeometry(wUnits + 1, 1.2, dUnits + 1);
-    var roofMat = new THREE.MeshPhongMaterial({ color: col + 0x101010, transparent: true, opacity: 0.88 });
+    // Flat roof cap — slightly darker, low profile
+    var roofGeo = new THREE.BoxGeometry(wUnits * 0.95, 0.8, dUnits * 0.95);
+    var roofMat = new THREE.MeshPhongMaterial({ color: col - 0x202020, transparent: true, opacity: 0.5 });
     var roof    = new THREE.Mesh(roofGeo, roofMat);
-    roof.position.set(roadX, hUnits + 0.6, roadZ);
+    roof.position.set(roadX, hUnits + 0.4, roadZ);
     airRoadGroup3.add(roof); _airStructures3D.push(roof);
 
     // Name label (only for named OSM buildings)
@@ -1475,6 +1521,7 @@ function _airRenderOSMStructures(elements) {
     var sinR   = Math.sin(-rot);
 
     var count  = 0;
+    var maxBldgs = 25;  // cap to avoid clutter
     elements.forEach(function(el, idx) {
         if (el.type !== 'way' || !el.geometry || el.geometry.length < 3) return;
 
@@ -1517,35 +1564,35 @@ function _airRenderOSMStructures(elements) {
         var name = (el.tags && el.tags.name) ? el.tags.name : null;
         _airRenderBuilding(roadX, roadZ, widthM, depthM, heightM, name, idx);
         count++;
+        if (count >= maxBldgs) return;
     });
     _airAddGroundGrid();
     console.log('[AirScene] OSM: ' + count + ' buildings in road-local space');
 }
 
-// Fallback: synthetic buildings distributed ALONG the bridge path via norm()
+// Fallback: clean, sparse buildings — not a dense wall of boxes
 function _airBuildFallbackStructures() {
     _airClearStructures3D();
     _airComputeRoadWidth();
     var rw = _airRoadWidth3D;
-    // Buildings placed behind the bridge (negative Z = far side from camera).
-    // Offsets proportional to road width — wider highway → buildings further back.
-    // Camera-facing side stays clear so aircars at altitude are visible.
     var idx = 0;
     var roadLen = 1800;
-    var cols = 10;
+
+    // Fewer buildings: 7 columns, 2 rows — spaced out and varied
+    var cols = 7;
     var step = roadLen / cols;
-    // Proportional Z offsets: rw*4.5, rw*7, rw*9.5, rw*12
-    var zOffsets = [-rw * 4.5, -rw * 7, -rw * 9.5, -rw * 12];
+    var zOffsets = [-rw * 5, -rw * 9];
 
     for (var c = 0; c < cols; c++) {
-        var roadX = -900 + step * c + step * 0.5 + (Math.random() - 0.5) * 40;
-
+        var roadX = -900 + step * c + step * 0.5 + (Math.random() - 0.5) * 60;
         zOffsets.forEach(function(rz) {
-            // Building size also scales with road width
-            var hM = 15 + Math.random() * (30 + rw * 0.8);
-            var wM = 20 + Math.random() * (25 + rw * 0.5);
-            var dM = 18 + Math.random() * (20 + rw * 0.5);
-            _airRenderBuilding(roadX + (Math.random()-0.5)*30, rz + (Math.random()-0.5)*15, wM, dM, hM, null, idx++);
+            // Varied heights: mix of low (8-15m) and tall (25-50m)
+            var isTall = Math.random() > 0.5;
+            var hM = isTall ? 25 + Math.random() * 30 : 8 + Math.random() * 12;
+            var wM = 15 + Math.random() * 20;
+            var dM = 14 + Math.random() * 16;
+            _airRenderBuilding(roadX + (Math.random()-0.5)*40, rz + (Math.random()-0.5)*25,
+                               wM, dM, hM, null, idx++);
         });
     }
     _airAddGroundGrid();
@@ -1553,7 +1600,7 @@ function _airBuildFallbackStructures() {
 }
 
 function _airAddGroundGrid() {
-    var mat = new THREE.LineBasicMaterial({ color: 0x3a6080, opacity: 0.08, transparent: true });
+    var mat = new THREE.LineBasicMaterial({ color: 0x4a6080, opacity: 0.05, transparent: true });
     var pts = [];
     // Grid in road-local space: X=along road, Z=perpendicular
     for (var gx = -950; gx <= 950; gx += 60) {
