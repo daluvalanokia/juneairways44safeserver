@@ -414,7 +414,9 @@ function _simPersist(running) {
             total:    simTotal,
             at:       Date.now()
         };
-        localStorage.setItem(_SIM_SK, JSON.stringify(st));
+        var _stJson = JSON.stringify(st);
+        localStorage.setItem(_SIM_SK, _stJson);
+        localStorage.setItem('airways_air_sim_state', _stJson);
         var _ctxJson = JSON.stringify({ hwId: st.hwId, zoneId: st.zoneId, serverId: st.serverId });
         localStorage.setItem(_SIM_CK, _ctxJson);
         localStorage.setItem(_SIM_CK_AIR, _ctxJson);
@@ -608,6 +610,7 @@ function startSim() {
                     // localStorage fallback: received by 3D scenes via 'storage' event
                     // (works even when DataInputFormats is navigated away from)
                     localStorage.setItem('airways_sim_last_event', JSON.stringify(_simMsg));
+                    localStorage.setItem('airways_air_sim_last_event', JSON.stringify(_simMsg));
                 } catch(ex) {}
             }
         })
