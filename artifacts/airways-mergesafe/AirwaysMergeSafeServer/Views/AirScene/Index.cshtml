@@ -2057,7 +2057,8 @@ function _syncAirMeshes() {
             var p3 = norm(vd.lat, vd.lon);
 
             // Lane offset: perpendicular to road direction
-            var spd3 = vd.speedMph || 30;
+            var spd3 = vd.speedMph || (vd.isAirFlyCar ? 45 : 30);
+            if (vd.isAirFlyCar && spd3 < 20) spd3 = 45;
             var dir3v = vd.direction || _airHwBearingDeg || 0;
             if (dir3v < 0 || isNaN(dir3v)) dir3v = _airHwBearingDeg || 90;
             var rad3 = dir3v * Math.PI / 180;
@@ -2154,7 +2155,15 @@ function _animateAir3D() {
 
         // ── Update velocity from live sim data using bearing decomposition ──
         if (vd) {
-            var spd = vd.speedMph || 0;
+            // Carry forward last known speed instead of collapsing to 0 —
+            // prevents a good initial velocity from being zeroed out on the
+            // next frame when speedMph is missing/0 (stale data, hover phase,
+            // or a DIF payload format that omits speed_mph). Flycars get a
+            // sane minimum floor so they always show forward flight motion
+            // rather than hovering in place indefinitely.
+            var _rawSpd = vd.speedMph || 0;
+            var spd = _rawSpd > 0 ? _rawSpd : (ud.spd || (vd.isAirFlyCar ? 45 : 30));
+            if (vd.isAirFlyCar && spd < 20) spd = 45;
             var dir = vd.direction || _airHwBearingDeg || 0;
             if (dir < 0 || isNaN(dir)) dir = _airHwBearingDeg || 90;
             ud.spd = spd;
@@ -2934,11 +2943,14 @@ function loadEvents(events) {
         // Accept both snake_case (sim payloads) and camelCase/PascalCase (DB API)
         var vid = ev.vehicle_id || ev.vehicleId || ev.VehicleId || '';
         if (!vid) return;
-        // ── Sim-mode filter: accept simulation vehicles only ──────────────
-        // When simRunning is true, accept vehicles with IDs starting with
-        // "SIM-" (ground sim) OR "AFC-" (AirFlyCar sim). All other IDs are
-        // historical/synthetic/test vehicles and are rejected.
-        if (simRunning && vid.indexOf('SIM-') !== 0 && vid.indexOf('AFC-') !== 0) {
+        // ── Sim-mode filter: reject non-simulation vehicles ──────────────
+        // The DIF controller ALWAYS prefixes simulation-generated vehicle
+        // IDs with "SIM-" (including AirFlyCar sim IDs, which become
+        // "SIM-AFC-XXXX"). When simRunning is true, only accept vehicles
+        // whose ID starts with "SIM-". This excludes historical/manual/test
+        // AirFlyCar records (bare "AFC-XXXX") that were never part of the
+        // current simulation run — those are NOT valid current sim data.
+        if (simRunning && vid.indexOf('SIM-') !== 0) {
             console.log('[T3D] loadEvents: REJECTED non-sim vehicle ' + vid + ' (sim is ON)');
             return;
         }
