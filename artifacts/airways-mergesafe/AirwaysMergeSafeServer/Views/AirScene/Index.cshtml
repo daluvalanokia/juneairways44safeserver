@@ -1381,9 +1381,15 @@ var _airStructureLabels = [];
 var _airOSMLoaded       = false;
 
 function _airClearStructures3D() {
-    _airStructures3D.forEach(function(m) { airScene3.remove(m); });
+    // Buildings are added to airRoadGroup3 (child of airScene3).
+    // Three.js scene.remove() only removes DIRECT children — removing
+    // from airScene3 doesn't work for objects in airRoadGroup3.
+    // This was the ROOT CAUSE of "buildings accumulate instead of flycars":
+    // old buildings were never removed, so every rebuild ADDED more
+    // buildings on top of the old ones, flooding the scene.
+    _airStructures3D.forEach(function(m) { airRoadGroup3.remove(m); });
     _airStructures3D = [];
-    _airStructureLabels.forEach(function(s) { airScene3.remove(s); });
+    _airStructureLabels.forEach(function(s) { airRoadGroup3.remove(s); });
     _airStructureLabels = [];
 }
 
